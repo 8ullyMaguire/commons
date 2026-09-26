@@ -9,42 +9,44 @@
 //! to whatever it likes, and the invariant "an ambiguous appearance belongs to
 //! no cluster" becomes a convention rather than a fact.
 //!
-//! # `ambiguous` and the empty cluster id
-//!
-//! An ambiguous appearance is written with `cluster_id = ''`. The column is
-//! `NOT NULL REFERENCES person_cluster(id)`, so this is worth spelling out: an
-//! empty string is **not** a valid cluster id, and a foreign-key constraint
-//! would reject it.
-//!
-//! So the schema cannot express "belongs to no cluster" as it stands, and the
-//! choice is between three options, none of which is free:
-//!
-//!   * nullable `cluster_id` — a migration, and a nullable foreign key is a
-//!     nullable identity: every read has to handle three states, and a NULL
-//!     `cluster_id` is indistinguishable from a bug in a query that forgot to
-//!     join.
-//!   * a sentinel cluster — a real row that means "ambiguous", which is a
-//!     lie: it is a person-shaped row that is not a person, and it shows up in
-//!     counts.
-//!   * **the current schema, with the row written to no cluster** — which
-//!     requires the `NOT NULL` and the foreign key to give.
-//!
-//! This is a real schema defect and it is *not* worked around by writing an
-//! empty string, because that would either fail the foreign key or, on an engine
-//! where foreign keys are off, create a dangling reference that every later read
-//! has to defend against. The fix is migration 0002, which makes
-//! `appearance.cluster_id` nullable and adds a partial index. Until that
-//! migration lands, [`insert_appearance`] for an ambiguous row returns
-//! [`ClusterError::AmbiguousNeedsMigration`] rather than storing something
-//! wrong.
-//!
-//! That means **the ambiguity acceptance test cannot pass yet**, and that is the
-//! honest state of the work rather than a test to be weakened. The rule is: a
-//! test that cannot pass because the schema is wrong should say so, and the
-//! schema should be fixed, not the test.
+//! # `ambiguous` and the null cluster
 
-use commons_store::{column, Store, StoreError};
+//! An ambiguous appearance belongs to no cluster, and the column is nullable
+//! because of that -- migration 0002 made it so. The alternatives were a sentinel
+//! cluster, which is a person-shaped row that is not a person and inflates every
+//! count, and an empty string, which is a foreign-key violation where constraints
+//! are enforced and a dangling reference where they are not. Both are recorded here
+//! because both are things a reasonable person would try, and a reader who has not
+//! seen the reasoning will otherwise rediscover one of them.
+
+//! # Everything above this crate
+
+//! `field_proposal` carries two things that look like an abuse of a generic table and
+//! are not: the candidate list for an ambiguous appearance, and the member vectors a
+//! centroid is computed from. Both are "a value proposed for a field of a subject",
+//! both are already indexed, and both need to survive as *proposals* -- §7.1 makes a
+//! link a proposal, not an assignment, and a bespoke private column would have made
+//! the UI's "show both candidates" a second read path.
+
+use commons_store::{Store, StoreError};
+
+use super::ClusterError;
 use sqlx::Row;
+
+/// Read one column, mapping a decode failure onto a store error.
+///
+/// A local helper rather than `row.get(..)?` so every decode failure carries the
+/// column name: a `ColumnDecode` error with no name is a bug report with no
+/// address.
+fn col<'r, T>(row: &'r sqlx::sqlite::SqliteRow, name: &'static str) -> Result<T, StoreError>
+where
+    T: sqlx::Decode<'r, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite>,
+{
+    row.try_get::<T, _>(name).map_err(|source| StoreError::Row {
+        column: name,
+        source,
+    })
+}
 
 /// One `person_cluster` row, with what the UI needs to show it.
 #[derive(Debug, Clone, PartialEq)]
@@ -87,14 +89,14 @@ pub struct AppearanceRecord {
 ///
 /// §7.4 requires the UI to be able to say *why*, so the distance travels with
 /// the candidate rather than being looked up again.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CandidateDistance {
     pub cluster_id: String,
     pub distance: f32,
 }
 
 /// A proposed handle value.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HandleCandidate {
     pub value: String,
     pub source: String,
@@ -108,12 +110,13 @@ pub async fn get(store: &Store, id: &str) -> Result<Option<ClusterRow>, StoreErr
     )
     .bind(id)
     .fetch_optional(store.pool())
-    .await?;
+    .await
+    .map_err(StoreError::Query)?;
     row.map(row_to_cluster).transpose()
 }
 
 fn row_to_cluster(row: sqlx::sqlite::SqliteRow) -> Result<ClusterRow, StoreError> {
-    let state_str: String = column!(row, "state")?;
+    let state_str: String = col(&row, "state")?;
     // An unrecognised state is `anonymous` rather than an error: the column has
     // a NOT NULL DEFAULT and a future writer may add a state this build does not
     // know. Reading it as the *most* restrictive known state would be wrong
@@ -121,17 +124,20 @@ fn row_to_cluster(row: sqlx::sqlite::SqliteRow) -> Result<ClusterRow, StoreError
     // the user's name), so it degrades to the default and the raw string is
     // still available through `state` for a caller that cares.
     let state = super::ClusterState::parse(&state_str).unwrap_or(super::ClusterState::Anonymous);
-    let centroid_hex: Option<String> = column!(row, "centroid_hex")?;
+    let centroid_hex: Option<String> = col(&row, "centroid_hex")?;
     let centroid = match centroid_hex {
-        Some(h) => Some(super::from_hex(&h)?),
+        Some(h) => Some(
+            super::from_hex(&h)
+                .map_err(|e| StoreError::Query(sqlx::Error::Protocol(e.to_string())))?,
+        ),
         None => None,
     };
     Ok(ClusterRow {
-        id: column!(row, "id")?,
-        handle: column!(row, "handle")?,
+        id: col(&row, "id")?,
+        handle: col(&row, "handle")?,
         state,
         centroid,
-        appearance_count: column!(row, "appearance_count")?,
+        appearance_count: col(&row, "appearance_count")?,
     })
 }
 
@@ -142,7 +148,8 @@ pub async fn all_with_members(store: &Store) -> Result<Vec<ClusterWithMembers>, 
          FROM person_cluster ORDER BY id",
     )
     .fetch_all(store.pool())
-    .await?;
+    .await
+    .map_err(StoreError::Query)?;
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let base = row_to_cluster(row)?;
@@ -151,10 +158,11 @@ pub async fn all_with_members(store: &Store) -> Result<Vec<ClusterWithMembers>, 
         )
         .bind(&base.id)
         .fetch_all(store.pool())
-        .await?;
+        .await
+        .map_err(StoreError::Query)?;
         let member_ids = members
             .into_iter()
-            .map(|r| -> Result<String, StoreError> { column!(r, "id") })
+            .map(|r| -> Result<String, StoreError> { col(&r, "id") })
             .collect::<Result<Vec<_>, _>>()?;
         out.push(ClusterWithMembers {
             id: base.id,
@@ -169,33 +177,31 @@ pub async fn all_with_members(store: &Store) -> Result<Vec<ClusterWithMembers>, 
 }
 
 /// Fetch one appearance.
-pub async fn appearance(
-    store: &Store,
-    id: &str,
-) -> Result<Option<AppearanceRecord>, StoreError> {
+pub async fn appearance(store: &Store, id: &str) -> Result<Option<AppearanceRecord>, StoreError> {
     let row = sqlx::query(
         "SELECT id, object_id, cluster_id, distance, face_score, body_score, ambiguous \
          FROM appearance WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(store.pool())
-    .await?;
+    .await
+    .map_err(StoreError::Query)?;
     row.map(row_to_appearance).transpose()
 }
 
 fn row_to_appearance(row: sqlx::sqlite::SqliteRow) -> Result<AppearanceRecord, StoreError> {
     Ok(AppearanceRecord {
-        id: column!(row, "id")?,
-        object_id: column!(row, "object_id")?,
+        id: col(&row, "id")?,
+        object_id: col(&row, "object_id")?,
         // Empty is the legacy marker for "belongs to no cluster" and is read as
         // `None`. See the module header: this is the state the schema cannot
         // express properly, and it is a read-side compatibility shim for rows
         // written before migration 0002.
-        cluster_id: column!(row, "cluster_id")?.filter(|s: &String| !s.is_empty()),
-        distance: column!(row, "distance")?,
-        face_score: column!(row, "face_score")?,
-        body_score: column!(row, "body_score")?,
-        ambiguous: column!(row, "ambiguous")? != 0,
+        cluster_id: col::<Option<String>>(&row, "cluster_id")?.filter(|s: &String| !s.is_empty()),
+        distance: col(&row, "distance")?,
+        face_score: col(&row, "face_score")?,
+        body_score: col(&row, "body_score")?,
+        ambiguous: col::<i64>(&row, "ambiguous")? != 0,
     })
 }
 
@@ -204,10 +210,10 @@ fn row_to_appearance(row: sqlx::sqlite::SqliteRow) -> Result<AppearanceRecord, S
 pub async fn ambiguous_candidates(
     store: &Store,
     appearance_id: &str,
-) -> Result<Vec<CandidateDistance>, StoreError> {
+) -> Result<Vec<CandidateDistance>, ClusterError> {
     let a = appearance(store, appearance_id)
         .await?
-        .ok_or_else(|| StoreError::Query("no such appearance".into()))?;
+        .ok_or(ClusterError::NotFound("appearance"))?;
     if !a.ambiguous {
         return Ok(Vec::new());
     }
@@ -215,11 +221,9 @@ pub async fn ambiguous_candidates(
     // computed by the engine, which has it. This function is a thin read of what
     // the engine recorded at decision time, stored so the UI does not need the
     // sidecar to explain a decision it already made.
-    store::read_candidates(store, appearance_id).await
-}
-
-mod inner {
-    pub use super::*;
+    read_candidates(store, appearance_id)
+        .await
+        .map_err(|e| ClusterError::NotSerialisable(e.to_string()))
 }
 
 /// Read the candidate list recorded for an ambiguous appearance.
@@ -240,10 +244,11 @@ pub async fn read_candidates(
     )
     .bind(appearance_id)
     .fetch_all(store.pool())
-    .await?;
+    .await
+    .map_err(StoreError::Query)?;
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        let json: String = column!(row, "value_json")?;
+        let json: String = col(&row, "value_json")?;
         // A hand-edited or truncated `value_json` must not take down the read of
         // every other candidate, so a bad row is skipped rather than propagated
         // — a candidate list missing one entry is recoverable, and a 500 is not.
@@ -259,9 +264,10 @@ pub async fn insert_candidate(
     store: &Store,
     appearance_id: &str,
     candidate: &CandidateDistance,
-) -> Result<(), StoreError> {
-    let json = serde_json::to_string(candidate)
-        .map_err(|e| StoreError::Query(format!("candidate is not serialisable: {e}")))?;
+) -> Result<(), ClusterError> {
+    let json = serde_json::to_string(candidate).map_err(|e| {
+        ClusterError::NotSerialisable(format!("candidate is not serialisable: {e}"))
+    })?;
     sqlx::query(
         "INSERT INTO field_proposal \
          (id, subject_type, subject_id, field, value_json, source, proposer_kind, confidence, created_at) \
@@ -272,7 +278,7 @@ pub async fn insert_candidate(
     .bind(json)
     .bind(super::now())
     .execute(store.pool())
-    .await?;
+    .await.map_err(StoreError::Query)?;
     Ok(())
 }
 
@@ -294,7 +300,7 @@ pub async fn insert_cluster(
     .bind(now)
     .bind(now)
     .execute(store.pool())
-    .await?;
+    .await.map_err(StoreError::Query)?;
     Ok(())
 }
 
@@ -310,7 +316,8 @@ pub async fn set_centroid(
         .bind(now)
         .bind(id)
         .execute(store.pool())
-        .await?;
+        .await
+        .map_err(StoreError::Query)?;
     Ok(())
 }
 
@@ -323,7 +330,8 @@ pub async fn bump_count(store: &Store, id: &str, now: &str) -> Result<(), StoreE
     .bind(now)
     .bind(id)
     .execute(store.pool())
-    .await?;
+    .await
+    .map_err(StoreError::Query)?;
     Ok(())
 }
 
@@ -334,38 +342,66 @@ pub async fn bump_count(store: &Store, id: &str, now: &str) -> Result<(), StoreE
 /// [`AmbiguousNeedsMigration`] rather than writing an empty string, because an
 /// empty string is a dangling foreign key on any engine with constraints off and
 /// an outright failure on any engine with them on.
+/// What `assign` decided about an appearance, and the evidence for it.
+///
+/// The write-side counterpart to [`AppearanceRecord`], which is what a row reads
+/// back as. Grouped into one argument rather than four because they are produced
+/// together by a single decision and read together by anything auditing why an
+/// appearance landed where it did; `distance` is recorded even for an ambiguous
+/// decision, because that distance is the evidence for the abstention.
+#[derive(Debug, Clone, Copy)]
+pub struct NewAppearance<'a> {
+    /// `None` for an appearance that was not assigned to a cluster. The row is
+    /// still stored, with a null `cluster_id`.
+    pub cluster_id: Option<&'a str>,
+    pub scores: &'a super::ScoreComponents,
+    pub distance: Option<f32>,
+    pub ambiguous: bool,
+    pub now: &'a str,
+}
+
 pub async fn insert_appearance(
     store: &Store,
     id: &str,
     object_id: &str,
-    cluster_id: &str,
-    scores: &super::ScoreComponents,
-    distance: Option<f32>,
-    ambiguous: bool,
-    now: &str,
+    record: &NewAppearance<'_>,
 ) -> Result<(), StoreError> {
-    if ambiguous {
-        return Err(StoreError::Query(
-            "an ambiguous appearance has no cluster, which schema 0001 cannot store; \
-             migration 0002 is required"
-                .into(),
-        ));
-    }
+    let NewAppearance {
+        cluster_id,
+        scores,
+        distance,
+        ambiguous,
+        now,
+    } = *record;
+    // An ambiguous appearance belongs to no cluster, which is a NULL and not an
+    // empty string. Migration 0002 made the column nullable for exactly this; an
+    // empty string here would be a foreign-key violation on an engine with
+    // constraints on and a dangling reference on one without.
+    let bind_cluster: Option<&str> = if ambiguous { None } else { cluster_id };
     sqlx::query(
         "INSERT INTO appearance \
          (id, object_id, cluster_id, appearance_type, face_id, distance, face_score, body_score, ambiguous, source, created_at) \
-         VALUES (?, ?, ?, 'primary', NULL, ?, ?, ?, 0, 'clustering', ?)",
+         VALUES (?, ?, ?, 'primary', NULL, ?, ?, ?, ?, 'clustering', ?)",
     )
     .bind(id)
     .bind(object_id)
-    .bind(cluster_id)
+    .bind(bind_cluster)
     .bind(distance)
     .bind(scores.face)
     .bind(scores.body)
+    .bind(if ambiguous { 1i64 } else { 0i64 })
     .bind(now)
     .execute(store.pool())
-    .await?;
-    bump_count(store, cluster_id, now).await?;
+    .await
+    .map_err(StoreError::Query)?;
+    if !ambiguous {
+        bump_count(
+            store,
+            cluster_id.expect("a non-ambiguous row has a cluster"),
+            now,
+        )
+        .await?;
+    }
     Ok(())
 }
 
@@ -381,9 +417,9 @@ pub async fn propose_handle(
     cluster_id: &str,
     value: &str,
     source: &str,
-) -> Result<(), StoreError> {
+) -> Result<(), ClusterError> {
     let json = serde_json::to_string(&value)
-        .map_err(|e| StoreError::Query(format!("handle is not serialisable: {e}")))?;
+        .map_err(|e| ClusterError::NotSerialisable(format!("handle is not serialisable: {e}")))?;
     sqlx::query(
         "INSERT INTO field_proposal \
          (id, subject_type, subject_id, field, value_json, source, proposer_kind, proposer_id, confidence, created_at) \
@@ -395,7 +431,13 @@ pub async fn propose_handle(
     .bind(source)
     .bind(super::now())
     .execute(store.pool())
-    .await?;
+    .await.map_err(StoreError::Query)?;
+    // The state is derived, not chosen: one name on the cluster makes it Named,
+    // two incompatible names make it Ambiguous, and no name leaves it Anonymous.
+    // Recording the proposal without re-deriving the state would leave a cluster
+    // carrying two different names and still claiming to be Anonymous, which is
+    // the one answer the user cannot act on.
+    reconcile_state(store, cluster_id).await?;
     Ok(())
 }
 
@@ -411,11 +453,12 @@ pub async fn handle_candidates(
     )
     .bind(cluster_id)
     .fetch_all(store.pool())
-    .await?;
+    .await
+    .map_err(StoreError::Query)?;
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        let json: String = column!(row, "value_json")?;
-        let source: String = column!(row, "source")?;
+        let json: String = col(&row, "value_json")?;
+        let source: String = col(&row, "source")?;
         if let Ok(value) = serde_json::from_str::<String>(&json) {
             out.push(HandleCandidate { value, source });
         }
@@ -449,7 +492,8 @@ pub async fn reconcile_state(
         .bind(now)
         .bind(cluster_id)
         .execute(store.pool())
-        .await?;
+        .await
+        .map_err(StoreError::Query)?;
     Ok(state)
 }
 
@@ -460,10 +504,7 @@ pub async fn reconcile_state(
 /// the caller supplies the vectors it already has. Here it reads from
 /// `field_proposal` rows the engine wrote, which keeps the centroid computation
 /// honest: it averages *recorded* vectors, not a copy that could drift.
-pub async fn member_vectors(
-    store: &Store,
-    cluster_id: &str,
-) -> Result<Vec<Vec<f32>>, StoreError> {
+pub async fn member_vectors(store: &Store, cluster_id: &str) -> Result<Vec<Vec<f32>>, StoreError> {
     let rows = sqlx::query(
         "SELECT value_json FROM field_proposal \
          WHERE subject_type = 'person_cluster' AND subject_id = ? AND field = 'member_vector' \
@@ -471,10 +512,11 @@ pub async fn member_vectors(
     )
     .bind(cluster_id)
     .fetch_all(store.pool())
-    .await?;
+    .await
+    .map_err(StoreError::Query)?;
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        let json: String = column!(row, "value_json")?;
+        let json: String = col(&row, "value_json")?;
         match serde_json::from_str::<Vec<f32>>(&json) {
             Ok(v) => out.push(v),
             // Same reasoning as the candidates: one bad row is skipped, not
@@ -491,9 +533,9 @@ pub async fn insert_member_vector(
     store: &Store,
     cluster_id: &str,
     vector: &[f32],
-) -> Result<(), StoreError> {
+) -> Result<(), ClusterError> {
     let json = serde_json::to_string(vector)
-        .map_err(|e| StoreError::Query(format!("vector is not serialisable: {e}")))?;
+        .map_err(|e| ClusterError::NotSerialisable(format!("vector is not serialisable: {e}")))?;
     sqlx::query(
         "INSERT INTO field_proposal \
          (id, subject_type, subject_id, field, value_json, source, proposer_kind, confidence, created_at) \
@@ -504,7 +546,7 @@ pub async fn insert_member_vector(
     .bind(json)
     .bind(super::now())
     .execute(store.pool())
-    .await?;
+    .await.map_err(StoreError::Query)?;
     Ok(())
 }
 
@@ -513,13 +555,9 @@ pub async fn insert_member_vector(
 /// The guard that makes this safe is not here but in the caller: a merge is only
 /// proposed when the *direct* distance passes. This function is the consequence,
 /// and it is deliberately not the place that decides.
-pub async fn merge(
-    store: &Store,
-    from: &str,
-    to: &str,
-) -> Result<u64, StoreError> {
+pub async fn merge(store: &Store, from: &str, to: &str) -> Result<u64, ClusterError> {
     if from == to {
-        return Err(StoreError::Query("a cluster cannot merge into itself".into()));
+        return Err(ClusterError::SelfMerge);
     }
     let now = super::now();
     // Recompute the survivor's centroid from the union of both membership sets
@@ -539,15 +577,16 @@ pub async fn merge(
         for m in mean.iter_mut() {
             *m /= n;
         }
-        let norm = commons_ml::face::Embedder::l2_normalize(&mean);
-        set_centroid(store, to, &super::hex(norm), &now).await?;
+        let norm = commons_ml::face::Embedder::l2_normalize(&mean).to_vec();
+        set_centroid(store, to, &super::hex(norm.as_slice()), &now).await?;
     }
 
     let moved = sqlx::query("UPDATE appearance SET cluster_id = ? WHERE cluster_id = ?")
         .bind(to)
         .bind(from)
         .execute(store.pool())
-        .await?
+        .await
+        .map_err(StoreError::Query)?
         .rows_affected();
 
     // Member vectors follow the appearances, or the survivor's centroid is
@@ -559,7 +598,8 @@ pub async fn merge(
     .bind(to)
     .bind(from)
     .execute(store.pool())
-    .await?;
+    .await
+    .map_err(StoreError::Query)?;
 
     sqlx::query(
         "UPDATE person_cluster \
@@ -570,7 +610,7 @@ pub async fn merge(
     .bind(now)
     .bind(to)
     .execute(store.pool())
-    .await?;
+    .await.map_err(StoreError::Query)?;
 
     // The loser's proposals move too — including any *handle* proposals, which
     // is the point: two clusters that merge and each had a name are exactly the
@@ -582,12 +622,14 @@ pub async fn merge(
     .bind(to)
     .bind(from)
     .execute(store.pool())
-    .await?;
+    .await
+    .map_err(StoreError::Query)?;
 
     sqlx::query("DELETE FROM person_cluster WHERE id = ?")
         .bind(from)
         .execute(store.pool())
-        .await?;
+        .await
+        .map_err(StoreError::Query)?;
     let _ = moved;
     Ok(moved)
 }
@@ -598,12 +640,106 @@ pub async fn already_member(
     object_id: &str,
     cluster_id: &str,
 ) -> Result<bool, StoreError> {
-    let row = sqlx::query(
-        "SELECT 1 FROM appearance WHERE object_id = ? AND cluster_id = ? LIMIT 1",
-    )
-    .bind(object_id)
-    .bind(cluster_id)
-    .fetch_optional(store.pool())
-    .await?;
+    let row =
+        sqlx::query("SELECT 1 FROM appearance WHERE object_id = ? AND cluster_id = ? LIMIT 1")
+            .bind(object_id)
+            .bind(cluster_id)
+            .fetch_optional(store.pool())
+            .await
+            .map_err(StoreError::Query)?;
     Ok(row.is_some())
+}
+
+/// Attach an ambiguous appearance to the cluster the user chose.
+///
+/// One statement, so there is no window in which the row is attached to a
+/// cluster and still flagged ambiguous -- a state every read would have to
+/// defend against, and one the UI would render as both joined and unresolved.
+pub async fn resolve_ambiguous(
+    store: &Store,
+    appearance_id: &str,
+    cluster_id: &str,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "UPDATE appearance SET cluster_id = ?, ambiguous = 0 WHERE id = ? AND ambiguous = 1",
+    )
+    .bind(cluster_id)
+    .bind(appearance_id)
+    .execute(store.pool())
+    .await
+    .map_err(StoreError::Query)?;
+    Ok(())
+}
+
+/// Move the named appearances of `from` onto `to`, leaving the rest.
+///
+/// The `NOT IN` is built from bound placeholders rather than interpolated ids:
+/// the ids come from the store, but a value that reaches a query as text is a
+/// value that can reach it as anything, and this file has no reason to be the
+/// place that lesson is unlearned.
+pub async fn move_appearances(
+    store: &Store,
+    from: &str,
+    to: &str,
+    keep: &[String],
+) -> Result<u64, StoreError> {
+    if keep.is_empty() {
+        return Ok(0);
+    }
+    let placeholders = vec!["?"; keep.len()].join(", ");
+    let sql = format!(
+        "UPDATE appearance SET cluster_id = ? \
+         WHERE cluster_id = ? AND id IN ({placeholders})"
+    );
+    let mut q = sqlx::query(&sql).bind(to).bind(from);
+    for id in keep {
+        q = q.bind(id);
+    }
+    let moved = q
+        .execute(store.pool())
+        .await
+        .map_err(StoreError::Query)?
+        .rows_affected();
+    recompute_count(store, to).await?;
+    recompute_count(store, from).await?;
+    Ok(moved)
+}
+
+/// Set a cluster's `appearance_count` to the number of rows that actually
+/// point at it.
+///
+/// Counted rather than incremented, because every path that changes membership
+/// has to remember to adjust the counter and one that forgets leaves a count
+/// that is wrong forever with nothing to detect it. Counting is one query and
+/// cannot drift.
+pub async fn recompute_count(store: &Store, cluster_id: &str) -> Result<(), StoreError> {
+    sqlx::query(
+        "UPDATE person_cluster \
+         SET appearance_count = (SELECT COUNT(*) FROM appearance WHERE cluster_id = ?), \
+             updated_at = ? \
+         WHERE id = ?",
+    )
+    .bind(cluster_id)
+    .bind(super::now())
+    .bind(cluster_id)
+    .execute(store.pool())
+    .await
+    .map_err(StoreError::Query)?;
+    Ok(())
+}
+
+/// Set a cluster's state.
+pub async fn set_state(
+    store: &Store,
+    cluster_id: &str,
+    state: super::ClusterState,
+) -> Result<(), StoreError> {
+    sqlx::query("UPDATE person_cluster SET state = ?, updated_at = ? WHERE id = ?")
+        .bind(state.as_str())
+        .bind(super::now())
+        .bind(cluster_id)
+        .execute(store.pool())
+        .await
+        .map_err(StoreError::Query)?;
+    Ok(())
 }

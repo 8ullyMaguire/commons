@@ -79,5 +79,25 @@ CREATE INDEX appearance_cluster_idx ON appearance (cluster_id) WHERE ambiguous =
 -- partial on `ambiguous = 1`, so it stays small no matter how large the library
 -- is, and ordered by creation so the review queue is in the order the doubts
 -- arose.
-CREATE TABLE pg_only_table (id TEXT PRIMARY KEY);
 CREATE INDEX appearance_ambiguous_idx ON appearance (created_at, id) WHERE ambiguous = 1;
+
+-- 0001's `UNIQUE (object_id, cluster_id, appearance_type)` does NOT survive
+-- this migration intact, and nothing about the schema says so.
+--
+-- In SQL a NULL compares unequal to every other NULL, so a uniqueness
+-- constraint containing a nullable column constrains the NULL rows not at all.
+-- With `cluster_id` now nullable, the same object could be recorded as an
+-- ambiguous appearance any number of times -- one row per re-scan, forever --
+-- and the constraint that was supposed to prevent exactly that would sit there
+-- looking like it was preventing it.
+--
+-- So the constraint is restated as two partial ones, which is what it was
+-- doing before. `COALESCE(cluster_id, '')` would also work and is less SQL to
+-- read, but it puts a sentinel value back into the column this migration exists
+-- to keep free of one, and a reader would have to know that to be surprised.
+-- Partial indexes say plainly which rows are covered, and the empty predicate
+-- is itself the documentation.
+CREATE UNIQUE INDEX appearance_unique_member
+  ON appearance (object_id, appearance_type) WHERE ambiguous = 0;
+CREATE UNIQUE INDEX appearance_unique_ambiguous
+  ON appearance (object_id, appearance_type) WHERE ambiguous = 1;

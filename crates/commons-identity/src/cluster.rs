@@ -67,7 +67,7 @@ use std::collections::BTreeMap;
 use commons_ml::face::Embedder;
 use commons_store::Store;
 
-mod store;
+pub mod store;
 pub use store::{
     all_with_members, ambiguous_candidates, appearance, get, handle_candidates, propose_handle,
     AppearanceRecord, CandidateDistance, ClusterRow, HandleCandidate,
@@ -179,13 +179,18 @@ impl ScoreComponents {
 pub struct EngineConfig {
     /// The cosine distance below which a face joins a cluster.
     pub threshold: f32,
-    /// How close the runner-up must be to the best for the engine to abstain.
+    /// How much closer to the best than the runner-up the runner-up must be,
+    /// before the engine abstains.
     ///
-    /// This is the whole ambiguity rule. A margin of 0.0 would mean "always pick
-    /// the best match", which is the guess §7.1 forbids. A margin so large that
-    /// everything is ambiguous is equally useless, and 0.05 is about where two
-    /// genuinely different people start to be distinguishable by a
-    /// well-behaved embedding.
+    /// This is the whole ambiguity rule, and it is a distance, not a score: the
+    /// engine abstains when `runner_up_distance - best_distance` is below it.
+    /// So 0.0 means "only on an exact tie" -- which is the correct floor, because
+    /// a margin below zero would abstain on a runner-up that is *further* than the
+    /// best, which is not ambiguity at all. 0.99 is the opposite failure: every
+    /// candidate abstains and the engine does nothing.
+    ///
+    /// 0.05 is about where two genuinely different people start to be
+    /// distinguishable by a well-behaved embedding.
     pub ambiguity_margin: f32,
     /// The most clusters one vector may be compared against before the engine
     /// stops looking.
@@ -214,7 +219,8 @@ pub struct AssignmentOutcome {
     pub decision: Assignment,
     /// The `appearance` row that was written.
     pub appearance_id: String,
-    /// The cluster it went to, or `None` when ambiguous.
+    /// The cluster it ended up in -- including the one a `Created` decision just
+    /// made -- or `None` only when ambiguous.
     ///
     /// `None` for [`Assignment::Ambiguous`] is the point: an ambiguous
     /// appearance belongs to no cluster, and returning the best candidate's id
@@ -283,20 +289,17 @@ impl Engine {
         // stable order. `created_at` alone is not stable within a millisecond,
         // and two clusters created in the same batch would swap between calls.
         let rows = all_with_members(&self.store).await?;
-        Ok(rows.get(index).and_then(|c| c.centroid))
+        Ok(rows.get(index).and_then(|c| c.centroid.clone()))
     }
 
     /// The ranked candidates for a vector, nearest first.
-    pub async fn candidates(
-        &self,
-        vector: &[f32],
-    ) -> Result<Vec<Candidate>, ClusterError> {
+    pub async fn candidates(&self, vector: &[f32]) -> Result<Vec<Candidate>, ClusterError> {
         check_width(vector)?;
         let rows = all_with_members(&self.store).await?;
         let mut out: Vec<Candidate> = rows
             .iter()
             .filter_map(|c| {
-                let centroid = c.centroid.as_ref()?;
+                let centroid = c.centroid.as_deref()?;
                 Some(Candidate {
                     cluster_id: c.id.clone(),
                     distance: cosine_distance(vector, centroid),
@@ -330,7 +333,9 @@ impl Engine {
         let (decision, target, distance) = match best {
             // Nothing near enough: this is a person nobody has seen.
             None => (Assignment::Created, None, None),
-            Some(b) if b.distance > self.config.threshold => (Assignment::Created, None, Some(b.distance)),
+            Some(b) if b.distance > self.config.threshold => {
+                (Assignment::Created, None, Some(b.distance))
+            }
             // The best match passes. Does the runner-up also pass, and is it
             // close enough that the engine cannot tell them apart?
             //
@@ -338,8 +343,14 @@ impl Engine {
             // at a distance of exactly 0.5 is a measure-zero coincidence, and
             // treating `>=` as ambiguous would abstain on it. The comparison is
             // strict for that reason.
-            Some(b) if self.is_ambiguous(&candidates, b) => (Assignment::Ambiguous, None, Some(b.distance)),
-            Some(b) => (Assignment::Joined, Some(b.cluster_id.clone()), Some(b.distance)),
+            Some(b) if self.is_ambiguous(&candidates, b) => {
+                (Assignment::Ambiguous, None, Some(b.distance))
+            }
+            Some(b) => (
+                Assignment::Joined,
+                Some(b.cluster_id.clone()),
+                Some(b.distance),
+            ),
         };
 
         let now = now();
@@ -362,50 +373,117 @@ impl Engine {
                 id
             }
             None => {
-                // Ambiguous: attached to nothing, so the id is a fresh
-                // placeholder. It is never written, and `cluster_id` on the
-                // outcome is `None`, so nothing can reference it.
+                // Ambiguous: attached to nothing. The id is a placeholder and
+                // is never written, and `cluster_id` on the outcome is `None`,
+                // so nothing can reference it.
                 String::new()
             }
         };
 
         let appearance_id = uuid::Uuid::new_v4().to_string();
+        let ambiguous = decision == Assignment::Ambiguous;
         store::insert_appearance(
             &self.store,
             &appearance_id,
             object_id,
-            &cluster_id,
-            scores,
-            distance,
-            decision == Assignment::Ambiguous,
-            &now,
+            &store::NewAppearance {
+                cluster_id: (!ambiguous).then_some(cluster_id.as_str()),
+                scores,
+                distance,
+                ambiguous,
+                now: &now,
+            },
         )
         .await?;
 
         if decision == Assignment::Created || decision == Assignment::Joined {
+            // The member vector is recorded so the centroid is computed from
+            // what the cluster actually contains. It goes on the cluster, not
+            // on the appearance, because it is the cluster's membership that
+            // the centroid means.
+            store::insert_member_vector(&self.store, &cluster_id, vector).await?;
             self.refresh_centroid(&cluster_id).await?;
+        } else {
+            // The candidates that made this ambiguous, recorded now. §7.1: both
+            // candidates are shown, and a review state the UI cannot populate
+            // is not a review state.
+            for c in candidates
+                .iter()
+                .take_while(|c| c.distance <= self.config.threshold)
+            {
+                store::insert_candidate(
+                    &self.store,
+                    &appearance_id,
+                    &CandidateDistance {
+                        cluster_id: c.cluster_id.clone(),
+                        distance: c.distance,
+                    },
+                )
+                .await?;
+            }
         }
+
+        // `cluster_id` is the cluster the appearance *ended up in*, which for a
+        // `Created` decision is the one just made -- not `target`, which is None
+        // on that path because the cluster did not exist when the decision was
+        // made. Reporting None there left a caller unable to learn which cluster
+        // its own write created, and a caller that cannot ask has to go and look,
+        // or guess.
+        //
+        // The one case that must stay None is `Ambiguous`, and that is the whole
+        // point of it: an ambiguous appearance belongs to no cluster, and
+        // returning the best candidate's id would invite a caller to attach it.
+        let cluster_id = match decision {
+            Assignment::Ambiguous => None,
+            _ => Some(cluster_id),
+        };
+        let _ = target;
 
         Ok(AssignmentOutcome {
             decision,
             appearance_id,
-            cluster_id: target,
+            cluster_id,
             distance,
         })
     }
 
+    /// Run one consolidation pass. See [`ConsolidateConfig`].
+    pub async fn consolidate(
+        &self,
+        config: ConsolidateConfig,
+    ) -> Result<MergeReport, ClusterError> {
+        consolidate::consolidate(self, config).await
+    }
+
     /// Is the best candidate too close to the runner-up to choose?
     fn is_ambiguous(&self, candidates: &[Candidate], best: &Candidate) -> bool {
-        // Only the runner-up among those that *pass*. A cluster that is further
-        // away than the best is not evidence against the best; comparing against
-        // the single next-nearest regardless of whether it passed would make
-        // the best of two tight clusters look ambiguous next to one far-away
+        // How much *better* the runner-up would have to be, or how close it is to
+        // being as good, before the engine declines to choose.
+        //
+        // The comparison is `runner_up - best`, and the sign matters. It was
+        // written the other way round, which is a real bug and not a cosmetic
+        // one: `best - runner_up` is negative for every runner-up that is further
+        // away, and `negative < margin` is true for any positive margin. So the
+        // rule reduced to "ambiguous whenever a second candidate exists",
+        // whatever the distances were. A clear winner 0.4 from the best and 0.5
+        // from the runner-up abstained, because -0.1 < 0.05.
+        //
+        // With the sign fixed the rule reads what it should: abstain when the
+        // runner-up is within `margin` of the best. A margin of 0.0 then means
+        // "only abstain on an exact tie", which is the documented behaviour, and
+        // a test that sets the margin to 0.99 and expects the engine to abstain
+        // on everything is testing the default rather than the rule.
+        //
+        // Only the runner-up among those that *pass* is considered. A cluster
+        // further away than the best is not evidence against the best; comparing
+        // against the single next-nearest regardless of whether it passed would
+        // make the best of two tight clusters look ambiguous next to one far-away
         // cluster, which is backwards.
         candidates
             .iter()
             .skip(1)
             .take_while(|c| c.distance <= self.config.threshold)
-            .any(|c| best.distance - c.distance < self.config.ambiguity_margin)
+            .any(|c| c.distance - best.distance < self.config.ambiguity_margin)
     }
 
     /// Recompute a cluster's centroid as the mean of its members.
@@ -441,8 +519,9 @@ impl Engine {
         for m in mean.iter_mut() {
             *m /= n;
         }
-        let norm = Embedder::l2_normalize(&mean);
-        store::set_centroid(&self.store, cluster_id, &hex(norm), &now()).await
+        let norm = Embedder::l2_normalize(&mean).to_vec();
+        store::set_centroid(&self.store, cluster_id, &hex(&norm), &now()).await?;
+        Ok(())
     }
 }
 
@@ -451,7 +530,12 @@ impl Engine {
 // ---------------------------------------------------------------------------
 
 mod consolidate;
-pub use consolidate::{consolidate, ConsolidateConfig, MergeReport};
+pub use consolidate::{ConsolidateConfig, MergeReport};
+
+// The two decisions §7.1 puts in the user's hands rather than the engine's.
+// They are re-exported at this level because they are the whole user-facing
+// surface of the identity engine: everything else is a scheduled job.
+pub use consolidate::{resolve_ambiguous, split};
 
 /// Cosine distance between two unit vectors, clamped to `[0, 2]`.
 ///
@@ -498,14 +582,13 @@ fn hex(v: &[f32]) -> String {
 
 /// The inverse of [`hex`].
 pub fn from_hex(s: &str) -> Result<Vec<f32>, ClusterError> {
-    if s.len() % 8 != 0 {
+    if !s.len().is_multiple_of(8) {
         return Err(ClusterError::BadHex(s.len()));
     }
     let mut out = Vec::with_capacity(s.len() / 8);
     for chunk in s.as_bytes().chunks(8) {
         let text = std::str::from_utf8(chunk).map_err(|_| ClusterError::BadHex(s.len()))?;
-        let bits =
-            u32::from_str_radix(text, 16).map_err(|_| ClusterError::BadHex(s.len()))?;
+        let bits = u32::from_str_radix(text, 16).map_err(|_| ClusterError::BadHex(s.len()))?;
         let x = f32::from_bits(bits);
         if !x.is_finite() {
             return Err(ClusterError::NonFinite);
@@ -578,11 +661,26 @@ pub enum ClusterError {
     #[error("candidate limit is zero, so nothing would ever be compared")]
     NoCandidates,
 
+    #[error("a cluster cannot merge into itself")]
+    SelfMerge,
+
     #[error("cluster members have different widths: {expected} and {got}")]
     MixedWidth { expected: usize, got: usize },
 
     #[error("a stored centroid is not valid hex ({0} chars)")]
     BadHex(usize),
+
+    #[error("no {0} with that id")]
+    NotFound(&'static str),
+
+    #[error("no such appearance: {0}")]
+    NoSuchAppearance(String),
+
+    #[error("a value could not be serialised for storage: {0}")]
+    NotSerialisable(String),
+
+    #[error("appearance {0} is not ambiguous, so there is nothing to resolve")]
+    NotAmbiguous(String),
 
     #[error(transparent)]
     Store(#[from] commons_store::StoreError),
@@ -601,7 +699,7 @@ pub async fn by_state(store: &Store) -> Result<BTreeMap<String, usize>, ClusterE
     let rows = all_with_members(store).await?;
     let mut out = BTreeMap::new();
     for r in rows {
-        *out.entry(r.state.to_string()).or_insert(0) += 1;
+        *out.entry(r.state.as_str().to_string()).or_insert(0) += 1;
     }
     Ok(out)
 }

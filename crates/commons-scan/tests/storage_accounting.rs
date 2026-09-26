@@ -253,12 +253,26 @@ fn disk_space_agrees_with_df() {
     let df_total: u64 = cols[1].parse().unwrap();
     let df_avail: u64 = cols[3].parse().unwrap();
 
-    // df's total counts the same blocks, so they agree exactly. The available
-    // column is f_bavail, which is the unprivileged figure — the one this
-    // module reports as `available` precisely so a user is not told they can
-    // write blocks reserved for root.
+    // df's total counts the same blocks, and nothing frees or allocates a block
+    // of the filesystem's size, so the two agree exactly.
     assert_eq!(space.total, df_total, "statvfs total vs df total");
-    assert_eq!(space.available, df_avail, "statvfs bavail vs df available");
+
+    // The available column is f_bavail -- the unprivileged figure, which is what
+    // this module reports as `available` precisely so a user is not told they can
+    // write blocks reserved for root -- but it is a *live counter*, sampled
+    // twice at two different instants with a process and the test harness
+    // writing in between. It agrees to within a few blocks, not exactly, and
+    // demanding exactness makes this test fail whenever the machine is busy.
+    //
+    // The bound is generous because it exists to catch a real regression: a
+    // mis-mapped column, or reporting f_bfree where f_bavail was meant, differs
+    // by the root reserve, which is hundreds of megabytes on a real filesystem.
+    let drift = space.available.abs_diff(df_avail);
+    assert!(
+        drift <= 16 * 4096,
+        "statvfs bavail vs df available drifted by {drift} bytes, which is more \
+         than concurrent writes between the two samples should account for"
+    );
     assert!(
         human(space.available).ends_with("iB") || human(space.available).ends_with(" B"),
         "{}",
