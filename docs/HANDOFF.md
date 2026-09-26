@@ -17,7 +17,7 @@ self-service performer claim, T-P3-006 the performer field model. All Phases 4
 through 8 are not started. Nothing built is a stub.
 
 `python3 scripts/plan-status.py` is the authority on that sentence, not this
-file and not the plan. It counts 34 of 84 tickets closed and 43 genuinely
+file and not the plan. It counts 36 of 84 tickets closed and 43 genuinely
 unstarted, and it exits non-zero if any ticket is *marked* done while the file
 it names is absent -- the failure mode that reads as progress and builds as
 nothing. `scripts/verify.sh` runs it, so the claim cannot rot.
