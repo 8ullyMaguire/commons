@@ -15,6 +15,7 @@
 //! meet, so the conversion is written once.
 
 use crate::db::{Store, StoreError};
+use commons_core::ts;
 use commons_core::{FieldProposal, ProposalSource, ProposerKind, SubjectType, Vote};
 use sqlx::Row;
 use uuid::Uuid;
@@ -383,6 +384,95 @@ pub async fn age_vote(store: &Store, proposal: &Uuid, days: i64) -> Result<(), S
             .map_err(StoreError::Query)?;
     }
     Ok(())
+}
+
+/// Write a field lock, replacing any existing one.
+///
+/// `INSERT .. ON CONFLICT DO UPDATE` rather than an insert-and-ignore: a second
+/// lock on the same field *replaces* the first, because a contested field is
+/// decided once and the lock is the decision. An ignore would leave the first
+/// steward\'s lock in force with no way to tell, and a `field_lock` row that
+/// names the wrong person is worse than no lock at all.
+pub async fn lock_field(
+    store: &Store,
+    subject_type: SubjectType,
+    subject_id: &Uuid,
+    field: &str,
+    value_json: &str,
+    locked_by: &str,
+    reason: &str,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "INSERT INTO field_lock (subject_type, subject_id, field, value_json, locked_by, reason, locked_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (subject_type, subject_id, field) DO UPDATE
+            SET value_json = excluded.value_json,
+                locked_by = excluded.locked_by,
+                reason = excluded.reason,
+                locked_at = excluded.locked_at",
+    )
+    .bind(subject_type.as_str())
+    .bind(subject_id.to_string())
+    .bind(field)
+    .bind(value_json)
+    .bind(locked_by)
+    .bind(reason)
+    .bind(ts::now())
+    .execute(store.pool())
+    .await
+    .map_err(StoreError::Query)?;
+    Ok(())
+}
+
+/// An account\'s id, by handle. `None` when no such account exists.
+pub async fn account_id_by_handle(store: &Store, handle: &str) -> Result<Option<Uuid>, StoreError> {
+    let row = sqlx::query("SELECT id FROM account WHERE handle = ?")
+        .bind(handle)
+        .fetch_optional(store.pool())
+        .await
+        .map_err(StoreError::Query)?;
+    Ok(row
+        .map(|r| r.get::<String, _>("id"))
+        .and_then(|s| Uuid::parse_str(&s).ok()))
+}
+
+/// Set a subject\'s consent tier.
+pub async fn set_consent_tier(
+    store: &Store,
+    object_id: Uuid,
+    tier: &str,
+    decided_by: &str,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "INSERT INTO consent_record
+            (id, object_id, tier, redistribution_permitted, decided_by, decided_at, updated_at)
+         VALUES (?, ?, ?, 0, ?, ?, ?)
+         ON CONFLICT (object_id) DO UPDATE
+            SET tier = excluded.tier,
+                decided_by = excluded.decided_by,
+                decided_at = excluded.decided_at,
+                updated_at = excluded.updated_at",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(object_id.to_string())
+    .bind(tier)
+    .bind(decided_by)
+    .bind(ts::now())
+    .bind(ts::now())
+    .execute(store.pool())
+    .await
+    .map_err(StoreError::Query)?;
+    Ok(())
+}
+
+/// A subject\'s consent tier, if one has been decided.
+pub async fn consent_tier(store: &Store, object_id: Uuid) -> Result<Option<String>, StoreError> {
+    let row = sqlx::query("SELECT tier FROM consent_record WHERE object_id = ?")
+        .bind(object_id.to_string())
+        .fetch_optional(store.pool())
+        .await
+        .map_err(StoreError::Query)?;
+    Ok(row.map(|r| r.get::<String, _>("tier")))
 }
 
 /// The lock on a field, if any.

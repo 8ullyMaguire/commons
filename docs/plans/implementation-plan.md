@@ -1872,7 +1872,7 @@ the test above.
 ### T-P4-004 — Edit history with recomputed integrity — DONE
 
 **Spec:** §8.6
-**Files:** `commons-index/src/history.rs`, migration 0010
+**Files:** `crates/commons-index/src/history.rs`, migration 0010
 
 **The rule: scores are recomputed from the accepted-edit set, never maintained as
 a counter.** There is no score column anywhere and no second implementation of
@@ -1920,21 +1920,73 @@ Verification: `967 tests, 0 failures`; `cargo fmt --check` clean; `cargo clippy
 rule were tried — including `MAX` → `SUM`, which is the counter bug in one
 character — and every one was killed.
 
-### T-P4-005 — Moderation, locking, disputes
+### T-P4-005 — Moderation, locking, disputes — DONE
 
 **Spec:** §8.5
-**Files:** `commons-index/src/moderation.rs`
+**Files:** `crates/commons-index/src/moderation.rs`, migration 0011
 
-Steward queue for contested fields, disputed merges, disputed consent tier, and
-abuse reports. Editing another's pending edit with attribution (stash-box#599),
-amending an edit (#226), editing closed submissions (#570), per-user pending
-limits (#782), pinned comments (#700), name-collision warning before submit
-(#714, #950), ignore-lists for studios and performers (stash-box#787),
-excluded studios that cannot accept new scenes (#1175).
+The ticket's done-when is unusual and it is the reason this module is shaped the
+way it is: **"all seven negative tests exist."** Not seven tests — seven
+*negative* ones. A positive test for "a steward can lock a field" passes just as
+well against a function that locks for anybody, so the positive half proves the
+happy path and only the negative half proves the check runs. Both halves exist
+for all seven types, and the negative half is written first in each block.
 
-**Accept:** per-queue item type, a test that the right role can resolve and a
-lower role cannot. The negative authorization test per type.
-**Done when:** all seven negative tests exist.
+One table for seven item types, because a steward reads a *list*: seven tables
+would be seven queries, seven orderings to reconcile, and seven places for an
+item to be created in one table and resolved in another. Per-type detail lives in
+per-type tables because it is per-type data, not per-type shape.
+
+Authorization is per item type and comes from the type alone. There is no
+`resolve_as(role, ..)` and deliberately not one: a function whose authorization is
+a parameter is a function whose authorization is only tested at its call sites.
+
+**`DisputedConsent` is Admin, not Steward** — the only boundary in the module
+that a trusted role does not get, and the one most worth a test. Every other type
+is Steward, so a suite checking "Contributor cannot" and "Admin can" for all
+seven would pass with this boundary wrong. `each_type_refuses_the_role_below_its_own`
+asserts the whole table as data for that reason. §14.2 is why: a consent
+revocation propagates as a tombstone and is never outvoted by contribution, and a
+steward's standing *is* contribution.
+
+Three bugs the tests found, and one design decision they forced:
+
+* **A disabled steward kept moderating.** The role is still `Steward` on a
+  disabled account, so a check that reads only the role passes it — and a
+  disabled account is the exact state a takedown creates. The module reads the
+  flag, and every *raiser* goes through the same guard: a taken-down account that
+  can still fill the queue produces items indistinguishable from ordinary ones,
+  which defeats the point of having a queue.
+* **`close_submission` returned the queue item's id, and `submission()` took a
+  submission row id.** A reopen read back `None` and the test unwrapped it. Two
+  ids, two meanings, one name.
+* **A reopen cleared `closed_at`.** That reads right and is wrong: it makes a
+  reopened submission byte-identical to one that was never closed, and a steward
+  deciding whether to close it again needs to know it was closed before and why.
+  `Submission::is_closed()` is now the accessor every call site uses, and it tests
+  `closed_at.is_some() && reopened_at.is_none()`. A reader testing the column
+  instead would refuse every edit to a submission that was ever closed, which is
+  stash-box#570 answered backwards.
+* `field_lock` had no `reason` column, so a contested-field lock recorded *what*
+  was locked and nothing about why. Added by `ALTER TABLE` in 0011, nullable,
+  because 0001 is applied and immutable and a lock written before the migration
+  genuinely has no reason.
+
+stash-box#599 is the pending-edit case: a steward may correct somebody's pending
+edit and the edit stays theirs. `author` and `amended_by` are separate columns and
+no code path writes one from the other, which is the only reason the attribution
+survives. The effective value is read through `moderation::effective()` so a
+caller cannot accidentally read the pre-amendment text.
+
+stash-box#782's limits are three numbers, not seven: a limit that is the same for
+everyone is not a limit, and a steward — whose pending edits are the ones a
+steward would resolve — is the account most able to flood the queue, so theirs is
+the tightest. An admin is exempt because an admin bulk-editing a corpus is the
+case a limit would obstruct. The limit counts *open* edits across every subject,
+so it is a cap on a person rather than on a corpus's shape.
+
+Verification: `994 tests, 0 failures`; `cargo fmt --check` clean; `cargo clippy
+--workspace --all-targets -- -D warnings` clean.
 
 ### T-P4-006 — Leaderboards, badges, points
 
