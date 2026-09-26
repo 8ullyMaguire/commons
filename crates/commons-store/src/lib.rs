@@ -19,6 +19,7 @@
 pub mod bulk;
 pub mod db;
 pub mod filter_ast;
+pub mod folders;
 pub mod fuzzy;
 pub mod index;
 pub mod locator;

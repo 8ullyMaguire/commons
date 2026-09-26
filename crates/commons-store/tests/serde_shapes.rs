@@ -253,13 +253,107 @@ fn round_tripping_a_shared_filter_is_lossless() {
     let back = Filter::from_url(&url).expect("a URL we just produced must decode");
     assert_eq!(filter, back, "filter did not survive the URL round trip");
 
-    // And it still compiles to SQL, so the AST is not merely serializable.
-    let sql = filter
+    // The URL round trip preserves `Filter::Saved`, and that is the extent of
+    // what this test claims: a saved reference is a *reference*, not a query.
+    //
+    // Compiling is a different step, and the filter cannot be compiled as it
+    // stands. A `Saved` reaching the compiler means the caller skipped
+    // `folders::resolve_saved`, and the compiler says so
+    // (`UnresolvedSavedReference`) rather than emitting SQL for it. It used to
+    // emit `o.saved_filter_ids LIKE ?` -- a column no migration creates, so
+    // every query containing a saved reference failed at the database with
+    // "no such column". The error now names the missing step instead of a
+    // column, which sends a developer to the right place instead of to the
+    // schema.
+    let err = filter
         .to_sql(Engine::Postgres, &CallerId::anonymous())
-        .expect("filter must compile");
-    assert!(sql.sql.contains('?'));
+        .expect_err("an unresolved Saved reference must not compile");
+    assert!(
+        matches!(err, commons_store::FilterError::UnresolvedSavedReference),
+        "expected UnresolvedSavedReference, got {err:?}"
+    );
+}
+
+#[test]
+fn a_saved_reference_resolves_to_its_definitions_filter() {
+    // The other half of the contract: `Saved` is an indirection, and after
+    // resolution the AST is ordinary SQL with no trace of the folder.
+    use commons_store::filter_ast::{
+        BuiltinField, CallerId, CmpOp, Engine, FieldRef, Filter, Value,
+    };
+    use commons_store::folders::{self, FolderError, FolderSource};
+    use std::collections::HashMap;
+
+    /// The store's own name for a folder that does not exist. Spelled out here
+    /// rather than reusing a helper from `folders.rs` so the test exercises the
+    /// trait as a caller outside the crate would.
+    struct Defs(HashMap<String, Filter>);
+
+    impl FolderSource for Defs {
+        fn filter_of(&self, id: &str) -> Result<Option<Filter>, FolderError> {
+            Ok(self.0.get(id).cloned())
+        }
+    }
+
+    let defs = Defs(
+        [(
+            "saved-1".to_string(),
+            Filter::Facet {
+                kind: Some(commons_core::ObjectKind::Scene),
+                field: FieldRef::Builtin(BuiltinField::Rating),
+                op: CmpOp::Gte,
+                values: vec![Value::Float(4.0)],
+            },
+        )]
+        .into_iter()
+        .collect(),
+    );
+
+    let unresolved = Filter::And(vec![
+        Filter::Saved {
+            id: "saved-1".into(),
+        },
+        Filter::All,
+    ]);
+    let (resolved, report) = folders::resolve_saved(&unresolved, &defs, &mut Default::default())
+        .expect("a reference with a definition resolves");
+
+    assert_eq!(report.expanded, 1, "exactly one reference was expanded");
+    let sql = resolved
+        .to_sql(Engine::Postgres, &CallerId::anonymous())
+        .expect("a resolved filter compiles");
     assert!(
         !sql.sql.contains("saved-1"),
-        "saved id must be bound, not literal"
+        "the folder id must not reach the SQL: {:?}",
+        sql.sql
     );
+    assert!(
+        !sql.sql.contains("saved_filter_ids"),
+        "no membership column: the query is the folder's own filter"
+    );
+}
+
+#[test]
+fn a_saved_reference_to_a_missing_folder_is_an_error_not_an_empty_result() {
+    // The direction that matters. A missing folder that resolved to "match
+    // nothing" would be a silent empty list, and a folder that resolved to
+    // "match everything" would be worse: the user opens their "Highly rated"
+    // folder and sees the entire library. Both are quiet. An error is not.
+    use commons_store::filter_ast::Filter;
+    use commons_store::folders::{self, FolderError, FolderSource};
+
+    /// A source with no folders in it. A unit struct rather than one wrapping
+    /// an empty map: the map would be a field nothing reads, and a source that
+    /// answers "no" for everything does not need storage to say so.
+    struct Empty;
+    impl FolderSource for Empty {
+        fn filter_of(&self, _id: &str) -> Result<Option<Filter>, FolderError> {
+            Ok(None)
+        }
+    }
+
+    let f = Filter::And(vec![Filter::Saved { id: "gone".into() }]);
+    let err = folders::resolve_saved(&f, &Empty, &mut Default::default())
+        .expect_err("a missing folder must not resolve");
+    assert_eq!(err, FolderError::NotFound("gone".to_string()));
 }

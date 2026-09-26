@@ -378,6 +378,14 @@ pub enum FilterError {
     UnsupportedSort(String, SubjectType),
     #[error("parse error at position {pos}: {msg}")]
     Parse { pos: usize, msg: String },
+    /// A `Saved` reference reached the compiler without being expanded.
+    ///
+    /// A distinct variant rather than a `Parse` error because the two demand
+    /// different fixes: a parse error is the user's URL, and this is a caller
+    /// that skipped `folders::resolve_saved`. Reporting it as a parse error
+    /// sends a developer to look at a filter string that was never the problem.
+    #[error("a saved-filter reference reached the compiler unresolved; call folders::resolve_saved first")]
+    UnresolvedSavedReference,
 }
 
 /// Which engine the SQL is being generated for.
@@ -505,10 +513,29 @@ impl Filter {
             }
 
             Filter::Saved { id } => {
-                // Expanded by the caller that owns stored-filter lookup; the
-                // AST records the reference so a URL stays short and stable.
-                params.push(Value::Str(id.clone()));
-                "(o.saved_filter_ids LIKE ?)".to_string()
+                // A `Saved` node that reaches the compiler has not been resolved,
+                // and that is a bug rather than a case to handle.
+                //
+                // This used to compile to `o.saved_filter_ids LIKE ?` -- a column
+                // that no migration creates, so any filter containing a saved
+                // reference failed at the database with "no such column" rather
+                // than anything a developer could act on. It survived because the
+                // only test touching `Filter::Saved` asserted its serde shape and
+                // never ran the SQL.
+                //
+                // The reference is expanded before compilation, by
+                // `folders::resolve_saved`, which has store access and this
+                // module deliberately does not. `compile` stays a pure function
+                // over the tree: a filter that could read the database would make
+                // every query's behaviour depend on connection state, and would
+                // put a pool behind every call to `to_sql`.
+                //
+                // So this is a loud failure rather than a wrong answer. A filter
+                // reaching the compiler unresolved means the caller skipped
+                // resolution -- a bug in the query path, caught where it is made
+                // instead of at the database with a message about a column.
+                let _ = id;
+                return Err(FilterError::UnresolvedSavedReference);
             }
 
             Filter::Facet {
