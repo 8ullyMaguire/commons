@@ -7,6 +7,7 @@
 
 pub mod detect;
 pub mod funscript;
+pub mod hashing;
 pub mod progress;
 pub mod segment;
 pub mod types;
@@ -16,6 +17,9 @@ pub mod watch;
 pub use detect::{detect, detect_from_bytes, Container, Detection, Evidence};
 pub use funscript::{
     discover, Action, Axis, Funscript, FunscriptError, FunscriptSource, FunscriptWarning,
+};
+pub use hashing::{
+    hash_file, hash_files, hash_reader, FileDisposition, FileHashes, Rehash, BUFFER_BYTES,
 };
 pub use progress::{Confidence, Progress, Snapshot};
 pub use segment::{split_file, CompilationRelation, ExistingMarker, Segment, Split, SplitError};
