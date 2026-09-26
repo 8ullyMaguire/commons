@@ -2,9 +2,25 @@
 """Regenerate the SQLite migration mirror from the Postgres one.
 
 The Postgres file is the source of truth. This script copies it and rewrites
-the header and the engine-specific notes, leaving the DDL identical — SQLite
-accepts everything here except the Postgres-only comment about native types,
-which the header already covers.
+the header, leaving the DDL identical -- with one exception, described below.
+
+Engine-specific statements
+--------------------------
+SQLite is not Postgres. It has no `ALTER COLUMN ... DROP NOT NULL`, and changing
+a column's nullability means the twelve-step table rebuild. Rather than letting
+the two files drift, a Postgres migration may mark a statement as
+engine-specific:
+
+    --:sqlite 0002_x.sqlite.sql
+    ALTER TABLE appearance ALTER COLUMN cluster_id DROP NOT NULL;
+    --:end
+
+Everything between the markers is replaced in the SQLite mirror by the contents
+of the named file, and the markers are stripped. This keeps the schema's
+*meaning* stated once, in the Postgres file, with the engine's own syntax
+spelled out where an engineer applying it will look. The parity test compares
+table and column sets across the two engines, so a rewrite that changed the
+shape would still fail there.
 
 Run after editing any migration under migrations/postgres/:
 
@@ -21,10 +37,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 MIGRATIONS = ROOT / "crates" / "commons-store" / "migrations"
 
-PG_HEADER_OLD = re.compile(
-    r"^-- 0001_core\.sql.*?\n-- store crate\s*\n--\s+hides the difference and no query writes a literal",
-    re.S | re.M,
-)
+# The Postgres header, from the first line up to the first blank line that ends
+# it. Matching on the whole prose was brittle: the header was reworded once and
+# the old pattern silently stopped matching, which made the script copy the
+# Postgres header verbatim into the SQLite mirror and emit a warning nobody read.
+# Anchoring on "the comment block before the first CREATE TABLE" is stable
+# against rewording.
+PG_HEADER = re.compile(r"\A(--[^\n]*\n)+", re.M)
 
 SQLITE_HEADER = """-- 0001_core.sql - Commons initial schema (SQLite).
 --
@@ -44,6 +63,29 @@ SQLITE_HEADER = """-- 0001_core.sql - Commons initial schema (SQLite).
 """
 
 
+# `--:sqlite <file>` ... `--:end`
+SQLITE_BLOCK = re.compile(r"^--:sqlite\s+(\S+)\s*\n(.*?)^--:end\s*\n", re.S | re.M)
+
+
+def expand_sqlite_blocks(text: str, pg_file: Path) -> str:
+    """Replace each `--:sqlite` block with the SQLite form of that statement."""
+
+    def sub(m: re.Match[str]) -> str:
+        name = m.group(1)
+        side = pg_file.parent / name
+        if not side.exists():
+            print(
+                f"  error: {pg_file.name} marks a SQLite block reading {name},"
+                f" which does not exist",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        body = side.read_text().rstrip("\n")
+        return f"-- SQLite form of the statement above ({name}).\n{body}\n\n"
+
+    return SQLITE_BLOCK.sub(sub, text)
+
+
 def sync() -> int:
     pg_dir = MIGRATIONS / "postgres"
     lite_dir = MIGRATIONS / "sqlite"
@@ -53,9 +95,13 @@ def sync() -> int:
     for pg_file in sorted(pg_dir.glob("*.sql")):
         target = lite_dir / pg_file.name
         text = pg_file.read_text()
-        body = PG_HEADER_OLD.sub(SQLITE_HEADER.rstrip("\n"), text, count=1)
+        body = PG_HEADER.sub(SQLITE_HEADER.rstrip("\n"), text, count=1)
         if body == text:
-            print(f"  warn: no header block matched in {pg_file.name}", file=sys.stderr)
+            print(
+                f"  warn: no header block matched in {pg_file.name}",
+                file=sys.stderr,
+            )
+        body = expand_sqlite_blocks(body, pg_file)
         if not target.exists() or target.read_text() != body:
             target.write_text(body)
             changed += 1

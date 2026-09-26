@@ -1,20 +1,18 @@
--- 0001_core.sql — Commons initial schema (SQLite).
+-- 0001_core.sql - Commons initial schema (SQLite).
 --
--- GENERATED from the Postgres file and kept in step by T-P0-007's parity
--- test, which fails if the two table sets ever diverge. Edit the Postgres
--- file and re-run `scripts/sync-migrations.py`; do not hand-edit this one.
+-- GENERATED from the Postgres file by scripts/sync-migrations.py. Do not
+-- hand-edit: edit migrations/postgres/0001_core.sql and re-run that script.
+-- T-P0-007's parity test fails if the two files' table sets ever diverge.
 --
--- --
--- Portable-SQL rules in force (§0.4 of the plan):
+-- Portable-SQL rules in force (plan section 0.4):
 --   * ids are TEXT
 --   * timestamps are ISO-8601 UTC TEXT, so comparison and sort need no
 --     timezone function and both engines agree
 --   * no vector columns; embeddings live in a sidecar ANN file
 --   * booleans are INTEGER 0|1 here and BOOLEAN in Postgres; the store crate
 --     hides the difference and no query writes a literal
---   * foreign keys require `PRAGMA foreign_keys = ON` per connection, which
---     the store crate sets at open time
-
+--   * foreign keys need `PRAGMA foreign_keys = ON` per connection, which the
+--     store crate sets at open time
 CREATE TABLE object (
   id             TEXT PRIMARY KEY,
   kind           TEXT NOT NULL,
@@ -518,6 +516,3 @@ CREATE TABLE notification (
   created_at   TEXT NOT NULL
 );
 CREATE INDEX notification_account_idx ON notification (account_id, read_at, created_at DESC);
-
--- SQLite requires this per connection; enforced in commons-store's open path.
--- The Postgres file needs no equivalent statement.
