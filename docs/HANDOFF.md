@@ -217,6 +217,45 @@ Real, and not yet fixed.
 - This machine has a Radeon with a working VA-API render node at
   `/dev/dri/renderD128`, so the acceleration acceptance tests really do run.
 
+## Phase 11 — the community ecosystem (added 2026-09-26)
+
+The owner asked for the whole `stashapp` ecosystem, specifically
+CommunityScripts and CommunityScrapers, adapted to this implementation, and
+**only after everything else is done**. Added to the plan as Phase 11 with
+seven tickets. Nothing implemented.
+
+The measurements that shaped it, all taken from the GitHub API rather than
+assumed — re-take them before trusting any of these numbers, since upstream
+pushes daily:
+
+| | |
+|---|---|
+| `CommunityScrapers` (`master`) | 982 files under `scrapers/`: **729 YAML**, 155 Python, 9 `py_common` |
+| `CommunityScripts` (`main`) | 462 plugin files across **79 plugin directories**; 12 theme directories, 54 CSS |
+| Both | AGPL-3.0, actively pushed |
+| `stash` itself | Go, 13k stars — the reference implementation, not a target |
+| Archived | `StashServer`, `StashFrontend`, `StashOSX` (all pre-2019) |
+
+Three decisions, and the reasoning matters more than the decisions:
+
+1. **The YAML scrapers get an interpreter, not a translator.** 729 declarative
+   definitions, each a program in a small language (entry-point table, XPath and
+   JSON selectors, a `postProcess` chain of `replace`/`parseDate`/`truncate`/
+   `map`). A per-file converter has to track every upstream construct forever.
+2. **The Python scrapers and plugins get a compatibility layer, not a
+   rewrite.** `py_common` is a real library; reimplementing 155 working programs
+   in Rust is a different project with a worse success rate. A scraper needing
+   a capability Commons lacks is reported as incompatible *at load time*, not
+   halfway through a scrape.
+3. **Nothing is vendored — ever.** Fetched at install time, pinned by commit.
+   AGPL-3.0 in-tree would make the whole workspace AGPL, and a vendored copy is
+   stale the moment upstream pushes. This is now §0.1 rule 6 of the plan, and
+   the compatibility report is generated from *execution* so that "works" means
+   something actually ran.
+
+The phase's one hard dependency is `commons-api`, which does not exist yet, so
+T-P11-007 is genuinely last even within the phase.
+
 ## Next
 
 T-P2-006 — storage accounting (§6.6, §5.2): real on-disk size per file, a

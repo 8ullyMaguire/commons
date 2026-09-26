@@ -1,7 +1,8 @@
 # Commons — Implementation Plan
 
-**Status:** ready to execute. No code written yet.
-**Created:** 2026-09-26
+**Status:** in progress. Phase 0 and Phase 1 complete; Phase 2 at 5 of 8.
+**Created:** 2026-09-26 · **Phase 11 added** 2026-09-26 (community ecosystem,
+at the owner's request; deliberately last)
 **Spec:** `~/secondbrain/10-Projects/2026-09-26T110000+0200-commons-platform-spec.md` (v1.3, 2,636 lines)
 **Target:** one Rust binary serving three modes, a SvelteKit UI, a Tauri shell, and a WASM plugin host.
 
@@ -47,6 +48,15 @@ These are the mistakes that are expensive rather than annoying. Read them once.
 5. **Content hashing is core; protocol-specific hashes are not.** xxh128 and
    BLAKE3 are in core because incremental scan and dedup depend on them. ed2k
    MD4 and BitTorrent infohash belong to the plugin. See T-P10-002.
+6. **No upstream code is vendored, ever.** Phase 11 adapts the
+   `stashapp/CommunityScripts` and `CommunityScrapers` ecosystems, and it does
+   so by *fetching* artifacts pinned by commit, never by copying them into the
+   tree. Two reasons, and the second is the one that bites: AGPL-3.0 content
+   in-tree would make this workspace AGPL, and a vendored copy is stale the
+   moment upstream pushes — so the divergence is invisible until someone
+   notices a bug report about a scraper that was fixed eight months ago. The
+   compatibility report is generated from execution for the same reason: a
+   claim of "works" that was not run is worse than no claim.
 
 ### 0.2 Definition of done, per ticket
 
@@ -1894,6 +1904,195 @@ recommendation — that is the point of writing it down.
 
 ---
 
+---
+
+## Phase 11 — The community ecosystem (stashapp/CommunityScripts, CommunityScrapers)
+
+**Added 2026-09-26 at the owner's request.** This phase is deliberately last: it
+is the only phase whose value is entirely borrowed, and every ticket before it
+is about the thing this ecosystem plugs into. Nothing here is implemented until
+Phase 10 is closed.
+
+### What is actually in those repositories
+
+Measured, not assumed. Both are AGPL-3.0, both are actively pushed
+(CommunityScrapers `master`, CommunityScripts `main`), and the `stashapp` org
+holds 14 public repositories.
+
+| Repo | Stars | Forks | Shape |
+|---|---|---|---|
+| `stash` (Go) | 13022 | 1184 | the reference implementation |
+| `CommunityScrapers` | 841 | 520 | **729 YAML + 155 Python** scraper definitions |
+| `stash-box` (TS) | 371 | 96 | GraphQL metadata graph, MIT |
+| `CommunityScripts` | 284 | 242 | **462 plugin files, 54 themes**, plus userscripts |
+| `Stash-Docs` | 80 | 64 | the manual, CC-BY-SA |
+| `plugins-repo-template`, `scrapers-repo-template` | 13, 1 | — | scaffolding |
+| `StashServer`, `StashFrontend`, `StashOSX`, `metadata-api-discuss` | — | — | **archived**, pre-2019, not targets |
+
+The two that matter here split into **two genuinely different problems**, and
+this plan does not pretend otherwise.
+
+**The scrapers are mostly declarative.** 729 of the 982 files under
+`scrapers/` are YAML: an entry-point table (`performerByURL`, `sceneByFragment`,
+`galleryByURL`, …) plus `xPathScrapers` / `jsonScrapers` blocks that are
+selectors, `concat`, and a `postProcess` list of `replace` / `parseDate` /
+`truncate` / `map` transforms. A YAML scraper is a *program in a tiny
+declarative language*, and adapting it is a matter of writing an interpreter
+for that language. The 155 Python ones are not: they are ordinary programs that
+import `py_common` and, increasingly, `AyloAPI`.
+
+**The plugins are ordinary programs too.** 79 of them are Python invoked as
+`exec: [python, "{pluginDir}/x.py"]` with `interface: raw` and a `tasks:` list;
+the rest are TypeScript userscripts against the stash GraphQL API, or themes
+(54 of them, plain CSS). There is no `plugin.json` in the whole repository —
+the manifest *is* the YAML, and the plugin id is the directory name.
+
+### The three decisions this phase rests on
+
+1. **The YAML scraper language gets an interpreter, not a translator.** 729
+   definitions is too many to translate one at a time, and they are declarative
+   by design. A converter would need to stay in sync with every upstream
+   construct forever; an interpreter is written once and tracks the language.
+   The cost is that our `xPathScrapers` / `jsonScrapers` / `postProcess`
+   semantics must be a *superset-compatible* reimplementation, and every
+   divergence has to be a named, tested, reported difference.
+2. **The Python scrapers and plugins get a compatibility layer, not a
+   rewrite.** `py_common` is a real library with a real API; reimplementing 155
+   programs in Rust is not adaptation, it is a different project with a worse
+   success rate. So `py_common` ships as a shim over Commons' own host API,
+   and a scraper that needs a capability Commons does not have says so at load
+   time rather than failing halfway through a scrape.
+3. **Nothing is vendored.** Every artifact is fetched at install time from
+   upstream, pinned by commit, and cached. No scraper or plugin source is
+   copied into this repository. This is a licensing decision as much as a
+   maintenance one: AGPL-3.0 content in-tree would make the whole workspace
+   AGPL, and a vendored copy also goes stale the moment upstream pushes.
+
+### T-P11-001 — Upstream catalogue and pin
+
+**Files:** `crates/commons-plugin/src/catalogue.rs`, `crates/commons-ecosystem/`
+
+A client for the two repositories' GitHub APIs. Clones nothing and executes
+nothing; it builds a catalogue of `(repo, ref, path, kind, declared
+requirements)` and can pin a set of artifacts to exact commit SHAs.
+
+**Accept:** a test against a recorded fixture of the two trees that asserts the
+catalogue sees 729 YAML scrapers, 155 Python scrapers, 79 plugin directories and
+12 theme directories — and fails loudly if upstream has diverged, because a number that
+changes silently is a number nobody is maintaining. Pinning is by SHA, and a
+test asserts a SHAs-pinned fetch is byte-identical across two runs.
+**Done when:** the count assertions exist.
+
+### T-P11-002 — The declarative scraper interpreter
+
+**Files:** `crates/commons-ecosystem/src/scraper/`
+
+Parses a stash scraper YAML and evaluates it: the entry-point table, the XPath
+and JSON selector languages, and the `postProcess` chain
+(`replace` / `parseDate` / `truncate` / `map` / `dateFormat` / `switch` /
+`filter` / `setDefault`). Selectors evaluate against `lxml`-shaped results via
+`quick-xml` plus an HTML5 tree, not against a browser.
+
+**Accept:** every construct in the 729-file corpus is either implemented or
+recorded in a `unimplemented.yaml` list with the count. A differential test
+runs the interpreter over N real scrapers and asserts it produces a *structurally
+valid* result object; it does **not** assert equality with stash, because
+stash's Go implementation is the reference and a byte-comparison against it is
+a test of their code, not ours. The unimplemented list is asserted to be
+non-growing across a fixture sweep, so it cannot quietly grow.
+**Done when:** the sweep runs and the unimplemented count is in the test output.
+
+### T-P11-003 — `py_common` compatibility layer
+
+**Files:** `crates/commons-ecosystem/src/pybridge/`
+
+A Python runtime embedded in the host process, with `py_common` and its
+`util` / `cache` / `config` / `deps` / `graphql` modules reimplemented on top of
+Commons' `HostApi`. The scraper contract is the standard argv/JSON-stdout
+protocol, so a scraper that cannot be adapted is reported as *incompatible*
+with the missing capability named.
+
+**Accept:** a `py_common.util.dig` / `replace_all` / `replace_at`
+compatibility test against upstream's own test vectors, so the shim's
+semantics are pinned to theirs rather than to ours. A scraper that calls an
+unimplemented `py_common` function fails at *load* with the function named, and
+a test asserts that — the alternative is a scrape that produces half a result.
+**Done when:** the load-time failure test exists.
+
+### T-P11-004 — Scraper registration, selection, and the `AyloAPI` surface
+
+**Files:** `crates/commons-ecosystem/src/registry.rs`, `ui/src/lib/scrapers/`
+
+Registry, URL-to-scraper matching, fragment matching, the search path, and the
+proposal pipeline into Phase 4's `FieldProposal`. `AyloAPI.scrape` is a facade
+over the same six entry points, so a scraper written against it works unchanged.
+
+**Accept:** a test that a URL is offered the right scrapers and *no others* —
+over-matching sends a scrape to a site that will 404, which reads to a user as
+"the scraper is broken". Every result becomes a `FieldProposal` and none of
+them writes a field directly; a test asserts a scrape cannot bypass the proposal
+queue.
+**Done when:** both assertions exist.
+
+### T-P11-005 — Plugin and theme compatibility
+
+**Files:** `crates/commons-ecosystem/src/plugins.rs`, `crates/commons-plugin/src/api.rs`
+
+The 79 plugin directories (95 of the 462 files are Python) and the 12 theme
+directories, 54 files of CSS served into the app's stylesheet layer. The YAML becomes a `Manifest`:
+directory name is the id, `version` is the manifest version, `exec` is a
+`ProcessSpawn` capability that is **refused by default** under
+`HostPolicy::first_party` and must be granted visibly.
+
+**Accept:** a test that installing one of these plugins without granting
+`ProcessSpawn` fails with a reason naming the capability; and a themesheet test
+that a theme's CSS is scoped to the theme and does not leak into the base
+stylesheet.
+**Done when:** the capability refusal names the capability.
+
+### T-P11-006 — The divergent-behaviour report
+
+**Files:** `docs/ECOSYSTEM-COMPATIBILITY.md`
+
+The honest output of this phase: a generated table of what each upstream
+artifact does, whether it works here, and if not, which Commons feature is
+missing. Generated, not hand-written, and regenerated in CI so it cannot rot.
+
+**Accept:** the document is generated from the catalogue and a test fails if
+regenerating it produces a diff that is not committed.
+**Done when:** the regeneration check is in CI.
+
+### T-P11-007 — Userscripts and the stash GraphQL surface
+
+**Files:** `crates/commons-api/src/compat/`
+
+The 4 userscripts and any plugin that talks to stash's GraphQL API, mapped onto
+Commons' own API. Kept last in the phase because it is the only part that
+depends on `commons-api`, which does not exist yet.
+
+**Accept:** a test that a query written against stash's schema either resolves
+on Commons' schema or is reported as unsupported by name. No silent empty
+results: an unsupported field returns an error, because a scraper that reads
+`null` and writes `null` is how a library fills up with blanks.
+**Done when:** the unsupported-field error test exists.
+
+### What this phase explicitly does not do
+
+- **No vendored copies.** See decision 3.
+- **No reimplementation of a scraper in Rust.** Where a Python scraper cannot
+  run, it is reported as incompatible. A hand-port that diverges from upstream
+  is worse than no port, because the next upstream push fixes theirs and not
+  ours.
+- **No "compatible" claims for a scraper that was not run.** The compatibility
+  report is generated from execution, so a scraper marked working has actually
+  produced a result here.
+- **This does not make Commons a stash replacement.** It makes the existing
+  ecosystem usable in Commons. Where stash's semantics and Commons' differ
+  outright — no DHT, no auto-download, a different consent model — the
+  difference is reported, not papered over.
+
+---
+
 ## Appendix A — Ticket index by capability
 
 | Capability | Spec § | Tickets |
@@ -1934,6 +2133,7 @@ recommendation — that is the point of writing it down.
 | C79, C80 consent, migrations | 14.1, 14.2 | T-P4-007, T-P4-008, T-P7-004 |
 | C81–C90 housekeeping | 15 | T-P8-006…008, T-P5-007 |
 | C91 locators (plugin) | 5.18, 5.18.1 | T-P2-007, T-P10-001…006 |
+| Community scrapers, plugins, themes | 11.4, 13.5 (adopting upstream) | T-P11-001…007 |
 
 ## Appendix B — Spec's own non-goals, restated as build-time checks
 
@@ -1951,8 +2151,12 @@ recommendation — that is the point of writing it down.
 
 - **No UI design.** §10's interface work is specified by behaviour and
   acceptance test, not by mockup. Visual design is a separate exercise.
-- **No scraper catalogue.** §11.4 builds the SDK; the actual per-site scrapers
-  are third-party plugins and out of scope here.
+- **No scraper *authoring*.** Phase 11 makes the existing
+  `stashapp/CommunityScrapers` and `CommunityScripts` ecosystems usable here —
+  729 declarative YAML scrapers, 155 Python scrapers, 79 plugin directories and
+  12 theme directories (54 CSS files). Writing *new* per-site scrapers is out of
+  scope: it adapts what the community already maintains and does not fork it.
+  That is also why Phase 11 vendors nothing (§0.1 rule 6).
 - **No model training.** §7 and §8 consume ONNX models; this plan never trains
   one. Training data comes from §15.8's opt-in research export.
 - **No i18n translation.** The pipeline is built (§15.2); the translations

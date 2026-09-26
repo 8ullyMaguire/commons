@@ -206,6 +206,7 @@ enforcing so the intent is not lost.
 | 1 — Content types | done | detection, probing, segments, archives, hashing, the five remaining content types, and the windowed grid |
 | 2 — Library and scale | 5 of 8 | watcher, checkpoints, hashing, move detection, missing volumes, durable job queue, hardware acceleration |
 | 3–6 | planned | identity, federation, UI surfaces, review and automation |
+| 11 — community ecosystem | planned, **last** | adapt the stashapp ecosystem rather than fork it: 729 YAML scrapers, 155 Python scrapers, 79 plugin directories, 12 theme directories. Nothing is vendored — every artifact is fetched at install time, pinned by commit. |
 
 Closed so far, among others: #3530 (one file, many objects — 38 comments
 upstream), #2276 (multi-part scenes), #2511 (virtual compilations), #1258
@@ -214,6 +215,30 @@ parsing), #6339 (multi-axis interactive), #5111 (GIF versus video), #7229
 (non-zero start offsets), #1115 (oshash deprecation), #5683 (a drive that is
 not plugged in), #7239 (an acceleration setting with no reason), #7007
 (unprivileged containers).
+
+### The community ecosystem (Phase 11)
+
+`stashapp/CommunityScrapers` and `stashapp/CommunityScripts` are the largest
+body of reusable work in this space, and Phase 11 makes them usable here rather
+than forking them. It is deliberately the **last** phase: it is the only one
+whose value is entirely borrowed, and every ticket before it is about the thing
+it plugs into.
+
+The two repositories are two different problems. 729 of the 982 scraper
+definitions are **declarative YAML** — an entry-point table plus XPath/JSON
+selectors and a `postProcess` chain — so adapting them means writing an
+interpreter for that little language, not translating 729 programs. The other
+155 are ordinary Python on a `py_common` runtime, and the 79 plugin directories
+are Python or TypeScript. Those get a **compatibility layer**, because
+reimplementing 155 working programs in Rust is a different project with a worse
+success rate, and a hand-port that diverges from upstream is worse than no port
+since the next upstream push fixes theirs and not ours.
+
+**Nothing is vendored.** Every artifact is fetched at install time, pinned by
+commit, and cached. Two reasons, and the second bites: AGPL-3.0 content in-tree
+would make this workspace AGPL, and a vendored copy is stale the moment upstream
+pushes. The compatibility report is generated from *execution*, so "works" means
+something ran here.
 
 The job queue is durable in the sense the ticket means: jobs are submitted,
 claimed, retried and completed through the `job` table, and a row left `running`
