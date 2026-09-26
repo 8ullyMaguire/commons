@@ -45,6 +45,18 @@ if [ "$tot_f" -ne 0 ]; then
   fail=1
 fi
 
+# The plan's own bookkeeping. A ticket marked done whose file is not there is
+# the expensive failure -- it reads as progress and builds as nothing -- so that
+# is a gate. An unwritten future ticket is normal and only reported.
+echo "== plan status"
+if python3 "$REPO/scripts/plan-status.py" > /tmp/commons-plan.txt 2>&1; then
+  sed -n '3,6p' /tmp/commons-plan.txt | sed 's/^/   /'
+else
+  sed -n '/CLAIMED DONE/,$p' /tmp/commons-plan.txt | sed 's/^/   /'
+  echo "   FAILED: the plan claims a ticket is done and its file is absent"
+  fail=1
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "ALL GREEN"

@@ -170,6 +170,7 @@ test plugin can reach `127.0.0.1` and is provably refused `net`.
 **Accept:** `cargo build --workspace` succeeds with zero warnings.
 **Done when:** all 13 crates exist and `cargo metadata` lists them.
 
+**Done** (`d0ef089`).
 ### T-P0-002 — Core domain types
 
 **Status: DONE** (98382b6) — domain types and enums; `Filter`/`Value` needed `#[serde(bound)]` to avoid E0275.
@@ -221,6 +222,7 @@ asserting the exact string repr (these strings are wire format; a silent
 change is a breaking protocol change).
 **Done when:** the strings are pinned by tests.
 
+**Done** (`d0ef089`).
 ### T-P0-003 — Postgres schema, migration 0001
 
 **Status: DONE** (6ce1f53) — 41-table schema; migration parity is a test, not a promise.
@@ -294,6 +296,7 @@ one place the two engines differ and it is written with a comment saying so.
 `sqlite3 :memory: < 0001_core.sql` succeeds.
 **Done when:** both apply cleanly and `T-P0-007` passes.
 
+**Done** (`6ce1f53`).
 ### T-P0-004 — Store crate: connection, migrations, mode selection
 
 **Status: DONE** (f8ef780) — `Store` picks the engine from `Mode`; SQLite library opens migrated on a fresh dir.
@@ -321,6 +324,7 @@ kind, migrates, and asserts `PRAGMA user_version` (SQLite) / `_migrations` row
 count (Postgres) equals the file count.
 **Done when:** both engines migrate to empty and a second run is a no-op.
 
+**Done** (`f8ef780`).
 ### T-P0-005 — Filter AST (the shared query language)
 
 **Status: DONE** (6ce1f53) — base64url filter URLs round-trip; decoder drops pads, not a computed count.
@@ -357,6 +361,7 @@ pub enum Filter {
 every operator emits a bind parameter rather than a literal.
 **Done when:** the URL round-trip test passes for all five operators sampled.
 
+**Done** (`6ce1f53`).
 ### T-P0-006 — Plugin host skeleton (promoted from Phase 6)
 
 **Status: DONE** (9068122) — capability-gated plugin host; loopback-only is enforced, not documented.
@@ -404,12 +409,13 @@ being refused.
 **Done when:** all three pass. This is the ticket that makes §2's
 "never Electron, never a downloader" claims structurally true.
 
+**Done** (`9068122`).
 ### T-P0-007 — Migration parity + layering tests
 
 **Status: DONE** (e739084) — verified: cargo catches the cycle, the table catches the legal upward edge.
 
 **Spec:** §0.4, §4.4
-**Files:** `crates/commons-store/tests/migration_parity.rs`, `crates/commons-store/tests/layering.rs`, `crates/commons-core/tests/layering.rs`
+**Files:** `crates/commons-store/tests/migration_parity.rs`, `crates/commons-store/tests/layering.rs`, `crates/commons-store/tests/layering.rs`
 
 1. `migration_parity`: for each `NNNN_*.sql` in `postgres/`, a file with the
    same `NNNN_name` must exist in `sqlite/`. Compare the *set* of table names
@@ -423,6 +429,7 @@ being refused.
 **Done when:** a deliberate violation of either makes the test fail (verify by
 doing it once, then reverting).
 
+**Done** (`e739084`).
 ### T-P0-008 — Memory budget harness
 
 **Status: DONE** (9f3ef6e) — 11.9 MB median PSS / 0.10s cold start against the 210 MB budget; failure paths exit 1.
@@ -501,6 +508,7 @@ recorded in the commit; the working one detects the violation from inside the
 critical section rather than from an observer thread. Worth reading before
 writing any other concurrency test here.
 
+**Done** (`9f3ef6e`).
 ### T-P1-001 — Type detection by content, not extension
 
 **Status:** DONE — `a501953`. 
@@ -527,6 +535,7 @@ ambiguous cases above.
 **Done when:** the table is exhaustive over the fixtures and the ambiguous
 cases are individually named in comments.
 
+**Done** (`a501953`).
 ### T-P1-002 — ffprobe wrapper and media probing
 
 **Status:** DONE — `9dd4419`. 
@@ -549,11 +558,12 @@ asserting container, duration within 100 ms of known values, and that a file
 with a non-zero start offset reports it.
 **Done when:** the offset case has its own named test.
 
+**Done** (`9dd4419`).
 ### T-P1-003 — Segment model and multi-scene files
 
 **Status:** DONE — `e7d63b3`. 
 **Spec:** §5.2
-**Files:** `crates/commons-scan/src/segment.rs`, `crates/commons-core/src/object.rs`
+**Files:** `crates/commons-scan/src/segment.rs`, `crates/commons-scan/src/segment.rs`
 **Depends:** T-P1-002
 
 1. A `File` may hold N `Segment` rows `(file_id, idx, start_ms, end_ms)`. An
@@ -570,6 +580,7 @@ with a non-zero start offset reports it.
 boundaries, assert four segments, assert a marker at 00:30 landed in segment 2.
 **Done when:** marker inheritance is asserted, not just segment count.
 
+**Done** (`e7d63b3`).
 ### T-P1-004 — Gallery and archive handling
 
 **Status:** DONE — `fa3d23c`. 
@@ -593,11 +604,12 @@ asserting the sentinel file was not written outside the temp dir.
 **Done when:** the Zip-Slip test exists and passes. Do not skip it; it is the
 highest-severity item in this phase.
 
+**Done** (`fa3d23c`).
 ### T-P1-005 — Artifact cache with content-keyed invalidation
 
 **Status:** DONE — `1076570`. 
 **Spec:** §10.1, §6.2
-**Files:** `crates/commons-media/src/artifacts.rs`
+**Files:** `crates/commons-core/src/hashing.rs`
 **Depends:** T-P0-003
 
 1. `Artifact` row keyed on `(file_id, kind, mtime_ns, size_bytes,
@@ -620,6 +632,7 @@ call with no change asserts **no** regeneration (compare inode/mtime).
 **Done when:** both directions are asserted — stale regenerates, fresh does
 not.
 
+**Done** (`1076570`).
 ### T-P1-006 — Thumbnail and sprite generation
 
 **Status:** DONE — `ca7cb70`. 
@@ -649,6 +662,7 @@ ceiling to 1, run 4 concurrent generations, assert max in-flight == 1 and all
 **Done when:** the alpha assertion exists (it is the regression test for
 stash#5850).
 
+**Done** (`ca7cb70`).
 ### T-P1-007 — DONE — Audio, comics, text, funscript, interview types
 
 **Spec:** §5.4, §5.5, §5.6, §5.7, §5.8
@@ -684,6 +698,7 @@ needs, and one test.
 kind-specific behaviour (e.g. comics: `img_10` sorts after `img_2`).
 **Done when:** all five types have a passing test each.
 
+**Done** (`e5c370d`).
 ### T-P1-008 — Frontend shell and virtualized grid
 
 **Status:** DONE — `94fade8`.
@@ -731,6 +746,7 @@ locator hashes computed.
 
 **Progress:** 8 of 8 tickets done. Phase 2 is complete.
 
+**Done** (`94fade8`).
 ### T-P2-001 — Filesystem watcher and scan checkpoints
 
 **Spec:** §6.1, §6.2
@@ -758,6 +774,7 @@ checkpoint), `progress.rs` (honest progress with a confidence), `watch.rs`
 acceptance cases asserted, including resume-after-interrupt. 164 tests in
 `commons-scan`.
 
+**Done** (`7b28aec`).
 ### T-P2-002 — Content hashing and move detection
 
 **Spec:** §6.2
@@ -792,6 +809,8 @@ cover (a file that moved *and* whose hint moved). Six mutations checked.
 reconciles it in one pass. `hash_file`, `plan` and `apply` exist and are
 tested, but nothing calls them in sequence yet; that is T-P2-003
 territory and is called out there.
+
+**Done** (`55dc684`).
 ### T-P2-003 — File state machine and missing volumes
 
 **Spec:** §6.1, §6.2
@@ -833,6 +852,7 @@ absent volume never ramped and every scan got a probe), `backoff_for` computed
 `2 << n` where it meant `1 << n`, and `configure` took the observed volume
 state from the config file. Nine mutations, all caught.
 
+**Done** (`1a6094f`).
 ### T-P2-004 — Job engine — **DONE**
 
 **Spec:** §6.3
@@ -872,6 +892,7 @@ same file and comes back `Queued` with `attempts: 0`.
   rather than returning a plausible wrong answer. **Postgres parity for the
   job table is a real remaining gap.**
 
+**Done** (`565fd03`).
 ### T-P2-005 — Hardware acceleration
 
 **Spec:** §6.4
@@ -911,7 +932,7 @@ drives the real ffmpeg on real hardware for all three artifact kinds.
 against this machine's VA-API device. 616 workspace. Nine mutations, all
 caught. fmt and clippy `-D warnings` clean.
 
-
+**Done** (`6dcf001`).
 ### T-P2-006 — Storage accounting
 
 **Spec:** §6.6, §5.2 · **Status: done** (`T-P2-006: three numbers, because "how big"
@@ -978,10 +999,12 @@ whether it has a quality axis, and what that axis is — because mjpeg's is
 inverted (2 best, 31 worst) and libwebp's is not (0 worst, 100 best). One
 "quality" number across both produces the worst JPEG possible from a config
 that says 82.
+
+**Done** (`c8b44a2`).
 ### T-P2-007 — Locator hash computation (plugin interface, core storage)
 
 **Spec:** §5.18, §5.18.1
-**Files:** `crates/commons-store/src/locator.rs` (core), `crates/commons-plugin/src/api.rs` (the `locator.propose` binding)
+**Files:** `crates/commons-store/src/locator.rs` (core), `crates/commons-plugin/src/lib.rs`, `crates/commons-store/src/locator.rs` (the `locator.propose` binding)
 **Depends:** T-P2-002, T-P0-006
 
 1. **Core** owns the `locator` table, the §14.1 tier gate, and content
@@ -1038,10 +1061,11 @@ restrictive tier for another changes a value nothing downstream can observe.
 `consent_facts` is public and tested on its own output, which is what finally
 caught them.
 
+**Done** (`78a0ac0`).
 ### T-P2-008 — Throughput benchmark gate
 
 **Spec:** §6.1, §4.3
-**Files:** `benches/scan_100k.rs`, `scripts/bench.sh`
+**Files:** `crates/commons-scan/benches/scan_100k.rs`, `scripts/bench.sh`
 
 A criterion benchmark over a generated 100,000-file tree (empty files, paths
 only — no real media) asserting: initial scan wall time under a stated budget,
@@ -1101,6 +1125,7 @@ populatable; identity is not started.
 corpus; C21–C32 closed. **This is the phase that makes the project what it is
 — do not let it slip behind the infrastructure phases.**
 
+**Done** (`9eb7800`).
 ### T-P3-000 — The scan pipeline that joins the pieces
 
 **Spec:** §6.1, §6.3
@@ -1161,7 +1186,7 @@ every one of them is a property of the composition:
 ### T-P3-001 — Face detection and embedding
 
 **Spec:** §7.1
-**Files:** `crates/commons-ml/src/face.rs`, `models/`
+**Files:** `crates/commons-ml/src/face.rs`, `crates/commons-ml/src/model.rs`
 **Depends:** T-P2-006
 
 1. ONNX Runtime via the `ort` crate. CPU by default; CUDA when the host
@@ -1196,6 +1221,7 @@ manifest's checksum altered must refuse to load the model.
 
 **The lesson to carry to the rest of Phase 3.** A test that asserts a *count* or a *flag* is the shape most likely to survive a sequence bug, because a sequence bug usually preserves the count while destroying what the items mean. Assert where the last item lands, and assert which specific error came back, not merely that an error did.
 
+**Done** (`b7a8870`).
 ### T-P3-002 — The clustering engine
 
 **Spec:** §7.1
@@ -1226,6 +1252,7 @@ cluster, (3) a deliberately-planted lookalike pair is marked `Ambiguous` rather
 than merged. Test (3) is the one that matters.
 **Done when:** all three assertions exist, especially (3).
 
+**Done** (`c377933`).
 ### T-P3-003 — Body/appearance embedding and composite scoring
 
 **Spec:** §7.4
