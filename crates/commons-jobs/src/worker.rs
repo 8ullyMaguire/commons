@@ -81,10 +81,29 @@ impl WorkerPool {
     /// This is the unit both the supervisor and the tests drive, so a test
     /// that drives this directly exercises the same path a worker takes.
     pub fn run_one(&self, now: std::time::SystemTime) -> Option<JobOutcome> {
+        self.run_one_notifying(now, &|_job| {})
+    }
+
+    /// Claim and run one job, calling `on_claimed` once the job is in hand and
+    /// before it runs.
+    ///
+    /// That callback is where the suspend inhibitor is taken. It cannot live
+    /// in the supervisor's own loop, because `run_one` is synchronous: the
+    /// supervisor only regains control *after* the job has finished, so a
+    /// check between jobs is a check that never sees a job in flight. The
+    /// whole point of an inhibitor is to be held for the duration of the work,
+    /// and with a synchronous pool only the code that is about to block can
+    /// arrange that.
+    pub fn run_one_notifying(
+        &self,
+        now: std::time::SystemTime,
+        on_claimed: &(dyn Fn(&Job) + Sync),
+    ) -> Option<JobOutcome> {
         if self.is_stopping() {
             return None;
         }
         let job = self.queue.claim(now)?;
+        on_claimed(&job);
         let outcome = self.dispatch(&job);
         self.queue.complete(&job.id, outcome.clone(), now);
         Some(outcome)

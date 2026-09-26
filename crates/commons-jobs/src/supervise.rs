@@ -173,17 +173,36 @@ impl Supervisor {
     ///
     /// The unit the tests drive, so a test that ticks is testing what the
     /// loop does rather than a reimplementation of it.
+    ///
+    /// The inhibitor is reconciled *after* the job runs, not before. Doing it
+    /// before meant the check described the queue as it was before the last
+    /// job, so the inhibitor was still held after the final job finished and
+    /// only released by one more tick. A supervisor that stopped as soon as
+    /// the queue drained -- which is what `run_blocking` does, and what a
+    /// caller wiring this into an app's shutdown path does -- left a stale
+    /// `systemd-inhibit` lock file behind for the rest of the session, telling
+    /// the system the machine was busy when nothing was.
     pub fn tick(&self, now: SystemTime) -> bool {
         if self.is_stopping() {
+            self.release_inhibitor();
             return false;
         }
-        let stats = self.pool.queue().stats();
-        if stats.queued > 0 || stats.running > 0 {
-            self.acquire_inhibitor();
-        } else {
+        // Held *before* the job runs, via the pool's callback, because
+        // `run_one` is synchronous: control does not come back here until the
+        // job has finished. A check between jobs is a check that never sees a
+        // job in flight, which is the one moment the inhibitor exists for.
+        let ran = self
+            .pool
+            .run_one_notifying(now, &|_job| {
+                self.acquire_inhibitor();
+            })
+            .is_some();
+        // Released *after*: the job above may have been the last one, and a
+        // check made before it ran cannot know that.
+        if self.pool.queue().is_drained() {
             self.release_inhibitor();
         }
-        self.pool.run_one(now).is_some()
+        ran
     }
 
     /// Take the inhibitor if the work justifies it and we do not have it.
