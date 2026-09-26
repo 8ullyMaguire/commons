@@ -6,9 +6,11 @@
 
 pub mod domain;
 pub mod enums;
+mod hashing;
 
 pub use domain::*;
 pub use enums::*;
+pub use hashing::*;
 
 /// Crate version, surfaced by `/healthz` (§12.6) and the updater (§12.4).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
