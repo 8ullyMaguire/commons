@@ -145,6 +145,12 @@ pub fn status_for(e: &ClaimError) -> ApiError {
         ClaimError::FieldNotCorrectable { .. } => {
             (422, "that field is not one a performer may correct")
         }
+        // 422, not 400: the request was well-formed and the server understood
+        // it, and the caller can fix it by supplying the thing the record
+        // requires. A takedown request with no reason is not malformed JSON and
+        // not an authorisation problem -- it is a request missing a field the
+        // record defines.
+        ClaimError::EmptyReason => (422, "a takedown request needs a reason"),
         // A cluster-layer error surfacing through a claim call. 409 is the
         // honest choice: the claim's own rules were satisfied and something
         // about the cluster was not, and the caller cannot fix it by changing

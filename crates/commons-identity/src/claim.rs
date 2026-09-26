@@ -118,6 +118,16 @@ pub enum ClaimError {
     #[error("no such cluster: {0}")]
     NoSuchCluster(String),
 
+    /// A takedown request with no reason.
+    ///
+    /// §14.1 calls the basis part of the record, and a request nobody can
+    /// review is a request nobody can answer — including the person whose
+    /// content it is about. Refused at the boundary rather than stored as an
+    /// empty string, because an empty `reason` column reads as "no reason given"
+    /// to a moderator who has no way to tell it from a rendering bug.
+    #[error("a takedown request needs a reason")]
+    EmptyReason,
+
     #[error("cluster {cluster} already has a claim awaiting review")]
     AlreadyClaimed { cluster: String },
 
@@ -610,6 +620,9 @@ pub async fn open_takedown(
 ) -> Result<TakedownRequest, ClaimError> {
     if cluster_store::get(store, cluster_id).await?.is_none() {
         return Err(ClaimError::NoSuchCluster(cluster_id.to_string()));
+    }
+    if reason.trim().is_empty() {
+        return Err(ClaimError::EmptyReason);
     }
     // A request with no recipient goes to the stewards rather than nowhere.
     // Silently dropping it would be the one outcome worse than a misdirected

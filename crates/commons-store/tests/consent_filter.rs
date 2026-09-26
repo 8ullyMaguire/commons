@@ -370,6 +370,16 @@ fn no_object_query_bypasses_the_consent_clause() {
              field",
             "SELECT 1 FROM object WHERE id = ?",
         ),
+        (
+            "an existence probe: `COUNT(*)`, used to turn 'no such object' into \
+             a `DenyError` rather than a silent no-op. A takedown against \
+             nothing has to fail loudly -- §7.5 calls a silently ignored \
+             takedown the one outcome worse than a misdirected one. Like the \
+             `SELECT 1` above, it discloses presence and no field, and the \
+             allowlist entry is the statement rather than the file so widening \
+             it to a projection fails here.",
+            "SELECT COUNT(*) FROM object WHERE id = ?",
+        ),
     ];
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

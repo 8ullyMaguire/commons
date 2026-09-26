@@ -9,6 +9,7 @@ license.workspace = true
 commons-core = { workspace = true }
 commons-store = { workspace = true }
 commons-consent = { workspace = true }
+sqlx = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

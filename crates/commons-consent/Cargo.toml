@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 commons-core = { workspace = true }
 commons-store = { workspace = true }
+sqlx = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
@@ -18,3 +19,10 @@ camino = { workspace = true }
 chrono = { workspace = true }
 ed25519-dalek = { workspace = true }
 sha2 = { workspace = true }
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true }
+commons-identity = { workspace = true }
+commons-federation = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
