@@ -9,7 +9,12 @@
 pub mod archive;
 pub mod archive_io;
 pub mod probe;
+pub mod thumbs;
 
 pub use archive::{validate_member, Listing, Member, MemberKind, Rejection, Validated};
 pub use archive_io::{list_zip, ExtractionPlan, Format};
 pub use probe::{probe, MediaInfo, ProbeError, Prober};
+pub use thumbs::{
+    memory_budget_from_process, ArtifactError, Deferred, Generated, Generator, Kind, MemoryBudget,
+    Reservation, DEFAULT_SPRITE_FRAMES, DEFAULT_SPRITE_WIDTH, DEFAULT_THUMB_WIDTH,
+};
