@@ -21,8 +21,14 @@ members = [
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.98"
-license = "MIT OR Apache-2.0"
+# AGPL-3.0-only. Section 13 of the license requires that users interacting with
+# the software over a network be offered its source. Commons is meant to be run
+# as a public index, so that condition is the point of the choice rather than an
+# obstacle to it: a public instance must offer its source to the people it serves.
+license = "AGPL-3.0-only"
 repository = "https://github.com/commons-media/commons"
+homepage = "https://github.com/commons-media/commons"
+authors = ["The Commons contributors"]
 
 [workspace.dependencies]
 commons-core = { path = "crates/commons-core" }
@@ -83,3 +89,4 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ] }
 tempfile = "3"
+regex = "1.11"

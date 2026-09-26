@@ -20,5 +20,6 @@ parking_lot = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+regex = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 tempfile = { workspace = true }

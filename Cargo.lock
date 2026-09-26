@@ -799,6 +799,7 @@ dependencies = [
  "chrono",
  "commons-core",
  "parking_lot",
+ "regex",
  "serde",
  "serde_json",
  "sqlx",
