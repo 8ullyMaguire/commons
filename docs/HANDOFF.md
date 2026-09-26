@@ -10,7 +10,7 @@ instruction that cannot be satisfied without someone adding a remote.
 
 ## Where it is
 
-Phase 0 and Phase 1 are complete. Phase 2 is 6 of 8 tickets. Nothing is a stub.
+Phase 0 and Phase 1 are complete. Phase 2 is 7 of 8 tickets. Nothing is a stub.
 
 | | State |
 |---|---|
@@ -86,6 +86,7 @@ node_modules/.bin/playwright test           # browser, against the build
 | T-P2-005 acceleration | `6dcf001` | probe, plan, and the reason string |
 | T-P2-006 storage | `e45924b` | three bases, each with the `du` that computes it |
 | T-P2-006 encoders | `c8b44a2` | format, quality, threads — all previously literals |
+| T-P2-007 locators | `78a0ac0` | the write path that was a stub |
 
 ## Six things to know before writing more code here
 
@@ -281,26 +282,32 @@ T-P11-007 is genuinely last even within the phase.
 
 ## Next
 
-**T-P2-007 — Locator hash computation.** The last two Phase 2 tickets are this
-and T-P2-008. The `locator` table and its tier gate already exist (migrations
-plus store accessors); what is missing is the computation itself — ed2k hashes
-and infohashes — behind a plugin interface, with the gate re-checked at
-`locator.propose` so a locator cannot be added by a route that skipped the
-tier. T-P2-004's work is what makes this the next natural ticket: it already
-proves a plugin can submit work through the same durable queue.
+**T-P2-008 — Throughput benchmark gate.** The last Phase 2 ticket, and the
+only one left. §6.1 states a budget — a 100k-item library scanned and browsable
+within a stated time — and the plan is explicit that this must be an executable
+benchmark rather than a claim. Nothing in the workspace measures it yet.
 
-**T-P2-008 — Throughput benchmark gate.** The §6.1 budget ("100k-item library
-scanned and browsable within a stated time"), as an executable benchmark rather
-than a claim. The instrumentation to measure it exists — T-P2-001's progress
-reporting already computes throughput and ETA — so this is mostly the harness
-and the threshold.
+The parts that gate it are all in place and tested: the walker checkpoints
+(T-P2-001) so a scan can resume rather than restart, the one-read hash
+(T-P2-002) so throughput is bounded by I/O once rather than twice, the
+per-`(JobKind, target)` concurrency limit (T-P2-004) so a 100k-item library
+does not open 100k ffmpeg processes, and the §6.1 visible-window grid with
+keyset pagination (T-P1-008) so browsing is not an OFFSET query. What is
+missing is the measurement, and with it a baseline to catch a regression that
+is invisible until someone's 100k-item library takes a day.
 
-**One thing the plan does not have a ticket for, and should.** There is no
-orchestrator: nothing yet calls walk → hash → reconcile → enqueue in sequence.
-Every piece is implemented and tested; the pipeline that runs them is not. I
-deliberately did not invent a ticket number, because the plan's ticket
-sequence is authoritative and renumbering it is the owner's call. Flagging it
-rather than silently adding one.
+**Not a ticket, and worth an owner decision.** The plan has no orchestrator
+ticket, and every Phase 2 piece is now built and tested but nothing calls them
+in sequence: the walker is not driven by the job queue, the job queue is not
+driven by a scan, and the reconciler is wired to nothing. Phase 3 assumes a
+scan pipeline that exists. This has been flagged at the end of T-P2-006 and
+T-P2-007 and is still open.
 
-Phase 2's exit condition is a 100k-item library scanning and browsing within
-budget, C15–C20 closed, locator hashes computed.
+**Left over from earlier phases, unchanged.** `ui/static/favicon.png` is a
+transparent placeholder; paraglide is an unresolved acceptance-audit item;
+T-P2-004's journal has a verified SQLite path and no Postgres execution path;
+its `WorkerPool` is a serial bounded loop rather than parallel workers; the
+suspend-inhibitor lock is a pathname, so it can remove a file another process
+replaced; the persistent volume-state table is not yet reconciled with
+T-P2-003; and `xxhash-rust 0.8.18` has no streaming XXH3-128, so the one-read
+construction folds per-buffer one-shot values and wants a canonical audit.

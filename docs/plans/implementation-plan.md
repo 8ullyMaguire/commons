@@ -1,6 +1,6 @@
 # Commons — Implementation Plan
 
-**Status:** in progress. Phase 0 and Phase 1 complete; Phase 2 at 6 of 8.
+**Status:** in progress. Phase 0 and Phase 1 complete; Phase 2 at 7 of 8.
 **Created:** 2026-09-26 · **Phase 11 added** 2026-09-26 (community ecosystem,
 at the owner's request; deliberately last)
 **Spec:** `~/secondbrain/10-Projects/2026-09-26T110000+0200-commons-platform-spec.md` (v1.3, 2,636 lines)
@@ -729,7 +729,7 @@ noted in the handoff.
 **Exit:** a 100k-item library scans and browses within budget; C15–C20 closed;
 locator hashes computed.
 
-**Progress:** 6 of 8 tickets done (T-P2-001 … T-P2-006).
+**Progress:** 7 of 8 tickets done (T-P2-001 … T-P2-007).
 
 ### T-P2-001 — Filesystem watcher and scan checkpoints
 
@@ -999,6 +999,44 @@ also that the plugin cannot write to `consent_record` at all.
 **Done when:** the hostile-plugin test exists. This is the most important
 test in the project, because it is the one that makes §14 load-bearing rather
 than aspirational.
+
+**Done.** The ticket's premise was that the write path existed and the test
+would prove §14 load-bearing. Neither held. `propose_locator` was a stub
+returning `Stored { locator_id: "stub" }` with no store, so a plugin with
+`ProposeMetadata` was told its locator was stored and nothing was. The
+sandbox had never been exercised; every test of it passed because it was not
+being tested.
+
+The stub is gone. `propose_locator` is async, calls the real store, and the
+type cannot be constructed without a `&Store`. The gate lives in
+`commons-store`, where a plugin cannot supply the tier it wants to be checked
+against.
+
+Two bugs the tests found, both invisible while the stub was in place: a
+nonexistent object read as "no consent record" (hence `unverified`), so a
+plugin was refused for consent when the object simply was not there; and a
+malformed URI was reported as a refusal, so a typo looked like a policy
+decision.
+
+The ticket's own recommendation — a hostile plugin that tries to propose at
+every tier — needed a correction. Attacking all six tiers is not a stronger
+test, it is a *wrong* one: `third_party_permitted` with a stated basis
+legitimately accepts a magnet. The rule is per `(tier, scheme)` pair, not per
+tier, because §5.18 calls an http source url "plain text, not a P2P protocol".
+The test now attacks the five tiers that must refuse a P2P locator with the
+flag set on every one, so the tier check is the only thing standing, and
+asserts per-scheme.
+
+Verification: 18 tests, 12/12 mutations caught. The mutation work is the
+part worth recording. The first version of the table test was circular — it
+compared `permits` against `propose` and `propose` *calls* `permits`, so
+mutating one mutated both sides and the test passed with the gate broken. It
+is now a hand-written table transcribed from the spec. Three substitutions
+still survived that, structurally: `permits` multiplies tier and flag, and
+five of six tiers forbid a magnet whatever the flag says, so swapping one
+restrictive tier for another changes a value nothing downstream can observe.
+`consent_facts` is public and tested on its own output, which is what finally
+caught them.
 
 ### T-P2-008 — Throughput benchmark gate
 

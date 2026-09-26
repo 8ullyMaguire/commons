@@ -641,13 +641,44 @@ channel. Storing one is a distribution decision, not a metadata decision, so
 locators are gated by the §14.1 consent model and cannot be attached to a
 tier that does not permit redistribution:
 
-| Consent tier | Locator allowed |
+A P2P locator needs **two** independent things, and neither alone is enough:
+a tier that can carry one, *and* a stated basis that includes redistribution
+(`consent_record.redistribution_permitted`, §14.1). The flag is not the same
+question as the tier — a tier says who is asserting, the flag says on what
+terms — so the gate checks both.
+
+| Consent tier | Tier can carry a P2P locator? |
 |---|---|
 | `unverified` | no — rejected |
-| `self_published` | no by default; the creator must attach one explicitly |
+| `self_published` | no |
 | `performer_claimed` | no |
-| `third_party_permitted` | yes, if the stated basis includes redistribution |
+| `third_party_permitted` | yes, but only with `redistribution_permitted` |
 | `quarantined` / `denied` | no, and any existing locator is destroyed with the tombstone |
+
+`self_published` is the case worth stating explicitly, because the intuitive
+answer is the wrong one: an amateur creator's own upload is perfectly visible
+and still must not carry a magnet. Tiers describe *visibility*; a magnet is a
+*distribution* decision, and being visible is not permission to redistribute.
+
+**Plain HTTP(S) source URLs are not subject to the redistribution flag.** They
+are metadata — the same kind of value as a studio URL — and §5.18 classifies
+them as "plain text, not a P2P protocol". They are refused at `quarantined` and
+`denied` like every other locator, because a source url for a contested or
+taken-down item is still a pointer to it, and are recorded at any other tier.
+The rule is therefore per `(tier, scheme)` pair, not per tier.
+
+**Three states that are not consent.** Each is a distinct outcome, because a
+caller that conflates them either retries forever or gives up on something
+that would have worked:
+
+- An object with **no consent record at all** is `unverified` with no stated
+  basis. "No record" is not "no restriction" and it is not "allowed".
+- A tier name the platform does not recognise — a hand-edited row, or one
+  written by a newer version — is treated as `denied`. A row nobody can read
+  must not become a redistribution channel by accident.
+- An object that **does not exist** is reported as such, not as a consent
+  refusal. Refusing a nonexistent object for "consent" reasons is a lie a
+  caller cannot act on.
 
 This is the reason the feature is safe to have at all: an unverified amateur
 item can never become a redistribution pointer, no matter who proposes it. The
@@ -1548,6 +1579,20 @@ consent, when, on what basis), and an audit trail. Tiers:
 | `third_party_permitted` | Licensed/permitted by a studio or the subject under a stated basis. |
 | `quarantined` | Reported or contested. Hidden everywhere, pending review. |
 | `denied` | Takedown accepted. Permanently blocked by hash across all peers. |
+
+The record also carries a boolean, **`redistribution_permitted`**: whether the
+*stated basis* includes redistribution. It is deliberately independent of the
+tier, because the two answer different questions — the tier says *who is
+asserting*, the flag says *on what terms*. `third_party_permitted` with the
+flag set is a licensed item the studio allows to be shared by torrent;
+`third_party_permitted` without it is a licensed item the user may watch and
+keep but may not redistribute, and the platform will not hand it to a
+swarm on the user's behalf.
+
+Only `third_party_permitted` can carry a P2P locator (§5.18), and only with
+this flag set. The two conditions are checked independently and both must
+hold; a hand-edited row that sets the flag on a `denied` object still cannot
+hold a magnet.
 
 Rules, all enforced in the data layer, not the UI:
 
