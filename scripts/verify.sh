@@ -72,6 +72,27 @@ if [ "${COMMONS_MUTATE:-0}" = "1" ]; then
   echo
 fi
 
+# The history scan is a *publishing* gate, not a build gate: it reads every
+# blob ever committed, which is slow and only matters before something leaves
+# the machine. It is a flag for the same reason the mutation pass is.
+if [ "${COMMONS_SCAN_SECRETS:-0}" = "1" ]; then
+  echo "== history secret scan"
+  if python3 "$REPO/scripts/scan-history-secrets.py" | sed 's/^/   /'; then
+    :
+  else
+    echo "   FAILED: a credential-shaped string is in the history"
+    fail=1
+  fi
+  echo "== scanner self-test (can it still fail?)"
+  if python3 "$REPO/scripts/scan-history-secrets-selftest.py" | tail -1 | sed 's/^/   /'; then
+    :
+  else
+    echo "   FAILED: a pattern the scanner claims to check no longer fires"
+    fail=1
+  fi
+  echo
+fi
+
 # The plan's own bookkeeping. A ticket marked done whose file is not there is
 # the expensive failure -- it reads as progress and builds as nothing -- so that
 # is a gate. An unwritten future ticket is normal and only reported.

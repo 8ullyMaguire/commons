@@ -52,28 +52,41 @@ def redact(b):
 
 
 def blob_list():
-    """Every blob ever committed, with a path, via one batch-check call."""
+    """Every blob ever committed, with the path it had.
+
+    `rev-list --objects` prints `<sha> <path>` for a blob and `<sha>` for a
+    commit, so the path is the second field when there is one. The first
+    version piped this into `cat-file --batch-check` to learn the type, which
+    asked git to resolve the *path string* as an object name: every commit came
+    back "missing" and every blob's size landed in the path column, so findings
+    were reported against files called "286" and "3238".
+
+    Two lines of parsing, no second git process, and a path that is a path.
+    """
     out = subprocess.run(
         ["git", "-C", REPO, "rev-list", "--objects", "--all"],
         capture_output=True, text=True, check=True, timeout=590,
     ).stdout
-    pairs = []
+    shas = set()
+    paths = {}
     for line in out.split("\n"):
         if not line.strip():
             continue
         parts = line.split(" ", 1)
-        pairs.append(parts[0])
-    return pairs
+        shas.add(parts[0])
+        if len(parts) > 1:
+            paths[parts[0]] = parts[1]
+    return sorted(shas), paths
 
 
 def main():
-    shas = blob_list()
+    shas, paths = blob_list()
     if not shas:
-        print("FAIL: no blobs found -- the scan looked at nothing")
+        print("FAIL: no objects found -- the scan looked at nothing")
         return 1
 
-    # `git cat-file --batch-check` in one process, fed on stdin, so there is no
-    # shell in the middle to mangle the quoting.
+    # One `batch-check` for the type of every object, fed on stdin: no shell to
+    # mangle quoting, and one process instead of one per object.
     proc = subprocess.run(
         ["git", "-C", REPO, "cat-file", "--batch-check"],
         input="\n".join(shas),
@@ -82,17 +95,25 @@ def main():
     blobs = []
     for line in proc.split("\n"):
         parts = line.split()
-        if len(parts) == 3 and parts[1] == "blob":
-            blobs.append((parts[0], parts[2]))
-        elif len(parts) == 2 and parts[1] == "blob":
-            blobs.append((parts[0], "<no path>"))
+        if len(parts) >= 2 and parts[1] == "blob":
+            blobs.append((parts[0], paths.get(parts[0], "<no path>")))
 
-    hits, scanned, binary = {}, 0, 0
+    # The self-test commits blobs whose whole purpose is to look like
+    # credentials, so scanning them finds its own fixtures. Skipped by path,
+    # and named here rather than in a list at the top, because an exclusion
+    # nobody can see the reason for is one a future reader is afraid to
+    # remove -- or, worse, generalises to the next exclusion.
+    SELF = "scan-history-secrets-selftest.py"
+
+    hits, scanned, binary, skipped = {}, 0, 0, 0
     for sha, path in blobs:
         out = subprocess.run(
             ["git", "-C", REPO, "cat-file", "blob", sha],
             capture_output=True, timeout=120,
         ).stdout
+        if SELF in path:
+            skipped += 1
+            continue
         scanned += 1
         if b"\x00" in out[:4096]:
             binary += 1
@@ -105,7 +126,10 @@ def main():
                     continue
                 hits.setdefault((label, path), set()).add(redact(val))
 
-    print(f"scanned {scanned} blobs ({binary} binary), {len(hits)} finding(s)\n")
+    print(
+        f"scanned {scanned} blobs ({binary} binary), "
+        f"{skipped} skipped as self-test fixtures, {len(hits)} finding(s)\n"
+    )
     if scanned == 0:
         print("FAIL: scanned 0 blobs -- the scan looked at nothing")
         return 1

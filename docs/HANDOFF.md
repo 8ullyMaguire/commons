@@ -31,10 +31,28 @@ nothing. `scripts/verify.sh` runs it, so the claim cannot rot.
 | Rust workspace | 1155 tests, 0 failures |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | `cargo fmt --all --check` | clean |
+| `scripts/scan-history-secrets.py` | 499 blobs, 0 findings |
+| `scripts/scan-history-secrets-selftest.py` | 8/8 planted patterns caught |
 | UI unit tests | 43 pass (`node ./tests/run-tests.mjs`) |
 | UI browser tests | 11 pass (`pnpm run test:e2e`) |
 | UI type check | 0 errors (`svelte-check --threshold error`) |
 | UI build | clean, no compiler warnings |
+
+**Remote.** `origin` is `https://github.com/8ullyMaguire/commons.git`,
+**private**, `main` tracking it, all 19 tags pushed. `gh` is the credential --
+there is no GitHub token in `~/.hermes/.env`, and none needs to be: the
+environment file holds Postgres URLs and admin passwords for other projects,
+and adding a GitHub token to it would be a downgrade.
+
+Before the first push, `scripts/scan-history-secrets.py` read every blob ever
+committed and found nothing. It exists because the repo's own history contains
+a credential-shaped string -- `scripts/verify.sh`'s local `DATABASE_URL` -- and
+"we checked" should be reproducible rather than a memory. Its first version
+scanned 0 blobs and reported "0 findings" because an `awk` inside a shell
+string lost its quoting, and it now exits non-zero when it looks at nothing.
+`scan-history-secrets-selftest.py` plants one blob per pattern in a scratch
+repo and fails unless all eight fire, so a clean result is evidence rather than
+a regex that quietly stopped matching.
 
 **Tags:** `phase-1-scan-core`, `phase-1-content-types`, `phase-1-complete`,
 `phase-2-scan`, `phase-2-jobs`, `phase-2-complete`, `phase-4-candidates`,
