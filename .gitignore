@@ -12,3 +12,7 @@ data/
 .env
 .env.*
 .DS_Store
+
+# The 100k-file benchmark tree, cached between runs. It is 100k empty files:
+# committing it would be absurd and `git status` unusable.
+.bench-tree/

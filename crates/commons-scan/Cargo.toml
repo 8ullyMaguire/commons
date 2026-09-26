@@ -25,3 +25,12 @@ chrono = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
+
+[[bench]]
+name = "scan_100k"
+# `harness = false` because this benchmark is a gate, not a measurement tool:
+# it prints a pass/fail line and exits non-zero, which the default libtest
+# harness cannot express. A criterion benchmark reports numbers and always
+# exits 0, so it cannot be a gate -- see the header for why this one is
+# hand-rolled rather than criterion.
+harness = false

@@ -5,6 +5,7 @@
 //! [`segment`] decides *how many objects that file backs* -- the answer to
 //! stash#3530, #2276, and #2511, which are three requests for one primitive.
 
+pub mod budget;
 pub mod detect;
 pub mod funscript;
 pub mod hashing;
