@@ -49,6 +49,21 @@ MUTATIONS = [
         "  if (true) {",
     ),
     (
+        "setSelected(false) leaves a row in picked, so a range cannot clear it",
+        r"  const picked = new Set\(sel\.picked \?\? \[\]\);\n  for \(const id of target\) \{\n    if \(selected\) picked\.add\(id\);\n    else picked\.delete\(id\);\n  \}",
+        "  const picked = new Set(sel.picked ?? []);\n  for (const id of target) {\n    picked.add(id);\n  }",
+    ),
+    (
+        "setSelected writes to picked under a select-all, so a deselect becomes a pick",
+        r"  if \(sel\.query\) \{\n    const excluded = new Set\(sel\.excluded \?\? \[\]\);",
+        "  if (false) {\n    const excluded = new Set(sel.excluded ?? []);",
+    ),
+    (
+        "setSelected is a no-op, so a range silently does nothing",
+        r"export function setSelected\(sel: Selection, ids: Iterable<ObjectId>, selected: boolean\): Selection \{",
+        "export function setSelected(sel: Selection, ids: Iterable<ObjectId>, selected: boolean): Selection {\n  if (true) return sel;",
+    ),
+    (
         "a select-all survives a change of result",
         r"  if \(sel\.query\) \{\n    return \{ selection: emptySelection\(\), dropped: 0 \};\n  \}",
         "  if (false) {\n    return { selection: emptySelection(), dropped: 0 };\n  }",

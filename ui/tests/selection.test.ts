@@ -27,6 +27,7 @@ import {
   prune,
   selectAll,
   selectedCount,
+  setSelected,
   setPicked,
   toggle,
   type Selection
@@ -223,6 +224,52 @@ describe('the dirty rule', () => {
 
   test('nothing pending, nothing failed, nothing to warn about', () => {
     assert.equal(isUnsaved(0, false), false);
+  });
+});
+
+describe('setSelected: make, do not flip', () => {
+  // The rule `toggle` cannot express, and the reason it is a separate function.
+
+  test('forcing a row on and off, without a flip', () => {
+    let sel = setSelected(emptySelection(), ids('a', 'b'), true);
+    assert.deepEqual([...(sel.picked ?? [])].sort(), ['a', 'b']);
+
+    // `a` is already selected; forcing it off must remove it, and forcing it on
+    // again must not have removed `b` in passing.
+    sel = setSelected(sel, ids('a'), false);
+    assert.deepEqual([...(sel.picked ?? [])], ['b']);
+    sel = setSelected(sel, ids('a'), true);
+    assert.deepEqual([...(sel.picked ?? [])].sort(), ['a', 'b']);
+  });
+
+  test('forcing off a row that was never on changes nothing', () => {
+    const sel = setSelected(setPicked(ids('a')), ids('z'), false);
+    assert.deepEqual([...(sel.picked ?? [])], ['a']);
+  });
+
+  test('a range over already-selected rows keeps them selected', () => {
+    // The exact bug the e2e caught in the DOM: a `reduce` of `toggle` over the
+    // span deselects the rows in it that were already selected, because
+    // `toggle` flips rather than sets.
+    let sel = setPicked(ids('a'));
+    sel = setSelected(sel, ids('a', 'b', 'c', 'd'), true);
+    assert.deepEqual([...(sel.picked ?? [])].sort(), ['a', 'b', 'c', 'd']);
+  });
+
+  test('under a select-all it writes to excluded, in both directions', () => {
+    let sel = setSelected(selectAll({ filter: 'x' }), ids('a'), false);
+    assert.equal(isSelected(sel, 'a', () => true), false);
+
+    sel = setSelected(sel, ids('a'), true);
+    assert.equal(isSelected(sel, 'a', () => true), true);
+    assert.equal(sel.excluded?.size, 0, 'no stale exclusion is left behind');
+    assert.equal(sel.picked, undefined, 'and nothing was smuggled into picked');
+  });
+
+  test('it does not mutate the selection it was given', () => {
+    const sel = setPicked(ids('a'));
+    setSelected(sel, ids('b'), true);
+    assert.deepEqual([...(sel.picked ?? [])], ['a']);
   });
 });
 

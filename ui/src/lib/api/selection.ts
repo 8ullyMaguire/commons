@@ -199,6 +199,36 @@ export function setPicked(ids: Iterable<ObjectId>): Selection {
   return { picked: new Set(ids) };
 }
 
+/**
+ * Force a set of ids to a given state.
+ *
+ * Exists because the alternative is a `reduce` of `toggle` over a span, and
+ * that has a bug that reads like a feature: extending a selection over rows
+ * that are *already* selected deselects them, because `toggle` cannot tell
+ * "make this selected" from "flip this". A range-extend is the one gesture
+ * where the user's intent is unambiguous -- everything in the span takes the
+ * span's first row's state -- and expressing it as toggles inverts half of it.
+ *
+ * One call, one meaning: the ids in `ids` end up selected iff `selected`.
+ */
+export function setSelected(sel: Selection, ids: Iterable<ObjectId>, selected: boolean): Selection {
+  const target = new Set(ids);
+  if (sel.query) {
+    const excluded = new Set(sel.excluded ?? []);
+    for (const id of target) {
+      if (selected) excluded.delete(id);
+      else excluded.add(id);
+    }
+    return { ...sel, excluded };
+  }
+  const picked = new Set(sel.picked ?? []);
+  for (const id of target) {
+    if (selected) picked.add(id);
+    else picked.delete(id);
+  }
+  return { ...sel, picked };
+}
+
 /** Select everything matching `query`, discarding any hand-picked ids. */
 export function selectAll(query: GridQuery): Selection {
   return { query };

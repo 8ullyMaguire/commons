@@ -63,7 +63,7 @@ the moment a page lands under it.
 | # | Surface | Needs | Why here |
 |---|---|---|---|
 | 1 | Selection model | — | every other row is a view over it |
-| 2 | Rich list table | selection | the first surface that shows it |
+| 2 | Rich list table | selection | the first surface that shows it — **DONE** |
 | 3 | Bulk-edit modal | selection + a mutation | the first thing that writes |
 | 4 | Unsaved protection | the modal | its test is the plan's floor |
 | 5 | Command palette + keyboard map | selection | reads the same model |
@@ -115,6 +115,48 @@ reversible, which requires the user to know what it covers.
 | create-from-subpage, create-all-missing | T-P5-009 | same |
 | right-click paste | after the palette | needs the same command registry |
 | Undo | after the first mutation | undo of a mutation that does not exist is undo of nothing |
+
+---
+
+## 5a. What is done so far
+
+**Item 1, the selection spine. DONE.** `ui/src/lib/api/selection.ts` (pure),
+`selection-controller.svelte.ts` (reactive), 92 unit tests,
+`scripts/mutate-selection.py` with 17 mutations, all killed.
+
+**Item 2, the list table. DONE.** `ui/src/lib/components/ListTable.svelte`,
+the `/list` route, `ui/e2e/list.spec.ts` (6 tests). Acceptance 1, 2 and 4 are
+covered; 3 is covered in the unit suite (`prune`) and is the one behavior the
+e2e cannot reach yet, because a change of *result* needs a filter control that
+this route does not have.
+
+### The two bugs the e2e caught that the unit tests could not
+
+Both are the same shape: a value that is right and a DOM that disagrees with
+it, and both were invisible to a test that read the model.
+
+**`checked` lagged after a range.** A shift-click put `preventDefault` in the
+click handler and left `onchange` to run. It does run -- `preventDefault` on a
+click stops the native toggle, not the event -- so the clicked row was toggled
+off before the range was computed, and since that row is usually the anchor,
+the range decided from a selection that had just lost its first row. The
+result: a shift-click that looked like a range and cleared the selection.
+
+Suppressing it with a flag fixed the model and broke the box: a one-way
+`checked` attribute is only re-applied when its expression changes *for that
+input*, so the row the range ended on kept the browser's old value. Model said
+selected, box said unchecked, and every bulk action reads the model. A user
+could not select the row they were clicking.
+
+The fix is to let both act. The range has already decided the row's state, and
+the checkbox's own toggle arrives at the same answer, so they agree by
+construction rather than by a flag keeping them in step.
+
+**`$state` in a plain `.ts` file.** The controller compiled, the build
+succeeded, and the route rendered an empty table forever -- `$state is not
+defined` at runtime, because Svelte's compiler only processes `.svelte.ts`. The
+same class of failure as "the build succeeded and shipped nothing", and the same
+cure: a console-error probe, not a re-read of the source.
 
 ---
 

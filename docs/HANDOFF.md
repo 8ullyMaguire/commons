@@ -28,7 +28,7 @@ nothing. `scripts/verify.sh` runs it, so the claim cannot rot.
 
 | | State |
 |---|---|
-| Rust workspace | 1155 tests, 0 failures; 60 UI unit + 16 Playwright, 0 failures |
+| Rust workspace | 1155 tests, 0 failures; 92 UI unit + 22 Playwright, 0 failures |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | `cargo fmt --all --check` | clean |
 | `scripts/scan-history-secrets.py` | 499 blobs, 0 findings |
@@ -82,6 +82,7 @@ prove it rather than asserting that they would.
 | T-P5-003 | §5.15, §9.4 | namespaces, typed attributes, groups, confidence | 11 |
 | T-P5-004 | §9.7, §5.18 | `Identical`/`ReEncode`/`Similar`/`Distinct`, relations, opt-in auto-merge | 12 |
 | T-P5-005 | §10.2, §9.6 | the lightbox: pan, flick, wheel, zoom, back on a dirty modal | 11 |
+| T-P5-006 (1-2 of 17) | §10.4, §10.6 | selection as a value; the list table that shows it | 17 |
 
 **T-P5-005 is the first UI ticket in this phase, and it is the first one whose
 tests could not all be written against the pure function.** The ticket's own
