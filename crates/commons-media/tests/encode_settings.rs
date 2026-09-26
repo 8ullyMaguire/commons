@@ -19,8 +19,15 @@ use commons_media::thumbs::{Generator, Kind};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The ffmpeg under test.
+///
+/// Falls back to `PATH` rather than panicking, matching the convention in
+/// `hwaccel_acceptance.rs`. A missing environment variable is a missing
+/// prerequisite, and a prerequisite should be reported by the test that needs
+/// it — not by `expect` in a helper, which turns "this host has no ffmpeg"
+/// into nine unrelated panics.
 fn ffmpeg() -> String {
-    std::env::var("COMMONS_FFMPEG").expect("COMMONS_FFMPEG must point at a real ffmpeg")
+    std::env::var("COMMONS_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_string())
 }
 
 fn info(duration_ms: u64) -> MediaInfo {
@@ -33,6 +40,9 @@ fn info(duration_ms: u64) -> MediaInfo {
 /// A real H.264 video, generated rather than committed, so the decode path is
 /// genuinely exercised.
 fn make_video(dir: &Path, seconds: u32) -> PathBuf {
+    if !ffmpeg_present() {
+        panic!("no ffmpeg available; set COMMONS_FFMPEG");
+    }
     let out = dir.join("source.mp4");
     let status = Command::new(ffmpeg())
         .args([
@@ -54,6 +64,15 @@ fn make_video(dir: &Path, seconds: u32) -> PathBuf {
         .expect("ffmpeg runs");
     assert!(status.success(), "could not build a test video");
     out
+}
+
+/// Is there an ffmpeg to test against at all?
+fn ffmpeg_present() -> bool {
+    Command::new(ffmpeg())
+        .arg("-version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// The encoder ffmpeg reports for a file, e.g. `webp` or `mjpeg`.

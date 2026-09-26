@@ -950,6 +950,34 @@ invocation that computes *that* basis, exactly.
 deliberate: a tolerance hides exactly the failure that matters, which is
 having picked the wrong field.
 
+### T-P2-006b — Encoder and thread configuration
+
+**Spec:** §5.2, §6.4 · **Status: done** (`T-P2-006 (encoders): the two values
+that were literals`)
+**Files:** `crates/commons-media/src/encode.rs`,
+`crates/commons-media/tests/encode_settings.rs`
+
+The other two C20 clauses, which the ticket as written did not mention: the
+ffmpeg encoder and thread count are configurable (stash#894, stash#819). Both
+were literals, or absent.
+
+**Accept:** a configured format is the format of the bytes ffmpeg wrote;
+quality changes the file size; `-threads` appears on the command line *before*
+the input. **Done when:** all three are checked against real ffmpeg.
+
+`-threads` placement is the non-obvious one. ffmpeg accepts it after the input
+and applies it to the output encoder instead of the run, with no diagnostic, so
+the test asserts argument *position* by intercepting ffmpeg with a script that
+records its own argv. An argument-list comparison passes with the flag in the
+wrong place.
+
+**Format is a closed set, not a string.** A user who can type any encoder will
+type one that cannot produce the output format, and the result is a
+mislabelled file. Each variant carries its pixel format, whether it has alpha,
+whether it has a quality axis, and what that axis is — because mjpeg's is
+inverted (2 best, 31 worst) and libwebp's is not (0 worst, 100 best). One
+"quality" number across both produces the worst JPEG possible from a config
+that says 82.
 ### T-P2-007 — Locator hash computation (plugin interface, core storage)
 
 **Spec:** §5.18, §5.18.1

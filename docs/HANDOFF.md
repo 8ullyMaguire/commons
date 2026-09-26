@@ -10,7 +10,7 @@ instruction that cannot be satisfied without someone adding a remote.
 
 ## Where it is
 
-Phase 0 and Phase 1 are complete. Phase 2 is 5 of 8 tickets. Nothing is a stub.
+Phase 0 and Phase 1 are complete. Phase 2 is 6 of 8 tickets. Nothing is a stub.
 
 | | State |
 |---|---|
@@ -34,14 +34,16 @@ and is not a Phase 2 blocker.
 ```sh
 # Rust
 cd ~/code-local/rust/commons
-CARGO_TARGET_DIR=~/.cargo-target/commons cargo test --workspace
+
+# Set this FIRST. The hardware-acceleration and encoder acceptance tests drive
+# the real ffmpeg against this machine's VA-API device. Unset, they fall back
+# to whatever `ffmpeg` is on PATH and the hardware cases have nothing to run
+# against -- 664 either way, but the hardware assertions are vacuous.
+export COMMONS_FFMPEG=~/.hermes/tools/ffmpeg-9.0.1-linux-x64/bin/ffmpeg
+
+CARGO_TARGET_DIR=~/.cargo-target/commons cargo test --workspace   # 664
 CARGO_TARGET_DIR=~/.cargo-target/commons cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
-
-# The hardware-acceleration acceptance tests drive the real ffmpeg against
-# this machine's VA-API device. Without this they fall back to PATH and the
-# hardware cases skip.
-export COMMONS_FFMPEG=~/.hermes/tools/ffmpeg-9.0.1-linux-x64/bin/ffmpeg
 
 # UI — pnpm with the hoisted linker on this host, so the scripts call node
 cd ui
@@ -82,6 +84,8 @@ node_modules/.bin/playwright test           # browser, against the build
 | T-P2-004 persistence | — | through the `job` table; a `running` row returns `queued` |
 | T-P2-004 supervisor | `phase-2-jobs` | inhibitor held *during* a job, released when the last finishes |
 | T-P2-005 acceleration | `6dcf001` | probe, plan, and the reason string |
+| T-P2-006 storage | `e45924b` | three bases, each with the `du` that computes it |
+| T-P2-006 encoders | `c8b44a2` | format, quality, threads — all previously literals |
 
 ## Six things to know before writing more code here
 
@@ -158,6 +162,25 @@ into the plan, so the status and the plan cannot disagree.
 
 A green build can hide a fully broken test suite. Always run
 `cargo test --workspace` before believing a change is done.
+
+### 7. `du` counts an inode once, even under `--apparent-size`
+
+So `du -sb` is apparent size **per inode** — a fourth quantity that matches
+none of the three bases T-P2-006 computes, and therefore cannot be the
+cross-check for any of them. The plan said "equals `du -sb` within 1 %"; that
+criterion is wrong and has been corrected in place. Each basis has its own
+reference invocation, and the test asserts *exact* equality, because a tolerance
+hides the only failure that matters here: having summed the wrong field.
+
+### 8. A mistake that only exists on a filesystem this host lacks passes here forever
+
+`f_frsize` versus `f_bsize` in `statvfs` decides whether reported disk space is
+right or 8× wrong, and on ext4, xfs, tmpfs and btrfs the two are **equal**. So
+swapping them is a no-op here — three attempts at a test passed while the code
+was wrong. The fix was to stop testing the syscall and test the composition
+(`DiskSpace::from_statvfs` takes the raw counts, so a test can supply a
+filesystem where they differ). This recurs; when a test "cannot see" a bug,
+the first question is whether the host can express the case at all.
 
 ## Deliberately not done
 
@@ -258,9 +281,26 @@ T-P11-007 is genuinely last even within the phase.
 
 ## Next
 
-T-P2-006 — storage accounting (§6.6, §5.2): real on-disk size per file, a
-per-library rollup, free/available disk space on the statistics page
-(#7194), and a configurable temp root distinct from `generated/` (#5646).
+**T-P2-007 — Locator hash computation.** The last two Phase 2 tickets are this
+and T-P2-008. The `locator` table and its tier gate already exist (migrations
+plus store accessors); what is missing is the computation itself — ed2k hashes
+and infohashes — behind a plugin interface, with the gate re-checked at
+`locator.propose` so a locator cannot be added by a route that skipped the
+tier. T-P2-004's work is what makes this the next natural ticket: it already
+proves a plugin can submit work through the same durable queue.
+
+**T-P2-008 — Throughput benchmark gate.** The §6.1 budget ("100k-item library
+scanned and browsable within a stated time"), as an executable benchmark rather
+than a claim. The instrumentation to measure it exists — T-P2-001's progress
+reporting already computes throughput and ETA — so this is mostly the harness
+and the threshold.
+
+**One thing the plan does not have a ticket for, and should.** There is no
+orchestrator: nothing yet calls walk → hash → reconcile → enqueue in sequence.
+Every piece is implemented and tested; the pipeline that runs them is not. I
+deliberately did not invent a ticket number, because the plan's ticket
+sequence is authoritative and renumbering it is the owner's call. Flagging it
+rather than silently adding one.
 
 Phase 2's exit condition is a 100k-item library scanning and browsing within
 budget, C15–C20 closed, locator hashes computed.

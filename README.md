@@ -204,7 +204,7 @@ enforcing so the intent is not lost.
 |---|---|---|
 | 0 — Foundations | done | schema, migrations, filter language, plugin host, server, memory harness |
 | 1 — Content types | done | detection, probing, segments, archives, hashing, the five remaining content types, and the windowed grid |
-| 2 — Library and scale | 6 of 8 | watcher, checkpoints, hashing, move detection, missing volumes, durable job queue, hardware acceleration, storage accounting |
+| 2 — Library and scale | 6 of 8 | watcher, checkpoints, hashing, move detection, missing volumes, durable job queue, hardware acceleration, storage accounting and encoder configuration |
 | 3–6 | planned | identity, federation, UI surfaces, review and automation |
 | 11 — community ecosystem | planned, **last** | adapt the stashapp ecosystem rather than fork it: 729 YAML scrapers, 155 Python scrapers, 79 plugin directories, 12 theme directories. Nothing is vendored — every artifact is fetched at install time, pinned by commit. |
 
