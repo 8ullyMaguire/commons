@@ -137,6 +137,8 @@ test plugin can reach `127.0.0.1` and is provably refused `net`.
 
 ### T-P0-001 — Workspace skeleton
 
+**Status: DONE** (98382b6) — workspace skeleton, `commons-core` + `commons-store`, both build.
+
 **Spec:** §3, §0.5
 **Files:** `Cargo.toml`, `rust-toolchain.toml`, `.gitignore`, `crates/commons-core/Cargo.toml`, `crates/commons-core/src/lib.rs`
 
@@ -159,6 +161,8 @@ test plugin can reach `127.0.0.1` and is provably refused `net`.
 **Done when:** all 13 crates exist and `cargo metadata` lists them.
 
 ### T-P0-002 — Core domain types
+
+**Status: DONE** (98382b6) — domain types and enums; `Filter`/`Value` needed `#[serde(bound)]` to avoid E0275.
 
 **Spec:** §5.1, §7, §8.1, §14.1, §15.1
 **Files:** `crates/commons-core/src/lib.rs`, plus `object.rs`, `person.rs`, `proposal.rs`, `consent.rs`, `enums.rs`
@@ -208,6 +212,8 @@ change is a breaking protocol change).
 **Done when:** the strings are pinned by tests.
 
 ### T-P0-003 — Postgres schema, migration 0001
+
+**Status: DONE** (6ce1f53) — 41-table schema; migration parity is a test, not a promise.
 
 **Spec:** §15.1
 **Files:** `crates/commons-store/migrations/postgres/0001_core.sql`, `crates/commons-store/migrations/sqlite/0001_core.sql`
@@ -280,6 +286,8 @@ one place the two engines differ and it is written with a comment saying so.
 
 ### T-P0-004 — Store crate: connection, migrations, mode selection
 
+**Status: DONE** (f8ef780) — `Store` picks the engine from `Mode`; SQLite library opens migrated on a fresh dir.
+
 **Spec:** §3.1, §3.5, §14.2
 **Files:** `crates/commons-store/src/lib.rs`, `pg.rs`, `sqlite.rs`, `migrate.rs`
 
@@ -304,6 +312,8 @@ count (Postgres) equals the file count.
 **Done when:** both engines migrate to empty and a second run is a no-op.
 
 ### T-P0-005 — Filter AST (the shared query language)
+
+**Status: DONE** (6ce1f53) — base64url filter URLs round-trip; decoder drops pads, not a computed count.
 
 **Spec:** §5.16, §9.1
 **Files:** `crates/commons-store/src/filter_ast.rs`
@@ -338,6 +348,8 @@ every operator emits a bind parameter rather than a literal.
 **Done when:** the URL round-trip test passes for all five operators sampled.
 
 ### T-P0-006 — Plugin host skeleton (promoted from Phase 6)
+
+**Status: DONE** (9068122) — capability-gated plugin host; loopback-only is enforced, not documented.
 
 **Spec:** §11.4, §5.18.1
 **Files:** `crates/commons-plugin/src/lib.rs`, `capability.rs`, `host.rs`
@@ -384,6 +396,8 @@ being refused.
 
 ### T-P0-007 — Migration parity + layering tests
 
+**Status: DONE** (e739084) — verified: cargo catches the cycle, the table catches the legal upward edge.
+
 **Spec:** §0.4, §4.4
 **Files:** `crates/commons-store/tests/migration_parity.rs`, `crates/commons-store/tests/layering.rs`, `crates/commons-core/tests/layering.rs`
 
@@ -400,6 +414,8 @@ being refused.
 doing it once, then reverting).
 
 ### T-P0-008 — Memory budget harness
+
+**Status: DONE** (9f3ef6e) — 11.9 MB median PSS / 0.10s cold start against the 210 MB budget; failure paths exit 1.
 
 **Spec:** §4.3
 **Files:** `crates/commons-server/tests/rss_budget.rs`, `scripts/rss-check.sh`
@@ -420,6 +436,8 @@ doing it once, then reverting).
 number next to the budget.
 
 ### T-P0-009 — Server binary, modes, health
+
+**Status: DONE** (9f3ef6e) — `commons-server` serves /healthz, /livez, /metrics-behind-a-flag; 404 names what exists.
 
 **Spec:** §3.1, §3.7, §12.6
 **Files:** `crates/commons-server/src/main.rs`, `config.rs`, `health.rs`
