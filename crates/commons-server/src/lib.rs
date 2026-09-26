@@ -73,15 +73,13 @@ pub fn router(state: Arc<AppState>) -> Router {
         ready: true,
     };
 
-    let r = Router::new()
+    Router::new()
         .route("/healthz", get(health::healthz))
         .route("/livez", get(health::livez))
         .route("/metrics", get(metrics))
         .layer(TraceLayer::new_for_http())
         .with_state(health)
-        .fallback(not_found);
-
-    r
+        .fallback(not_found)
 }
 
 async fn metrics(State(st): State<HealthState>) -> Response {

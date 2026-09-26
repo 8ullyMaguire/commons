@@ -243,7 +243,7 @@ mod tests {
         let c = resolve(&cli(&[]), Some(&file)).unwrap();
         assert_eq!(c.mode, RunMode::Index);
         assert_eq!(c.data_dir, PathBuf::from("/from/file"));
-        assert_eq!(c.metrics, true);
+        assert!(c.metrics);
 
         // CLI overrides each field.
         let c = resolve(
