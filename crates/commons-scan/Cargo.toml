@@ -18,6 +18,7 @@ blake3 = { workspace = true }
 xxhash-rust = { workspace = true }
 rayon = { workspace = true }
 camino = { workspace = true }
+libc = { workspace = true }
 notify = { workspace = true }
 chrono = { workspace = true }
 

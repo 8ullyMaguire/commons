@@ -789,6 +789,7 @@ dependencies = [
  "chrono",
  "commons-core",
  "commons-store",
+ "libc",
  "notify",
  "rayon",
  "serde",

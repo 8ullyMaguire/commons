@@ -11,6 +11,7 @@ pub mod hashing;
 pub mod progress;
 pub mod reconcile;
 pub mod segment;
+pub mod size;
 pub mod state;
 pub mod types;
 pub mod walker;
