@@ -5,6 +5,12 @@
 -- `proposal_id` comparable to another NULL without writing a sentinel into the
 -- data, so "one event per account per kind for a non-proposal event" holds
 -- without every writer having to remember to substitute a string.
+--
+-- The expression goes in a `CREATE UNIQUE INDEX`, never in a table-level
+-- `UNIQUE (...)` constraint. SQLite rejects an expression in the latter and
+-- accepts it in the former; Postgres accepts both. The version that had it as a
+-- table constraint therefore passed every Postgres test and failed the first
+-- SQLite test that touched it.
 CREATE TABLE reputation_event (
   id          TEXT PRIMARY KEY,
   account_id  TEXT NOT NULL,

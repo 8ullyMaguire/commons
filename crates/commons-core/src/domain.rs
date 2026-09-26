@@ -241,6 +241,22 @@ pub struct FieldProposal {
     /// Set for machine proposals; `None` for humans.
     pub confidence: Option<f64>,
     pub created_at: String,
+    /// Why this proposal exists, in a sentence a user can read.
+    ///
+    /// §8.2 requires it: the UI shows "title proposed from filename" beside
+    /// "title proposed by 4 users", and a user can only accept a source wholesale
+    /// or field by field if they can tell the sources apart.
+    ///
+    /// It lives on the struct rather than being synthesised at read time from
+    /// `source`, which is what migration 0007 exists to prevent — a synthesised
+    /// justification is a guess about an extractor's output presented as a fact,
+    /// and it cannot name the container, the model or the peer that the extractor
+    /// actually knew.
+    ///
+    /// Nullable. A human proposal has no signal behind it, and a proposal from a
+    /// peer that sent no explanation has none either; inventing one is worse than
+    /// admitting there is none.
+    pub justification: Option<String>,
 }
 
 impl FieldProposal {
@@ -266,7 +282,43 @@ impl FieldProposal {
             proposer_id: None,
             confidence: None,
             created_at: ts::now(),
+            // `new` cannot supply this: the reason a proposal exists is the
+            // caller's to give, and guessing one from `source` here is exactly
+            // what migration 0007 exists to stop.
+            justification: None,
         }
+    }
+
+    /// Mark this proposal as machine-generated and say why.
+    ///
+    /// `new` already sets `Auto` for an automatic source, so the *kind* needs no
+    /// changing here — what this adds is the label and the reason, and it is the
+    /// only place that sets them together. Doing it in one function is what stops
+    /// a proposal arriving with a justification and no provenance, or a
+    /// provenance and no explanation: `proposer_kind` is the field a UI reads to
+    /// decide whether to draw an avatar, so a candidate from a tagger must never
+    /// be rendered as a person's opinion, and a proposal a user cannot see the
+    /// origin of cannot be accepted or rejected on its merits.
+    pub fn set_provenance(&mut self, source_label: &str, justification: String) {
+        self.proposer_kind = if self.source.is_automatic() {
+            ProposerKind::Auto
+        } else {
+            self.proposer_kind
+        };
+        self.proposer_id = Some(source_label.to_string());
+        self.justification = Some(justification);
+    }
+
+    /// Mark this proposal as a federated peer's (\§13).
+    ///
+    /// A peer is not `Auto`: it is a *different community's* settled value, and
+    /// collapsing that into "automatic" loses the one fact a user needs when
+    /// deciding whether to accept it — that somebody else, not a parser, decided
+    /// it.
+    pub fn set_peer_provenance(&mut self, peer: &str, justification: String) {
+        self.proposer_kind = ProposerKind::Peer;
+        self.proposer_id = Some(peer.to_string());
+        self.justification = Some(justification);
     }
 }
 

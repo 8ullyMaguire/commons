@@ -1697,27 +1697,53 @@ arithmetic either way, and it is the absence of the live row that moves the key
 — so it was removed rather than kept as insurance, and the reasoning is in the
 code where the next person will look.
 
-### T-P4-002 — Candidate generation from local signals
+### T-P4-002 — Candidate generation (§8.2) — DONE
 
-**Spec:** §8.2
-**Files:** `crates/commons-index/src/candidates.rs`
+Nine proposers, one function each, in `crates/commons-index/src/candidates.rs`.
+A candidate is a field, a value, a source, a justification and an optional
+confidence — never a proposal, because §8.1 has not seen it yet.
 
-Implement each proposer as a separate function, each producing `FieldProposal`
-rows with its `ProposalSource` set and a human-readable justification:
+The signals the proposers read had nowhere to live, so **migration 0009**
+(`file_signal`, plus `peer_value` and `file_phash` indexes) adds the table that
+holds them. `propose_and_store` is idempotent: a rescan re-extracts every signal
+and creates no second proposal.
 
-`filename` (with per-studio parsers, stash#2680, #484) · `embedded` (container
-tags, EXIF/IPTC, stash#2719) · `phash_match` (a described item with the same
-phash) · `transcript` (local ASR → keywords, chapter titles) · `caption`
-(sidecar files) · `ml:tagger` · `ml:captioner` · `peer:<id>` · `scraper`.
+Each proposer has a positive and a negative test, as the ticket requires — 34
+integration tests and 19 unit tests. The negative tests are the ones that carry
+the weight, and several of them found real bugs rather than confirming intended
+behaviour:
 
-Each proposal records **why it exists**, so the UI can show "title proposed
-from filename" beside "title proposed by 4 users", and a user can accept a
-source wholesale or field by field.
+* **An exact phash match was excluded.** The query had `AND phash != ?` to skip
+  the file's own object, but that skips *every* exact match — the case §8.2 names
+  first. A byte-identical re-upload of a described item proposed nothing while a
+  near-identical one did. The `object_id ==` check below it already excludes the
+  file's own object correctly, since one object holds several files.
+* **A bare year was not a date.** `is_plausible_date` demanded a full
+  `YYYY-MM-DD`, so `Title (2021) [1080p].mkv` — the most conventional release
+  filename there is — yielded no date. Worse, a test asserted that
+  `Chapter 12 (2021)` holds *no* date, which pinned the bug instead of the intent.
+* **A four-digit number in brackets was a year.** `Title (1080)` proposed the
+  resolution as a date. A range check (1890–2099) is what separates a year from a
+  resolution; shape alone cannot.
+* **Release tags were not recognised as written.** `is_quality_token` stripped
+  only the ends of a word, so `H.264` and `WEB.DL` — both real spellings — were
+  not tags and were proposed as titles.
+* **Two tags from one model could not be stored.** The unique key on `file_signal`
+  omitted the value, so a tagger's second tag for a file collided with its first.
+* **A single letter and a content hash were titles.** `a.mkv` proposed "a" and
+  `a3f9c2e1.mkv` proposed "a3f9c2e1" — a downloader's filename, repeated for every
+  file a downloader has ever named.
+* **Two branches of one ticket disagreed on a ceiling** (`resolve`'s 5.0 and
+  `ReputationConfig::max_weight`'s 4.0), and the SQLite half of migrations 0008
+  used a table-level `UNIQUE` with a `COALESCE` expression, which SQLite rejects.
+  Postgres accepted both, so review passed and the first SQLite test failed.
 
-**Accept:** for each proposer, a test with a fixture that should trigger it and
-a fixture that should not. Assert the `source` and the justification string.
-**Done when:** every proposer has both a positive and a negative test — the
-negative tests are what keep it from firing on everything.
+Verification: `950 tests, 0 failures`; `cargo fmt --check` clean; `cargo clippy
+--workspace --all-targets -- -D warnings` clean. 16 mutations of the nine
+proposers were tried and every one was killed. Two survivors were real gaps and
+are now covered by `phash_match_uses_the_threshold_not_just_the_algorithm`,
+`phash_match_does_not_propose_an_objects_own_title` and
+`a_quality_token_is_not_a_title`.
 
 ### T-P4-003 — Reputation and trust — **DONE**
 

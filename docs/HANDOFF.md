@@ -17,14 +17,14 @@ self-service performer claim, T-P3-006 the performer field model. All Phases 4
 through 8 are not started. Nothing built is a stub.
 
 `python3 scripts/plan-status.py` is the authority on that sentence, not this
-file and not the plan. It counts 32 of 84 tickets closed and 44 genuinely
+file and not the plan. It counts 33 of 84 tickets closed and 43 genuinely
 unstarted, and it exits non-zero if any ticket is *marked* done while the file
 it names is absent -- the failure mode that reads as progress and builds as
 nothing. `scripts/verify.sh` runs it, so the claim cannot rot.
 
 | | State |
 |---|---|
-| Rust workspace | 869 tests, 0 failures |
+| Rust workspace | 902 tests, 0 failures |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | `cargo fmt --all --check` | clean |
 | UI unit tests | 43 pass (`node ./tests/run-tests.mjs`) |
@@ -507,8 +507,31 @@ carry a `confidence`. They are not the same claim. Only the first one's
 confidence is support; the second is a candidate. Without the split, a freshly
 scanned library settles every field on whatever the first parser guessed.
 
-**T-P4-003 (reputation) is next and `resolve` already leans on it.** The
-per-field reputation is written into `vote.weight` at cast time and read
-nowhere else, so a reputation pass that wants to change a weight has to decide
-whether to rewrite history or apply from the next ballot. That decision belongs
-in T-P4-003 and it is not obvious.
+T-P4-003 is now done too, and it resolved that question: **the log is
+authoritative, the columns are its cache, and a reputation change applies from
+the next ballot.** Two things there are worth more than the ticket.
+
+**A feature that computes a number and a feature that reads it can be
+separately complete and still not connected.** `cast_vote` read
+`account.field_reputation`; `reputation.rs` wrote `reputation_event`. Both were
+finished, both were tested, and reputation could not affect a single vote —
+because nothing wrote the column the vote read. The wiring test now asserts the
+cache equals the log to a float epsilon. When a ticket adds a producer and a
+consumer, check they touch.
+
+**A rule with no off switch cannot be tested in isolation.** The three
+coordination-detection rules were each individually deletable with the suite
+green, because every realistic input trips two or three at once. The config now
+carries a switch per rule, and six tests arm one at a time. The off switch is
+production code, not test scaffolding: a component that can only be tested
+through the shape of its input is telling you something about its design.
+
+**A decay must be asserted round by round, not at the end.** The compounding
+forgiveness factor made the third rejection *raise* an account's standing. "Is
+the final weight lower" passes; "is the weight lower than last round" does not.
+
+**T-P4-002 is next**, and the fixture work above is relevant to it: three
+`resolve` tests were silently asserting nothing for a whole ticket, because a
+weight they set on an account was recomputed away by `cast_vote`. Any new test
+that sets up state by writing a cache rather than through the code that owns it
+is worth a second look.

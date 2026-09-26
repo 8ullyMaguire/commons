@@ -69,6 +69,80 @@ pub async fn insert_proposal(store: &Store, p: &FieldProposal) -> Result<Uuid, S
     Ok(p.id)
 }
 
+/// Insert a proposal unless an identical one already exists.
+///
+/// Returns the proposal's id and whether a row was written. Both, because a
+/// caller generating candidates wants the count and a caller addressing a
+/// proposal wants the id — and returning only the id would make the second
+/// caller do a second query to find out which case it was in. `field_proposal_uniq_idx` covers
+/// `(subject_type, subject_id, field, value_json, source, proposer_id)`, so
+/// "identical" means the same value from the same source about the same field —
+/// which is exactly the definition §8.2's candidate generation needs to be
+/// re-runnable. A rescan re-proposes every value from every proposer, and
+/// without this the proposal table grows a duplicate pile on every pass.
+///
+/// The check is `INSERT OR IGNORE` rather than select-then-insert: the unique
+/// index is the authority, and a select-then-insert races with a concurrent
+/// scanner. `OR IGNORE` is also the only version that cannot fail the scan, and
+/// a rescan that can fail is a rescan that gets retried.
+pub async fn insert_proposal_if_absent(
+    store: &Store,
+    p: &FieldProposal,
+) -> Result<(Uuid, bool), StoreError> {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT OR IGNORE INTO field_proposal
+           (id, subject_type, subject_id, field, value_json, source,
+            proposer_kind, proposer_id, confidence, created_at, justification)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(id.to_string())
+    .bind(p.subject_type.as_str())
+    .bind(p.subject_id.to_string())
+    .bind(&p.field)
+    .bind(&p.value_json)
+    .bind(p.source.as_str())
+    .bind(p.proposer_kind.as_str())
+    .bind(&p.proposer_id)
+    .bind(p.confidence)
+    .bind(&p.created_at)
+    .bind(&p.justification)
+    .execute(store.pool())
+    .await
+    .map_err(StoreError::Query)?;
+    // `rows_affected == 0` means the unique index rejected it, so this proposal
+    // is already on file. The *existing* id is what a caller should learn, so
+    // read it back rather than returning an id that was never written.
+    if sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM field_proposal WHERE id = ?")
+        .bind(id.to_string())
+        .fetch_one(store.pool())
+        .await
+        .map_err(StoreError::Query)?
+        == 1
+    {
+        return Ok((id, true));
+    }
+    let existing: String = sqlx::query_scalar(
+        "SELECT id FROM field_proposal
+          WHERE subject_type = ? AND subject_id = ? AND field = ? AND value_json = ?
+            AND source = ? AND COALESCE(proposer_id, '') = COALESCE(?, '')",
+    )
+    .bind(p.subject_type.as_str())
+    .bind(p.subject_id.to_string())
+    .bind(&p.field)
+    .bind(&p.value_json)
+    .bind(p.source.as_str())
+    .bind(&p.proposer_id)
+    .fetch_one(store.pool())
+    .await
+    .map_err(StoreError::Query)?;
+    let parsed = Uuid::parse_str(&existing).map_err(|_| StoreError::Invalid {
+        what: "field_proposal.id",
+        why: format!("not a uuid: {existing}"),
+    })?;
+    Ok((parsed, false))
+}
+
 /// Attach the human-readable reason a proposal exists (§8.2).
 ///
 /// Separate from the insert because a caller frequently builds the proposal
@@ -136,6 +210,7 @@ fn row_to_proposal(r: &sqlx::sqlite::SqliteRow) -> Result<FieldProposal, StoreEr
         proposer_id: col(r, "proposer_id")?,
         confidence: col(r, "confidence")?,
         created_at: col(r, "created_at")?,
+        justification: col(r, "justification")?,
     })
 }
 
