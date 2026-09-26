@@ -20,6 +20,8 @@
 //!     incremental correctness and §9.7's dedup both depend on them. Only the
 //!     protocol-specific hashes belong to a plugin.
 
+use commons_store::locator::{self, LocatorScheme, ProposedLocator};
+use commons_store::Store;
 use std::collections::BTreeSet;
 
 /// What a plugin is allowed to do. A plugin declares these; the host grants
@@ -193,12 +195,18 @@ pub trait HostApi {
 
     /// Propose a locator for an object. Core checks the §14.1 tier table and
     /// persists or refuses; the plugin does not decide.
-    fn propose_locator(
-        &self,
-        object_id: &str,
-        scheme: &str,
-        uri: &str,
-    ) -> Result<LocatorOutcome, HostError>;
+    ///
+    /// `async` because it is a database write, and a synchronous signature over
+    /// a `Store` would have to block on a runtime thread — which is how a
+    /// plugin's locator proposal ends up stalling every other request in the
+    /// process. The previous signature was synchronous and could not be
+    /// anything but a stub.
+    fn propose_locator<'a>(
+        &'a self,
+        object_id: &'a str,
+        scheme: &'a str,
+        uri: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<LocatorOutcome, HostError>> + 'a>>;
 
     /// HTTP to loopback only. A non-loopback host is a `NotLoopback` error, not
     /// a failed request, so a plugin can tell a policy refusal from a timeout.
@@ -292,17 +300,85 @@ pub struct Installed {
 }
 
 impl Installed {
-    /// The API a plugin instance sees.
-    pub fn api(&self) -> PluginHostApi<'_> {
-        PluginHostApi {
-            granted: &self.granted,
-        }
+    /// The API a plugin instance sees, over `store`.
+    ///
+    /// Goes through [`PluginHostApi::new`] rather than building the struct
+    /// literal, so the granted set here is exactly the one the installer
+    /// computed and the store is the same one the rest of the host uses.
+    pub fn api<'a>(&'a self, store: &'a Store) -> PluginHostApi<'a> {
+        PluginHostApi::new(store, &self.granted, &self.manifest.id)
     }
 }
 
+/// Drive a `HostApi` future to completion on the current thread.
+///
+/// `HostApi::propose_locator` returns a boxed future rather than being an
+/// `async fn` in the trait, so a `dyn HostApi` can name it without
+/// `async-trait`. That is the right trade at the sandbox boundary — no
+/// proc-macro, no hidden `'async_trait` bounds — but it leaves synchronous
+/// callers, which today means tests, needing a runtime.
+///
+/// Not a general executor: it takes a future that is already ready to make
+/// progress and drives the store's own pool, which is why the tests that call
+/// this work against a real database. A production caller is inside a
+/// tokio runtime and awaits directly.
+pub fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a current-thread runtime is always constructible")
+        .block_on(fut)
+}
+
 /// The host side of the sandbox, as seen by a plugin.
+///
+/// Holds a `&Store`, not a `&dyn ProposeSink`, so the compile-time statement is
+/// the one that matters: **a `PluginHostApi` cannot exist without a database**,
+/// which means the stub that returned `Stored { locator_id: "stub" }` is not
+/// reachable. That stub was worse than a gap — it reported success for a write
+/// that never happened, and a plugin author debugging "my locators vanish" has
+/// no way to tell that from a database problem.
+///
+/// The store is behind `&self` and the write is `async`, so the signature is
+/// `&self` plus a future rather than `&mut self`; a plugin cannot hold the
+/// handle across calls in a way that would need interior mutability, and two
+/// concurrent proposals are two independent `&Store` borrows.
 pub struct PluginHostApi<'a> {
     granted: &'a BTreeSet<Capability>,
+    store: &'a Store,
+    /// The plugin's own id, recorded as the locator's `source` so a user can
+    /// tell their own upload from something a plugin found.
+    plugin_id: &'a str,
+    /// Injected so `added_at` is testable without a clock. `None` means "read
+    /// the system clock", which is the real host's behaviour.
+    now: Option<&'a str>,
+}
+
+impl<'a> PluginHostApi<'a> {
+    /// A host API over `store`, for the plugin identified by `plugin_id`.
+    ///
+    /// `granted` is the *intersection* the installer already computed — the
+    /// operator's policy and the manifest's request — so this constructor
+    /// cannot be used to hand a plugin more than the user agreed to. A caller
+    /// that builds the set by hand has to do that arithmetic itself, which is
+    /// why [`Installed::api`] exists and why it is the constructor a real host
+    /// should use.
+    pub fn new(store: &'a Store, granted: &'a BTreeSet<Capability>, plugin_id: &'a str) -> Self {
+        PluginHostApi {
+            granted,
+            store,
+            plugin_id,
+            now: None,
+        }
+    }
+
+    /// The same host, with a fixed `added_at`. For tests and for replaying a
+    /// federation claim, where the row should record when the claim was
+    /// accepted rather than when the row happened to be written.
+    pub fn at(mut self, now: &'a str) -> Self {
+        self.now = Some(now);
+        self
+    }
 }
 
 impl HostApi for PluginHostApi<'_> {
@@ -310,20 +386,53 @@ impl HostApi for PluginHostApi<'_> {
         self.granted
     }
 
-    fn propose_locator(
-        &self,
-        _object_id: &str,
-        _scheme: &str,
-        _uri: &str,
-    ) -> Result<LocatorOutcome, HostError> {
-        // A real host calls commons-consent here. What must be enforced *here*
-        // is the capability check: a plugin with no ProposeMetadata cannot
-        // reach the consent code path at all.
-        if !self.granted.contains(&Capability::ProposeMetadata) {
-            return Err(HostError::NoCapability(Capability::ProposeMetadata));
-        }
-        Ok(LocatorOutcome::Stored {
-            locator_id: "stub".into(),
+    fn propose_locator<'a>(
+        &'a self,
+        object_id: &'a str,
+        scheme: &'a str,
+        uri: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<LocatorOutcome, HostError>> + 'a>>
+    {
+        Box::pin(async move {
+            // The capability check comes first, before the scheme is even
+            // parsed: a plugin with no ProposeMetadata must not be able to
+            // reach the consent code path, learn anything about an object's
+            // tier from the shape of the error, or use the proposal as an
+            // oracle for whether an object exists.
+            if !self.granted.contains(&Capability::ProposeMetadata) {
+                return Err(HostError::NoCapability(Capability::ProposeMetadata));
+            }
+
+            // An unknown scheme is a caller mistake, not a consent answer, and
+            // it is reported as such. Passing an arbitrary string through would
+            // put an opaque value in a column a later reader might treat as a
+            // capability it is not.
+            let scheme = LocatorScheme::parse(scheme).ok_or(HostError::Internal(format!(
+                "unknown locator scheme {scheme:?}; the host implements {:?}",
+                LocatorScheme::ALL.map(|s| s.as_str())
+            )))?;
+
+            let now = self.now.unwrap_or("").to_string();
+            let proposed = ProposedLocator::new(scheme, uri, self.plugin_id);
+            match locator::propose(self.store, object_id, &proposed, &now).await {
+                Ok(locator_id) => Ok(LocatorOutcome::Stored { locator_id }),
+                // A consent refusal is data, not an error: the plugin is told
+                // the tier so it can explain itself, and the tier is the
+                // object's *current* tier, which the plugin could not otherwise
+                // read. Returning it here leaks one bit per object — the tier —
+                // to a plugin that has no read access to consent. That is
+                // deliberate: §5.18.1 says the plugin cannot influence the
+                // tier, and a refusal it cannot interpret is a refusal it will
+                // retry. What it cannot do is *widen* anything with the bit.
+                Err(locator::ProposeError::TierForbidsLocator { tier, .. }) => {
+                    Ok(LocatorOutcome::Refused {
+                        scheme: scheme.as_str().to_string(),
+                        object_tier: tier,
+                    })
+                }
+                Err(locator::ProposeError::NoSuchObject(_)) => Err(HostError::NoSuchObject),
+                Err(other) => Err(HostError::Internal(other.to_string())),
+            }
         })
     }
 
@@ -428,8 +537,8 @@ mod tests {
 
     /// The §5.18.1 property, stated as a test: the installed locator plugin can
     /// reach a local client and provably cannot reach anything else.
-    #[test]
-    fn the_locator_plugin_can_reach_loopback_and_nothing_else() {
+    #[tokio::test]
+    async fn the_locator_plugin_can_reach_loopback_and_nothing_else() {
         let mut installer = Installer::new(HostPolicy::first_party());
         let inst = installer
             .install(locator_plugin())
@@ -442,7 +551,13 @@ mod tests {
         );
         assert!(!inst.granted.contains(&Capability::ProcessSpawn));
 
-        let api = inst.api();
+        // The host API needs a store now: `propose_locator` is a real write, so
+        // a `PluginHostApi` that cannot reach a database is a type that cannot
+        // be constructed. The loopback assertions below do not touch it, and
+        // that is fine -- the point of this test is the *network* boundary.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_library(dir.path()).await.unwrap();
+        let api = inst.api(&store);
         assert!(api
             .loopback_get("http://127.0.0.1:8080/api/v2/torrents/add")
             .is_ok());
@@ -560,18 +675,21 @@ mod tests {
         assert!(d.contains("start other programs"), "{d}");
     }
 
-    #[test]
-    fn a_plugin_without_propose_metadata_cannot_propose_a_locator() {
+    #[tokio::test]
+    async fn a_plugin_without_propose_metadata_cannot_propose_a_locator() {
         // The consent check lives in core, not the plugin. A plugin without the
         // capability cannot reach the code path at all.
         let mut m = locator_plugin();
         m.requested.retain(|c| *c == Capability::LoopbackHttp);
         let mut installer = Installer::new(HostPolicy::first_party());
         let inst = installer.install(m).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_library(dir.path()).await.unwrap();
         let err = inst
-            .api()
+            .api(&store)
             .propose_locator("obj-1", "magnet", "magnet:?xt=urn:btih:abc")
-            .unwrap_err();
+            .await
+            .expect_err("no ProposeMetadata, so no proposal");
         assert_eq!(err, HostError::NoCapability(Capability::ProposeMetadata));
     }
 

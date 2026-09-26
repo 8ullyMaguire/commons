@@ -18,6 +18,7 @@
 
 pub mod db;
 pub mod filter_ast;
+pub mod locator;
 
 pub use db::{
     artifact_kinds, clear_jobs, file_path_and_state, file_rows, insert_artifact, insert_file,
@@ -27,4 +28,8 @@ pub use db::{
 pub use filter_ast::{
     base64url_decode, base64url_encode, BuiltinField, CallerId, CmpOp, ConsentTiers, Engine,
     FieldRef, Filter, FilterError, SqlFragment, Value,
+};
+pub use locator::{
+    count as locator_count, destroy_for_object as destroy_locators, propose as propose_locator,
+    ConsentFacts, LocatorScheme, ProposeError, ProposedLocator, StoredLocator,
 };

@@ -17,5 +17,13 @@ tracing = { workspace = true }
 wasmtime = { workspace = true }
 camino = { workspace = true }
 semver = { workspace = true }
+tokio = { workspace = true }
 sha2 = { workspace = true }
 ed25519-dalek = { workspace = true }
+
+[dev-dependencies]
+# `propose_locator` is a real database write, so the tests that exercise the
+# host API need a real store. That is the point: the previous test passed
+# against a stub that wrote nothing.
+tempfile = { workspace = true }
+sqlx = { workspace = true }

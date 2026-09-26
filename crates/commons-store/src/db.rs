@@ -42,6 +42,15 @@ pub enum StoreError {
     Migrate(#[from] sqlx::migrate::MigrateError),
     #[error("query failed: {0}")]
     Query(#[source] sqlx::Error),
+    /// A row came back but a column could not be decoded. Separate from
+    /// `Query` because this one is a schema mismatch -- the query ran, the
+    /// answer does not fit the type -- and the two need different fixes.
+    #[error("could not read column {column}: {source}")]
+    Row {
+        column: &'static str,
+        #[source]
+        source: sqlx::Error,
+    },
     #[error("data directory {0} is not a directory")]
     NotADirectory(PathBuf),
     #[error("the index database needs DATABASE_URL to be set")]
