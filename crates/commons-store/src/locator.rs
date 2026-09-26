@@ -568,15 +568,26 @@ mod tests {
         // §5.18's table, one case per row. Written out rather than derived, so
         // a change to `permits` that contradicts the spec fails here.
         let redistribution = LocatorScheme::Magnet;
+        // §14.1: "Only `third_party_permitted` can carry a P2P locator, and
+        // only with this flag set. The two conditions are checked
+        // independently and both must hold."
+        //
+        // This table previously read `self_published` and `performer_claimed`
+        // as permitting a magnet when the flag was set, and the test failed
+        // against the code. The code was right: those two tiers say *who is
+        // asserting*, and the flag says *on what terms*, and neither of them is
+        // a licence from a third party to redistribute. A performer who
+        // consents to being identified has not thereby licensed the file.
         let cases = [
             (ConsentTier::Unverified, false, false),
+            (ConsentTier::Unverified, true, false),
             (ConsentTier::SelfPublished, false, false),
-            // Self-published *with* an explicit redistribution basis: the spec
-            // says "the creator must attach one explicitly", and that is what
-            // the flag records.
-            (ConsentTier::SelfPublished, true, true),
+            // Self-published with an explicit redistribution basis: still no.
+            // The creator asserting they made it is not a permission to
+            // redistribute it, and §14.1 says so in one sentence.
+            (ConsentTier::SelfPublished, true, false),
             (ConsentTier::PerformerClaimed, false, false),
-            (ConsentTier::PerformerClaimed, true, true),
+            (ConsentTier::PerformerClaimed, true, false),
             (ConsentTier::ThirdPartyPermitted, false, false),
             (ConsentTier::ThirdPartyPermitted, true, true),
             (ConsentTier::Quarantined, true, false),

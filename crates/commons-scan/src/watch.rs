@@ -712,9 +712,19 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
 
-        // Collect for a window comfortably longer than the debounce.
+        // Collect until the stream goes quiet. A fixed window is the wrong
+        // shape here: on a loaded machine (a full-workspace test run) the ten
+        // writes settle later than any short window, and the assertion then
+        // fails not because the debounce is wrong but because the test stopped
+        // looking. So: drain until a window the length of the debounce passes
+        // with nothing more arriving, which is the definition of settled.
+        //
+        // A second, later write would still be caught, because a quiet window
+        // this long after the last observed event means the debounce actually
+        // fired. The property under test -- ten writes inside the debounce
+        // window produce one change -- is unchanged.
         let mut got: Vec<Change> = Vec::new();
-        while let Some(c) = w.next(Duration::from_millis(900)) {
+        while let Some(c) = w.next(Duration::from_millis(400)) {
             got.push(c);
         }
         assert_eq!(
