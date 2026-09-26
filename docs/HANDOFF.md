@@ -17,14 +17,14 @@ self-service performer claim, T-P3-006 the performer field model. All Phases 4
 through 8 are not started. Nothing built is a stub.
 
 `python3 scripts/plan-status.py` is the authority on that sentence, not this
-file and not the plan. It counts 39 of 84 tickets closed and 41 genuinely
+file and not the plan. It counts 40 of 84 tickets closed and 40 genuinely
 unstarted, and it exits non-zero if any ticket is *marked* done while the file
 it names is absent -- the failure mode that reads as progress and builds as
 nothing. `scripts/verify.sh` runs it, so the claim cannot rot.
 
 | | State |
 |---|---|
-| Rust workspace | 1035 tests, 0 failures |
+| Rust workspace | 1048 tests, 0 failures |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | `cargo fmt --all --check` | clean |
 | UI unit tests | 43 pass (`node ./tests/run-tests.mjs`) |
@@ -35,7 +35,7 @@ nothing. `scripts/verify.sh` runs it, so the claim cannot rot.
 **Tags:** `phase-1-scan-core`, `phase-1-content-types`, `phase-1-complete`,
 `phase-2-scan`, `phase-2-jobs`, `phase-2-complete`, `phase-4-candidates`,
 `phase-4-history`, `phase-4-moderation`, `phase-4-points`,
-`phase-4-consent-filter`.
+`phase-4-consent-filter`, `phase-4-takedown`.
 
 `scripts/verify.sh` is the single command that does all of this, and it uses
 `--no-fail-fast`. A target earlier in the list masks later ones: two failures
@@ -61,6 +61,7 @@ about -- not over the code around it.
 | T-P4-005 | §8.5 | authorization is per item type, from the type alone | 5, incl. `may_resolve`→`true` |
 | T-P4-006 | §8.4 | a balance is a sum over a ledger, never a stored number | 8, incl. the withdraw bug |
 | T-P4-007 | §14.1 | one sanctioned read; the guard keys on the statement, not the file | 10, 2 by the behaviour layer |
+| T-P4-008 | §14.1 | the output is a content-hash blocklist, not a tier | 8, incl. removing the signature check |
 
 The `MAX` → `SUM` mutation appearing twice is the point of the whole phase: a
 score kept as a counter and a score recomputed from a set are the same code with
