@@ -463,9 +463,11 @@ migrations on a fresh dir.
 
 **Exit:** all seven types scan, generate and browse (C01–C14).
 
-**Progress:** 6 of 8 tickets done (T-P1-001..006). Remaining: T-P1-007
-(the four remaining content types) and T-P1-008 (frontend shell + virtualized
-grid).
+**Progress:** 7 of 8 tickets done (T-P1-001..007). Remaining: T-P1-008
+(frontend shell + virtualized grid). T-P1-007 shipped all five types: audio
+(`commons-core/src/audio.rs`), comics (`commons-core/src/comic.rs`), the seven
+typed bodies and `PersonRef` (`commons-scan/src/types.rs`), and funscript
+(`commons-scan/src/funscript.rs`).
 
 **Note on T-P1-006's acceptance criterion.** The plan's stated test ("set the
 ceiling to 1, run 4 concurrent generations, assert max in-flight == 1") passes
@@ -622,7 +624,7 @@ ceiling to 1, run 4 concurrent generations, assert max in-flight == 1 and all
 **Done when:** the alpha assertion exists (it is the regression test for
 stash#5850).
 
-### T-P1-007 — Audio, comics, text, funscript, interview types
+### T-P1-007 — DONE — Audio, comics, text, funscript, interview types
 
 **Spec:** §5.4, §5.5, §5.6, §5.7, §5.8
 **Files:** `crates/commons-scan/src/types.rs` per type
