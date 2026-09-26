@@ -698,13 +698,16 @@ mod tests {
         use tempfile::TempDir;
         let dir = TempDir::new().unwrap();
         let policy = VolumePolicy::for_fs_type("ext4");
-        let mut w = VolumeWatcher::start_with(
-            dir.path(),
-            &policy,
-            PollOverride::Auto,
-            Duration::from_millis(300),
-        )
-        .expect("start watcher");
+        // The debounce has to outlast the whole write burst, not just the gap
+        // between two writes. Ten 20ms sleeps plus the write itself is 200ms of
+        // sleeping and more of I/O, so a 300ms debounce fires *during* the burst
+        // on a loaded machine and legitimately emits two changes -- the test's
+        // premise was wrong, not the debounce. 2s against a ~250ms burst leaves
+        // an order of magnitude of headroom, which is what makes this a test of
+        // coalescing rather than of the machine's speed.
+        let debounce = Duration::from_millis(2_000);
+        let mut w = VolumeWatcher::start_with(dir.path(), &policy, PollOverride::Auto, debounce)
+            .expect("start watcher");
 
         let f = dir.path().join("big.mp4");
         for i in 0..10 {
@@ -724,7 +727,7 @@ mod tests {
         // fired. The property under test -- ten writes inside the debounce
         // window produce one change -- is unchanged.
         let mut got: Vec<Change> = Vec::new();
-        while let Some(c) = w.next(Duration::from_millis(400)) {
+        while let Some(c) = w.next(debounce + Duration::from_millis(500)) {
             got.push(c);
         }
         assert_eq!(

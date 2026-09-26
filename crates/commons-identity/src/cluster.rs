@@ -559,7 +559,7 @@ impl Engine {
             // what the cluster actually contains. It goes on the cluster, not
             // on the appearance, because it is the cluster's membership that
             // the centroid means.
-            store::insert_member_vector(&self.store, &cluster_id, face).await?;
+            store::insert_member_vector(&self.store, &cluster_id, &appearance_id, face).await?;
             self.refresh_centroid(&cluster_id).await?;
 
             // The body centroid is seeded the same way -- once, if the cluster
@@ -663,36 +663,45 @@ impl Engine {
     /// away from the people in it. The member set is the definition; the
     /// centroid is derived from it, every time.
     async fn refresh_centroid(&self, cluster_id: &str) -> Result<(), ClusterError> {
-        let vectors = store::member_vectors(&self.store, cluster_id).await?;
-        if vectors.is_empty() {
-            // No vectors stored for this cluster. The face vector lives in the
-            // sidecar, not in SQL, so a library whose sidecar has been deleted
-            // has no vectors to average. The cluster keeps its previous
-            // centroid rather than being set to NULL, because a NULL centroid
-            // makes the cluster invisible to every future assignment.
-            return Ok(());
-        }
-        let width = vectors[0].len();
-        let mut mean = vec![0f32; width];
-        for v in &vectors {
-            if v.len() != width {
-                return Err(ClusterError::MixedWidth {
-                    expected: width,
-                    got: v.len(),
-                });
-            }
-            for (m, x) in mean.iter_mut().zip(v) {
-                *m += *x;
-            }
-        }
-        let n = vectors.len() as f32;
-        for m in mean.iter_mut() {
-            *m /= n;
-        }
-        let norm = Embedder::l2_normalize(&mean).to_vec();
-        store::set_centroid(&self.store, cluster_id, &hex(&norm), &now()).await?;
-        Ok(())
+        refresh_centroid(&self.store, cluster_id).await
     }
+}
+
+/// Recompute a cluster's face centroid as the normalised mean of its members.
+///
+/// Free rather than a method because `ops` needs exactly this and a second copy
+/// would be a second definition of "the centroid of a cluster" -- and the two
+/// would drift, which is the failure §7.2's split is specifically about.
+pub async fn refresh_centroid(store: &Store, cluster_id: &str) -> Result<(), ClusterError> {
+    let vectors = store::member_vectors(store, cluster_id).await?;
+    if vectors.is_empty() {
+        // No vectors stored for this cluster. The face vector lives in the
+        // sidecar, not in SQL, so a library whose sidecar has been deleted
+        // has no vectors to average. The cluster keeps its previous
+        // centroid rather than being set to NULL, because a NULL centroid
+        // makes the cluster invisible to every future assignment.
+        return Ok(());
+    }
+    let width = vectors[0].len();
+    let mut mean = vec![0f32; width];
+    for v in &vectors {
+        if v.len() != width {
+            return Err(ClusterError::MixedWidth {
+                expected: width,
+                got: v.len(),
+            });
+        }
+        for (m, x) in mean.iter_mut().zip(v) {
+            *m += *x;
+        }
+    }
+    let n = vectors.len() as f32;
+    for m in mean.iter_mut() {
+        *m /= n;
+    }
+    let norm = Embedder::l2_normalize(&mean).to_vec();
+    store::set_centroid(store, cluster_id, &hex(&norm), &now()).await?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -701,6 +710,15 @@ impl Engine {
 
 mod consolidate;
 pub use consolidate::{ConsolidateConfig, MergeReport};
+
+// §7.2's operator actions -- merge, split, alias, disambiguate. Free functions
+// rather than `Engine` methods because none of them reads the engine's config:
+// each is a correction of the automatic path, made by a person who can see the
+// mistake the automatic path made. Tying them to an `Engine` would imply they
+// depend on its thresholds, and they must not -- a merge that had to be tuned to
+// the assignment threshold would not be available when the threshold was wrong.
+pub mod ops;
+pub use ops::{Alias, AliasScope, Disambiguation};
 
 // The two decisions §7.1 puts in the user's hands rather than the engine's.
 // They are re-exported at this level because they are the whole user-facing
@@ -857,6 +875,15 @@ pub enum ClusterError {
 
     #[error("every weight that applies to the evidence present is zero")]
     ZeroWeight,
+
+    #[error("a split must name at least one appearance to move")]
+    EmptySplit,
+
+    #[error(
+        "{left} and {right} were asserted not to be the same person; merging them \
+         needs an explicit actor"
+    )]
+    BlockedByAssertion { left: String, right: String },
 
     #[error(transparent)]
     Store(#[from] commons_store::StoreError),

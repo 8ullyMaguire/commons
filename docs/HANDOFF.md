@@ -10,20 +10,20 @@ instruction that cannot be satisfied without someone adding a remote.
 
 ## Where it is
 
-Phases 0, 1 and 2 are complete. Phase 3 has four of eight tickets done
+Phases 0, 1 and 2 are complete. Phase 3 has five of eight tickets done
 (T-P3-000 the scan pipeline, T-P3-001 face detection, T-P3-002 clustering,
-T-P3-003 the §7.4 composite score); T-P3-004 through T-P3-006 and all of
-Phases 4 through 8 are not started. Nothing built is a stub.
+T-P3-003 the §7.4 composite score, T-P3-004 merge/split/alias/disambiguate);
+T-P3-005, T-P3-006 and all of Phases 4 through 8 are not started. Nothing built is a stub.
 
 `python3 scripts/plan-status.py` is the authority on that sentence, not this
-file and not the plan. It counts 28 of 84 tickets closed and 48 genuinely
+file and not the plan. It counts 29 of 84 tickets closed and 47 genuinely
 unstarted, and it exits non-zero if any ticket is *marked* done while the file
 it names is absent -- the failure mode that reads as progress and builds as
 nothing. `scripts/verify.sh` runs it, so the claim cannot rot.
 
 | | State |
 |---|---|
-| Rust workspace | 775 tests, 0 failures |
+| Rust workspace | 797 tests, 0 failures |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | `cargo fmt --all --check` | clean |
 | UI unit tests | 43 pass (`node ./tests/run-tests.mjs`) |
@@ -379,3 +379,33 @@ are the ones where the components meet, and they have to include the
 *degenerate* case for each boundary — a scan that saw nothing, a scan that
 saw half, content that already exists, an object that already exists. Every
 one of the four bugs above was a degenerate case.
+
+## Lessons from T-P3-004
+
+### A test asserting the ERROR cannot see a broken STATE
+
+The T-P3-002 lesson (a test asserting a COUNT cannot see a sequence bug) came
+back as its dual. `split` refused an empty split with the right `EmptySplit`
+error and left an empty cluster behind, because the check doing the work ran
+*after* the insert. The test asserting the error passed the whole time. The
+test that found it counts clusters *after* the refusal:
+
+    assert!(ops::split(&store, &id, &[]).await.is_err());
+    assert_eq!(clusters_after, clusters_before);   // <- this line found it
+
+Same shape twice more in this ticket: `set_body_centroid` was dead code and the
+"written once" test passed *because* of it, and `blocked_pair`'s symmetric SQL
+could never have been reached because both rows were always written -- so no
+test could ever have caught it. When a test passes, ask whether it *could* have
+failed.
+
+The mutation pass is how this surfaces. It is less a way to find bugs than a way
+to find the assertions that cannot fail: of twelve mutations here, five
+survived the first pass, and every survivor was a gap in what the tests asked
+rather than a gap in the code.
+
+### `sqlx::migrate!` embeds at compile time, and cargo missed a new file
+
+A freshly added migration was "no such table" at runtime against a green build.
+`touch crates/commons-store/src/lib.rs` forces the re-embed. If a migration is
+missing from a test database, suspect the build before the SQL.

@@ -356,3 +356,24 @@ pub async fn clusters(store: &Store) -> Vec<(String, Vec<String>)> {
 // ---------------------------------------------------------------------------
 // (1) The ten clusters are recovered.
 // ---------------------------------------------------------------------------
+
+/// An engine with explicit thresholds, over a fresh library.
+///
+/// Shared rather than repeated because the thresholds a test picks are part of
+/// what the test asserts, and three copies of this helper would drift into three
+/// different configs that happened to look alike.
+pub async fn tuned(threshold: f32, face: f32, body: f32) -> (tempfile::TempDir, Store, Engine) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_library(dir.path()).await.unwrap();
+    let engine = Engine::open(
+        &store,
+        EngineConfig {
+            threshold,
+            score_weights: cluster::ScoreWeights { face, body },
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    (dir, store, engine)
+}

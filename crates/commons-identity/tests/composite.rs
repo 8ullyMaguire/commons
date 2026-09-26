@@ -36,7 +36,7 @@
 
 mod common;
 
-use common::{distance, object, Frame, Rng, Store};
+use common::{distance, object, tuned, Frame, Rng, Store};
 use commons_identity::cluster::{
     self, Assignment, ClusterError, Engine, EngineConfig, ScoreComponents, ScoreWeights,
 };
@@ -56,22 +56,6 @@ async fn recorded(store: &Store, object_id: &str) -> (Option<f32>, Option<f32>, 
 }
 
 /// An engine with a threshold and weights chosen by the test.
-async fn tuned(threshold: f32, face: f32, body: f32) -> (tempfile::TempDir, Store, Engine) {
-    let dir = tempfile::tempdir().unwrap();
-    let store = Store::open_library(dir.path()).await.unwrap();
-    let engine = Engine::open(
-        &store,
-        EngineConfig {
-            threshold,
-            score_weights: cluster::ScoreWeights { face, body },
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
-    (dir, store, engine)
-}
-
 /// Is `got` within a hair of `want`?
 ///
 /// The fixtures build vectors by rotating in float32, so a distance the test

@@ -1340,7 +1340,8 @@ guards removed to reach.
 ### T-P3-004 — Merge, split, alias, disambiguation
 
 **Spec:** §7.2
-**Files:** `crates/commons-identity/src/ops.rs`
+**Files:** `crates/commons-identity/src/cluster/ops.rs`,
+`crates/commons-identity/tests/ops.rs`
 
 1. `merge(cluster_a, cluster_b)` re-points every `Appearance`, writes a merge
    record, and **re-derives** any affected field votes from the accepted-edit
@@ -1361,6 +1362,62 @@ alias containing a comma round-trips as one alias; ` performer ` with a
 non-ASCII name auto-tags successfully.
 **Done when:** both parser tests exist — they are cheap and they are real bugs
 that cost users data.
+
+**Done**. Migration 0004 (`cluster_merge`, `cluster_split`, `cluster_assertion`,
+and `performer_alias.era`), and twenty-two acceptance tests.
+
+The ticket lists four operations. The spec (§7.2) also asks for
+**disambiguation**, which the ticket's title names and its body omits, so it is
+in: a `same_as` / `not_same_as` assertion is a table, read by the merge path.
+
+The theme running through all of it: each operation exists because the automatic
+path was wrong, so afterwards **the automatic path has to agree with what was
+asked**. The recomputation is the feature; the re-pointing is bookkeeping.
+
+Decisions the spec does not make, all recorded in the code:
+
+1. **A `not_same_as` assertion blocks a merge unless a human overrules it.**
+   `merge` takes an `actor`; `None` is the automated consolidation and is
+   refused on a blocked pair, `Some(who)` is a person deciding. An assertion a
+   bulk pass can overrule silently is not an assertion.
+2. **A colliding alias is added and flagged, never refused** — §7.2 is explicit
+   that a shared name is ordinary data in an amateur corpus, and a hard error
+   rejects real names. The cost is that an alias can resolve to several
+   performers, so `performers_for_alias` returns them all and never picks one.
+3. **Both assertion directions are stored**, so "is this pair blocked" is one
+   indexed lookup. The symmetric SQL turned out to be unnecessary — a mutation
+   pass showed the second disjunct can never match, because the mirrored row is
+   always present — so it is one direction and the redundancy is in the rows.
+4. **`era` is free text, not a foreign key.** §7.2 names the concept and not the
+   shape of the thing; a nullable TEXT column that can be indexed later is honest
+   about that, and a table invented here would be guessing at a schema the rest
+   of the spec has not settled.
+5. **Names are stored exactly as given.** No trimming, no case folding, no comma
+   splitting. Both upstream parser bugs (#778, stash#5033) were a well-meaning
+   normalisation turning one name into two rows; normalisation belongs at display
+   time, where a person can see it.
+
+Three defects the mutation pass and the tests found, none of which a
+count-shaped assertion would have caught:
+
+- **A split could not divide its members.** `member_vector` proposals were a
+  bare list per cluster with no record of which appearance each came from --
+  enough to compute a centroid, not enough to divide one. So a split recomputed
+  the original's centroid over *all* members, which is the mean the ticket
+  exists to correct. Member vectors now record their appearance in
+  `proposer_id`.
+- **An empty split left an empty cluster behind.** The check read
+  `appearance_ids.len() == owned.len()`, which is false for an empty list
+  against a populated cluster, so the split sailed past it, inserted a cluster,
+  moved nothing, and was caught only afterwards. The error was right and the
+  state was not. The test that finds this counts clusters *after* the refusal;
+  the one asserting the error passed throughout.
+- **`move_appearances` moves the named appearances**, which is what a split
+  wants and the opposite of what consolidation wants. Reading its name and its
+  `keep` parameter together is the only way to tell; the split now says so at
+  the call site.
+
+All twelve mutations caught, including five that survived the first pass.
 
 ### T-P3-005 — Self-service performer claim
 

@@ -602,18 +602,23 @@ pub async fn member_vectors(store: &Store, cluster_id: &str) -> Result<Vec<Vec<f
 pub async fn insert_member_vector(
     store: &Store,
     cluster_id: &str,
+    appearance_id: &str,
     vector: &[f32],
 ) -> Result<(), ClusterError> {
     let json = serde_json::to_string(vector)
         .map_err(|e| ClusterError::NotSerialisable(format!("vector is not serialisable: {e}")))?;
     sqlx::query(
         "INSERT INTO field_proposal \
-         (id, subject_type, subject_id, field, value_json, source, proposer_kind, confidence, created_at) \
-         VALUES (?, 'person_cluster', ?, 'member_vector', ?, 'clustering', 'system', 1.0, ?)",
+         (id, subject_type, subject_id, field, value_json, source, proposer_kind, proposer_id, confidence, created_at) \
+         VALUES (?, 'person_cluster', ?, 'member_vector', ?, 'clustering', 'system', ?, 1.0, ?)",
     )
     .bind(uuid::Uuid::new_v4().to_string())
     .bind(cluster_id)
     .bind(json)
+    // Which appearance this vector came from. Without it a cluster's members are
+    // an undifferentiated list, which computes a centroid but cannot be divided
+    // by one -- see `ops::move_member_vectors`.
+    .bind(appearance_id)
     .bind(super::now())
     .execute(store.pool())
     .await.map_err(StoreError::Query)?;
