@@ -9,8 +9,8 @@ Commons combines the ideas of [stash](https://github.com/stashapp/stash) and
 revocable act. It is a library manager first and a federation participant
 second — the local use case is complete and useful on its own.
 
-> **Status: early development.** Phases 0 and 1 are largely built; see
-> [Progress](#progress) below. Nothing here is a release yet, and the data
+> **Status: early development.** Phase 0 is done and Phase 1's backend is done;
+> see [Progress](#progress) below. Nothing here is a release yet, and the data
 > model will still move.
 
 ## What makes it different
@@ -79,25 +79,24 @@ remember.
 
 ## Architecture
 
-Six crates, layered so that the dependency edges are checked and not merely
-intended:
-
-Six crates are built; eight more exist as empty placeholders for later phases.
+Fourteen crates, layered so that the dependency edges are checked and not
+merely intended. Six carry real code; eight are one-line placeholders for later
+phases, so the workspace and the dependency table exist from the start.
 
 ```
-commons-core     domain types, content hashing, the filter language's AST
+commons-core     domain types, content hashing, audio, comics,
+                 the filter language's AST
      ↑
 commons-store    schema, migrations (SQLite + Postgres, proven equivalent)
 commons-plugin   the capability host that confines plugins
-commons-media    ffprobe wrapper, safe archive listing and extraction
-commons-scan     content detection, segmentation: path on disk → typed objects
+commons-media    ffprobe wrapper, safe archives, thumbnails + sprite sheets
+commons-scan     content detection, segmentation, typed object bodies, funscript
 commons-server   the one binary, in two modes so far
 ```
 
-Declared but not yet written: `commons-api`, `commons-client`,
+Placeholders, with nothing importing them yet: `commons-api`, `commons-client`,
 `commons-consent`, `commons-federation`, `commons-identity`, `commons-index`,
-`commons-jobs`, `commons-ml`. They are one-line placeholders so the workspace
-and the dependency table exist from the start; nothing imports them yet.
+`commons-jobs`, `commons-ml`.
 
 `crates/commons-store/tests/layering.rs` holds the dependency table. It is not
 decoration: Cargo catches a true cycle, but it cannot catch a *legal* edge that
@@ -148,7 +147,7 @@ that is still alive and would recover.
 
 ## Testing
 
-225 tests across the workspace. The ones that matter most are the ones that
+394 tests across the workspace. The ones that matter most are the ones that
 were verified by breaking the code on purpose:
 
 - **Zip-Slip** (`commons-media`, `archive.rs`) — a comic archive is the most
@@ -164,6 +163,24 @@ were verified by breaking the code on purpose:
   `scripts/make-fixtures.sh`, which is checked in so the corpus is
   reproducible rather than a pile of binaries somebody uploaded once.
 - **Layering** — verified by adding a real violation.
+- **Comic page order** (`commons-core`, `comic.rs`) — the `ls -v` rule.
+  Reducing `natural_cmp` to a plain string compare — which is what the first
+  version silently did, because it stopped at the first non-digit in `img_2` —
+  fails 7 tests, including a property test over every number width from 1 to 5.
+- **Replay-gain clipping** (`commons-core`, `audio.rs`) — `would_clip` was
+  written against a target *peak* rather than a *boost*, so every target above
+  the file's own peak was trivially a clip and the check always fired.
+  Inverting it fails 5 tests.
+- **Funscript duration clamping** (`commons-scan`, `funscript.rs`) — a zero
+  duration meant "unknown", not "empty timeline", so a comic or an unprobed
+  video erased the whole script. There is a test that clamping to zero is a
+  no-op.
+- **The thumbnail memory budget** (`commons-media`, `thumbs.rs`) — the plan's
+  own acceptance test for the token bucket did not fail when the ceiling check
+  was deleted, because the critical section was too short to observe
+  contention. It was rewritten to hold reservations across a barrier, and now
+  removing the ceiling check fails it. A test that cannot fail is worse than no
+  test, and this one was found by trying to break it.
 
 Fixture content is deterministic. Re-running the generator produces
 content-equivalent archives; zip entry timestamps are pinned precisely so a
@@ -186,14 +203,21 @@ enforcing so the intent is not lost.
 | Phase | Status | What it delivers |
 |---|---|---|
 | 0 — Foundations | done | schema, migrations, filter language, plugin host, server, memory harness |
-| 1 — Content types | 5 of 8 | detection, probing, segments, archives, hashing |
+| 1 — Content types | 7 of 8 | detection, probing, segments, archives, hashing, and the five remaining content types |
 | 2 — Library and scale | next | watcher, checkpoints, 100k-item performance |
 | 3–6 | planned | identity, federation, UI surfaces, review and automation |
 
 Closed so far, among others: #3530 (one file, many objects — 38 comments
 upstream), #2276 (multi-part scenes), #2511 (virtual compilations), #1258
-(audio), #1659 (comics), #1259 (text and links), #5111 (GIF versus video),
-#7229 (non-zero start offsets), #1115 (oshash deprecation).
+(audio), #1659 (comics), #1259 (text and links), #3031 (funscript discovery and
+parsing), #6339 (multi-axis interactive), #5111 (GIF versus video), #7229
+(non-zero start offsets), #1115 (oshash deprecation).
+
+`PersonRef` is on all seven object kinds, not just scenes. That is what makes
+the owner-added interview type (§5.8) work: a person speaking in an interview
+is an `Appearance` resolved to the same identity cluster as their other
+appearances, so §7.1 clustering does not split them. A test walks all seven
+kinds and fails if a future one is added without people.
 
 ## Licence
 
