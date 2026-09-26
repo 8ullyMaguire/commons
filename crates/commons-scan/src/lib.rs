@@ -1,9 +1,12 @@
-//! Scanning: from a path on disk to a typed object (T-P1-001+).
+//! Scanning: from a path on disk to a typed, segmented object.
 //!
-//! The first thing a scanner does is decide *what a file is*, and the spec is
-//! explicit that this comes from the bytes rather than the name (§5.2). That is
-//! [`detect`].
+//! Two things live here, and the order matters. [`detect`] decides *what a
+//! file is* from its bytes. [`segment`] decides *how many objects that file
+//! backs* -- the answer to stash#3530, #2276, and #2511, which are three
+//! requests for one primitive.
 
 pub mod detect;
+pub mod segment;
 
 pub use detect::{detect, detect_from_bytes, Container, Detection, Evidence};
+pub use segment::{split_file, CompilationRelation, ExistingMarker, Segment, Split, SplitError};
