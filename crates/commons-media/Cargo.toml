@@ -19,3 +19,7 @@ camino = { workspace = true }
 parking_lot = { workspace = true }
 blake3 = { workspace = true }
 rayon = { workspace = true }
+zip = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
