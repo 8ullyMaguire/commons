@@ -6,7 +6,13 @@
 //! requests for one primitive.
 
 pub mod detect;
+pub mod funscript;
 pub mod segment;
+pub mod types;
 
 pub use detect::{detect, detect_from_bytes, Container, Detection, Evidence};
+pub use funscript::{
+    discover, Action, Axis, Funscript, FunscriptError, FunscriptSource, FunscriptWarning,
+};
 pub use segment::{split_file, CompilationRelation, ExistingMarker, Segment, Split, SplitError};
+pub use types::*;
