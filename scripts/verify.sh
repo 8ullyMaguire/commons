@@ -85,7 +85,7 @@ if [ "${COMMONS_MUTATE:-0}" = "1" ]; then
   # from `ui/`; `mutate-dedup.py` and `mutate-bulk.py` target Rust and its
   # `#[cfg(test)]` suites, so they run from the repo root. Same loop, different
   # working directory, named per script rather than guessed from the filename.
-  for mut in bulk-ui gestures selection; do
+  for mut in bulk-ui gestures guard-ui selection; do
     script="$REPO/scripts/mutate-$mut.py"
     [ -f "$script" ] || { echo "   FAILED: $script is missing"; fail=1; continue; }
     echo "== mutation pass ($mut, ui)"
