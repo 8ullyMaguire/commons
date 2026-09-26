@@ -10,9 +10,10 @@
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
+use commons_core::FileState;
 use commons_scan::state::{
-    partition_for_bulk, BulkOutcome, FileState, Lease, LeaseRegistry, Volume, VolumeProbe,
-    VolumeState, VolumeTracker,
+    actionable_by_default, parse_file_state, partition_for_bulk, BulkOutcome, Lease, LeaseRegistry,
+    Volume, VolumeProbe, VolumeState, VolumeTracker,
 };
 
 fn root() -> PathBuf {
@@ -35,7 +36,7 @@ fn a_file_state_round_trips_through_the_database_string() {
         FileState::Unreadable,
         FileState::Remote,
     ] {
-        assert_eq!(FileState::parse(state.as_str()), state);
+        assert_eq!(parse_file_state(state.as_str()), state);
     }
 }
 
@@ -43,19 +44,19 @@ fn a_file_state_round_trips_through_the_database_string() {
 fn a_state_this_version_has_never_heard_of_is_optimistic() {
     // The failure mode here is a downgrade emptying a library. An unknown
     // state must read as `Present`, never as `Missing`.
-    assert_eq!(FileState::parse("something-new"), FileState::Present);
-    assert_eq!(FileState::parse(""), FileState::Present);
-    assert_eq!(FileState::parse("MISSING"), FileState::Present);
+    assert_eq!(parse_file_state("something-new"), FileState::Present);
+    assert_eq!(parse_file_state(""), FileState::Present);
+    assert_eq!(parse_file_state("MISSING"), FileState::Present);
 }
 
 #[test]
 fn only_present_files_are_actionable_by_default() {
-    assert!(FileState::Present.actionable_by_default());
+    assert!(actionable_by_default(FileState::Present));
     // The other three are all reasons not to touch a file without being
     // asked twice.
-    assert!(!FileState::Missing.actionable_by_default());
-    assert!(!FileState::Unreadable.actionable_by_default());
-    assert!(!FileState::Remote.actionable_by_default());
+    assert!(!actionable_by_default(FileState::Missing));
+    assert!(!actionable_by_default(FileState::Unreadable));
+    assert!(!actionable_by_default(FileState::Remote));
 }
 
 // ------------------------------------------------------- the #5683 mechanism

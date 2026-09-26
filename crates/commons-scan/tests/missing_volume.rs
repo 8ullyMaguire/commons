@@ -23,7 +23,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime};
 
-use commons_scan::state::{FileState, Volume, VolumeProbe, VolumeState, VolumeTracker};
+use commons_core::FileState;
+use commons_scan::state::{actionable_by_default, Volume, VolumeProbe, VolumeState, VolumeTracker};
 use commons_scan::walk;
 use tempfile::TempDir;
 
@@ -285,7 +286,7 @@ fn unmounting_a_volume_mid_scan_does_not_cause_a_rescan_storm() {
     );
     // And `Missing` is a state, not a deletion -- that is the property the
     // whole design exists to guarantee.
-    assert!(!FileState::Missing.actionable_by_default());
+    assert!(!actionable_by_default(FileState::Missing));
     assert_ne!(FileState::Missing, FileState::Present);
 
     // ---- the cost. Ten more scan cycles, none of which may touch the disk.

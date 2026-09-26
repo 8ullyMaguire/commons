@@ -87,7 +87,14 @@ impl_display_via_str!(
 ///
 /// `Missing` exists so a detached volume is a state we can record once rather
 /// than a condition we re-stat until the process dies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// `Ord` follows the declaration order, which is the order of how much a bulk
+/// operation should hesitate: `Present` needs no thought, `Unreadable` might
+/// work if retried, `Remote` is not here, `Missing` is not a deletion. A bulk
+/// operation's one-line message lists skipped states in this order, and
+/// derives it from `Ord` rather than sorting strings, so the message cannot
+/// drift from the enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileState {
     Present,

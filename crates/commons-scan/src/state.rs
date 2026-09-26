@@ -35,73 +35,36 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-/// What the scanner believes about one file.
+// The `FileState` enum itself is not here. It already exists in
+// `commons-core`, defined against the same spec section this ticket cites, and
+// a second copy is a second thing to keep in sync -- and a second thing whose
+// `as_str` and `parse` will drift from the first, which is the kind of drift
+// that shows up as "the API says present, the database says missing".
+//
+// What lives here is the *policy*: which state a file is in given what we know
+// about the volume underneath it, which is not derivable from the enum.
+
+use commons_core::FileState;
+
+/// A state the scanner has never heard of, read from the database.
 ///
-/// Serialised in snake_case because these strings are in the database and in
-/// the GraphQL API, and both are read by things that are not this program.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FileState {
-    /// On disk, readable, and indexed.
-    Present,
-    /// The file's volume is not mounted. **Not** a deletion.
-    ///
-    /// Deliberately distinct from a file that is genuinely deleted, and the
-    /// distinction is the whole point: `Missing` rows keep their metadata,
-    /// their thumbnails, and their identity, and come back intact when the
-    /// volume is remounted.
-    Missing,
-    /// On disk, but the scanner could not read it: permissions, an I/O error,
-    /// a file still being written.
-    Unreadable,
-    /// Indexing is deferred to a remote worker. The bytes are not local.
-    ///
-    /// Distinct from `Missing` because the file is *not* gone -- it is
-    /// somewhere else and will arrive. Treating it as missing would mark a
-    /// perfectly healthy remote file as a casualty of an unmounted drive.
-    Remote,
+/// An unknown value is `Present`, not an error and never `Missing`. These
+/// strings are in the database and in the GraphQL API, so a newer build can
+/// write a state an older binary has never seen; the failure mode of guessing
+/// wrong in the pessimistic direction is a user who downgrades and finds their
+/// library empty.
+pub fn parse_file_state(s: &str) -> FileState {
+    FileState::parse(s).unwrap_or(FileState::Present)
 }
 
-impl FileState {
-    /// The string in the database and the API.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            FileState::Present => "present",
-            FileState::Missing => "missing",
-            FileState::Unreadable => "unreadable",
-            FileState::Remote => "remote",
-        }
-    }
-
-    /// Parse a stored state. An unknown value is `Present`, not an error.
-    ///
-    /// A new version writing a state this version has never heard of must not
-    /// make an older binary mark a user's files missing, so the fallback is
-    /// the optimistic one. Getting this backwards would silently empty a
-    /// library the first time a user downgrades.
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "missing" => FileState::Missing,
-            "unreadable" => FileState::Unreadable,
-            "remote" => FileState::Remote,
-            _ => FileState::Present,
-        }
-    }
-
-    /// The state for a file the scanner just read successfully.
-    pub fn for_readable_file() -> Self {
-        FileState::Present
-    }
-
-    /// Does a bulk operation act on this file by default?
-    ///
-    /// #314 and the reason `Missing` is excluded: "delete everything in this
-    /// folder" run against an unmounted drive's worth of files would mark
-    /// the entire library absent. Skipping is the safe default and the user
-    /// gets told it happened.
-    pub fn actionable_by_default(self) -> bool {
-        matches!(self, FileState::Present)
-    }
+/// Does a bulk operation act on this file by default?
+///
+/// #314 and the reason `Missing` is excluded: "delete everything in this
+/// folder" run against an unmounted drive's worth of files would mark the
+/// entire library absent. Skipping is the safe default, and the user is told
+/// it happened.
+pub fn actionable_by_default(state: FileState) -> bool {
+    matches!(state, FileState::Present)
 }
 
 // ------------------------------------------------------------------ volumes
@@ -466,7 +429,7 @@ pub fn partition_for_bulk<'a>(
     let mut skipped_states = BTreeSet::new();
     let mut skipped = 0;
     for (id, state) in items {
-        if state.actionable_by_default() {
+        if actionable_by_default(state) {
             actionable.push(id);
         } else {
             skipped += 1;

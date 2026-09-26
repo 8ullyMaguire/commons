@@ -27,8 +27,8 @@ pub use progress::{Confidence, Progress, Snapshot};
 pub use reconcile::{apply, plan, Move, Reconciled, Reconciliation, ScanInput};
 pub use segment::{split_file, CompilationRelation, ExistingMarker, Segment, Split, SplitError};
 pub use state::{
-    partition_for_bulk, BulkOutcome, FileState, Lease, LeaseGuard, LeaseRegistry, Volume,
-    VolumeProbe, VolumeState, VolumeTracker,
+    actionable_by_default, parse_file_state, partition_for_bulk, BulkOutcome, Lease, LeaseGuard,
+    LeaseRegistry, Volume, VolumeProbe, VolumeState, VolumeTracker,
 };
 pub use types::*;
 pub use walker::{
