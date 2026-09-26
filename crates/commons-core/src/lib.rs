@@ -5,11 +5,13 @@
 //! local. `T-P0-007` enforces that with a layering test.
 
 pub mod audio;
+mod comic;
 pub mod domain;
 mod enums;
 mod hashing;
 
 pub use audio::*;
+pub use comic::*;
 pub use domain::*;
 pub use enums::*;
 pub use hashing::*;
