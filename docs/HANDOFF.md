@@ -17,14 +17,14 @@ self-service performer claim, T-P3-006 the performer field model. All Phases 4
 through 8 are not started. Nothing built is a stub.
 
 `python3 scripts/plan-status.py` is the authority on that sentence, not this
-file and not the plan. It counts 36 of 84 tickets closed and 43 genuinely
+file and not the plan. It counts 37 of 84 tickets closed and 43 genuinely
 unstarted, and it exits non-zero if any ticket is *marked* done while the file
 it names is absent -- the failure mode that reads as progress and builds as
 nothing. `scripts/verify.sh` runs it, so the claim cannot rot.
 
 | | State |
 |---|---|
-| Rust workspace | 902 tests, 0 failures |
+| Rust workspace | 994 tests, 0 failures |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | `cargo fmt --all --check` | clean |
 | UI unit tests | 43 pass (`node ./tests/run-tests.mjs`) |
@@ -33,7 +33,8 @@ nothing. `scripts/verify.sh` runs it, so the claim cannot rot.
 | UI build | clean, no compiler warnings |
 
 **Tags:** `phase-1-scan-core`, `phase-1-content-types`, `phase-1-complete`,
-`phase-2-scan`, `phase-2-jobs`, `phase-2-complete`.
+`phase-2-scan`, `phase-2-jobs`, `phase-2-complete`, `phase-4-candidates`,
+`phase-4-history`, `phase-4-moderation`.
 
 `scripts/verify.sh` is the single command that does all of this, and it uses
 `--no-fail-fast`. A target earlier in the list masks later ones: two failures
@@ -43,6 +44,24 @@ reported green. See section 9 below.
 `crates/commons-api` is still an empty placeholder crate. There is no GraphQL
 server, so the UI is verified against a stubbed network. That is Phase 4+ work
 and is not a Phase 2 blocker.
+
+## Phase 4 so far
+
+Four of the Phase 4 tickets are closed and each has a tag, a plan entry that
+names the file it produced, and a mutation sweep over the rule the ticket is
+about -- not over the code around it.
+
+| Ticket | Spec | What the rule is | What the mutations killed |
+|---|---|---|---|
+| T-P4-001 | §8.1 | a field's value is recomputed from the accepted-vote set | — |
+| T-P4-002 | §8.2 | a proposer is a rule about a *name*, and an exact phash match proposes | 9 proposers, 34 tests |
+| T-P4-003 | §8.3 | a vote weighs what the voter is worth *on that field* | `MAX`→`SUM`, tie-break flips |
+| T-P4-004 | §8.6 | a field's score is recomputed from the accepted-edit set, never a counter | 11 mutations, incl. `MAX`→`SUM` |
+| T-P4-005 | §8.5 | authorization is per item type, from the type alone | 5, incl. `may_resolve`→`true` |
+
+The `MAX` → `SUM` mutation appearing twice is the point of the whole phase: a
+score kept as a counter and a score recomputed from a set are the same code with
+one character changed, and the tests are built so that character is load-bearing.
 
 ## How to verify
 
