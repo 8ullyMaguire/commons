@@ -1,27 +1,18 @@
--- Migration: 0012 points, badges, invites
+-- 0012_points.sql - SQLite mirror (Postgres: 0012_points.sql).
 --
--- Mirrors postgres/0012 with no schema differences. `BIGINT` is a valid SQLite
--- type name and is stored with INTEGER affinity, so the column declarations are
--- copied rather than translated: translating them would make the two files look
--- like they disagreed when they do not.
+-- GENERATED from the Postgres file by scripts/sync-migrations.py. Do not
+-- hand-edit: edit migrations/postgres/0012_points.sql and re-run that script.
+-- T-P0-007's parity test fails if the two files' table sets ever diverge.
 --
--- §8.4's economy. Three tables, and the shape of the first one is the whole
--- design decision in this ticket.
---
--- `points_award` is a LEDGER, not a balance. There is no `points_total` column
--- anywhere, deliberately, for the reason T-P4-004 gives about field scores: a
--- stored number has to be kept in step with the evidence, and the moment two
--- writers touch it they disagree. A ledger answers "what is this account worth"
--- by summing rows, answers "why" by reading them, and undoes itself by marking
--- one withdrawn rather than by decrementing a remembered amount.
---
--- The unique key is (account_id, proposal_id), NOT an autoincrement. That is what
--- makes `reconcile` idempotent: re-running it over an unchanged field cannot pay
--- twice, and a proposal that stops winning and then wins again returns to *the
--- same row* rather than forking an account's history in two.
---
--- `withdrawn_at` rather than a delete, for T-P4-004's reason: a leaderboard that
--- deletes the evidence of a withdrawn award cannot explain a balance that moved.
+-- Portable-SQL rules in force (plan section 0.4):
+--   * ids are TEXT
+--   * timestamps are ISO-8601 UTC TEXT, so comparison and sort need no
+--     timezone function and both engines agree
+--   * no vector columns; embeddings live in a sidecar ANN file
+--   * booleans are INTEGER 0|1 here and BOOLEAN in Postgres; the store crate
+--     hides the difference and no query writes a literal
+--   * foreign keys need `PRAGMA foreign_keys = ON` per connection, which the
+--     store crate sets at open time
 
 CREATE TABLE IF NOT EXISTS points_award (
     id           TEXT PRIMARY KEY,

@@ -1,6 +1,16 @@
--- Migration: 0007 proposal_justification
+-- 0007_proposal_justification.sql - SQLite mirror (Postgres: 0007_proposal_justification.sql).
 --
--- Mirrors postgres/0007. A bare ADD COLUMN needs no `--:sqlite` block: SQLite
--- has supported the form since 3.35 and the parity test checks the column
--- appears in both.
+-- GENERATED from the Postgres file by scripts/sync-migrations.py. Do not
+-- hand-edit: edit migrations/postgres/0007_proposal_justification.sql and re-run that script.
+-- T-P0-007's parity test fails if the two files' table sets ever diverge.
+--
+-- Portable-SQL rules in force (plan section 0.4):
+--   * ids are TEXT
+--   * timestamps are ISO-8601 UTC TEXT, so comparison and sort need no
+--     timezone function and both engines agree
+--   * no vector columns; embeddings live in a sidecar ANN file
+--   * booleans are INTEGER 0|1 here and BOOLEAN in Postgres; the store crate
+--     hides the difference and no query writes a literal
+--   * foreign keys need `PRAGMA foreign_keys = ON` per connection, which the
+--     store crate sets at open time
 ALTER TABLE field_proposal ADD COLUMN justification TEXT;

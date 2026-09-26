@@ -26,216 +26,14 @@
 //! consistent with itself, which is the failure mode this whole ticket exists
 //! to catch.
 
+#[path = "harness/mod.rs"]
+mod harness;
+use harness::{postgres_store, sqlite_store};
+
 use commons_core::ts::now;
 use commons_store::db::Store;
 use commons_store::search::{self, Field, SearchError};
 use serde_json::json;
-use sqlx::postgres::PgPool;
-use uuid::Uuid;
-
-// ------------------------------------------------------------------ engines
-
-/// A private schema on the index engine, so two tests cannot see each other.
-///
-/// `search_path` is a connection setting, so a `SET` on one pooled connection
-/// does not reach the next: the store is opened at a URL carrying the schema
-/// rather than configured after the fact. Each test gets its own, because the
-/// corpus is written twice and a shared table would make the second run depend
-/// on whichever test ran first.
-///
-/// # `producer` has to exist first, and that is a real finding
-///
-/// Migration 0001 creates `performer_alias` with a foreign key to `producer`
-/// and creates `producer` five statements later. SQLite tolerates the forward
-/// reference — it does not check foreign keys until a write — so the SQLite
-/// migration tree has always applied cleanly. **Postgres does not**, and
-/// migration 0001 has therefore never been applied to an empty Postgres
-/// database; every existing index was built by a run that got past it some
-/// other way.
-///
-/// 0001 is applied and immutable (§ the plan's migration rules), so the fix is
-/// not to reorder it. The fix is to create `producer` in the private schema
-/// before migrating, which is the state every real deployment is in, and to
-/// leave the ordering bug for a migration that can address it without editing
-/// history. See `docs/plans/implementation-plan.md`, T-P5-001.
-async fn postgres_store() -> Store {
-    let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-        panic!(
-            "DATABASE_URL must be set and reachable. §3.5 makes two engines a \
-             property of the product, so a parity test that skips when the \
-             database is absent is a parity test that never runs -- and the \
-             whole ticket is the equality. scripts/verify.sh sets it."
-        )
-    });
-    let admin = PgPool::connect(&url).await.unwrap();
-    let schema = format!("search_{}", Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
-        .execute(&admin)
-        .await
-        .unwrap();
-    admin.close().await;
-
-    // `search_path` is a connection setting, so it goes in the URL: a `SET` on
-    // one pooled connection does not reach the next.
-    let scoped = if url.contains('?') {
-        format!("{url}&options=-csearch_path%3D{schema}")
-    } else {
-        format!("{url}?options=-csearch_path%3D{schema}")
-    };
-
-    // The migration tree cannot build a Postgres schema from nothing yet, and
-    // this is the workaround rather than the fix. Two defects, both pre-existing
-    // and both invisible until something tried to migrate an *empty* Postgres
-    // database -- which nothing had, because the parity test is the first code
-    // that asks for one:
-    //
-    //   1. `0001_core.sql` creates `performer_alias` with a foreign key to
-    //      `producer` and creates `producer` five statements later. SQLite does
-    //      not check foreign keys until a write, so the SQLite tree has always
-    //      applied cleanly. Postgres checks at `CREATE TABLE`.
-    //   2. `0002_appearance_nullable_cluster.sql` creates `appearance_cluster_idx`
-    //      and `appearance_ambiguous_idx` with names `0001` already used. The
-    //      SQLite mirror rebuilds the table instead, so SQLite never collides.
-    //
-    // Applied here rather than by editing the files: both migrations are applied
-    // and immutable, and § the plan's migration rules say a fix is a new
-    // migration, not a reorder. The follow-up is recorded under T-P5-001 in
-    // `docs/plans/implementation-plan.md`.
-    let conn = PgPool::connect(&scoped).await.unwrap();
-    sqlx::query(PRODUCER_STUB).execute(&conn).await.unwrap();
-    for stmt in index_drops() {
-        sqlx::query(&stmt).execute(&conn).await.unwrap();
-    }
-    apply_migrations(&conn).await;
-    conn.close().await;
-    // Connect only. `open_index_url` would run the migrator, which does not
-    // recognise a schema it did not create and fails on the first
-    // `CREATE TABLE`.
-    Store::connect_index_url(&scoped).await.unwrap()
-}
-
-/// `producer` in the exact shape `0001` would have created it, so nothing
-/// downstream can tell the difference.
-const PRODUCER_STUB: &str = "CREATE TABLE IF NOT EXISTS producer (\
-  id            TEXT PRIMARY KEY,\
-  kind          TEXT NOT NULL DEFAULT 'unknown',\
-  name          TEXT NOT NULL,\
-  career_start  TEXT,\
-  career_end    TEXT,\
-  defunct       INTEGER NOT NULL DEFAULT 0,\
-  created_at    TEXT NOT NULL,\
-  updated_at    TEXT NOT NULL)";
-
-/// The indexes `0001` creates that `0002` re-creates under the same name.
-fn index_drops() -> Vec<String> {
-    [
-        "DROP INDEX IF EXISTS appearance_cluster_idx",
-        "DROP INDEX IF EXISTS appearance_ambiguous_idx",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect()
-}
-
-/// Apply the migration tree, honouring the `--:sqlite <name>` sidecar markers
-/// the way the real migrator does, with the two `0001` defects worked around.
-///
-/// Each file is run as one multi-statement script through a *simple* protocol,
-/// which is what lets several statements travel in one round trip. That is a
-/// deliberate choice over splitting on `;` in Rust: a real SQL splitter has to
-/// understand dollar-quoting, string literals and `$$` bodies, and a
-/// hand-rolled one is wrong in a way that only shows up on a file nobody
-/// happens to be reading. The sidecar markers are stripped first, because
-/// running SQLite's `ALTER TABLE ... ADD CONSTRAINT` is the exact statement
-/// SQLite cannot do -- and that was the first false positive this harness
-/// produced.
-async fn apply_migrations(conn: &PgPool) {
-    let dir = format!("{}/migrations/postgres", env!("CARGO_MANIFEST_DIR"));
-    let mut names: Vec<String> = std::fs::read_dir(&dir)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .filter(|n| n.ends_with(".sql") && !n.ends_with(".sqlite.sql"))
-        .collect();
-    names.sort();
-
-    for name in names {
-        let text = std::fs::read_to_string(format!("{dir}/{name}")).unwrap();
-        let mut script = strip_sidecars(&text);
-        // `producer` comes from the stub, so 0001's own `CREATE TABLE` is
-        // elided. Done as a string removal rather than by skipping a parsed
-        // statement, so the rest of the file is untouched and the edit is
-        // visible in the diff of what ran.
-        if name.starts_with("0001") {
-            script = remove_create_table(&script, "producer");
-        }
-        // The two index names 0001 already used. Both, not one: the first
-        // version looped with a `break`, dropped `appearance_cluster_idx`,
-        // and then failed on `appearance_ambiguous_idx` -- which is the shape
-        // of a fix that looks applied and is not.
-        if name.starts_with("0002") {
-            for idx in ["appearance_cluster_idx", "appearance_ambiguous_idx"] {
-                script = format!("DROP INDEX IF EXISTS {idx};\n{script}");
-            }
-        }
-        sqlx::raw_sql(&script)
-            .execute(conn)
-            .await
-            .unwrap_or_else(|e| panic!("applying {name}:\n  {e}"));
-    }
-}
-
-/// Remove one `CREATE TABLE <name> (...)` statement, up to its closing `;`.
-///
-/// Offset-based so the caller can see exactly which statement was dropped in
-/// the failure message if the tree changes shape.
-fn remove_create_table(script: &str, table: &str) -> String {
-    let needle = format!("CREATE TABLE {table} (");
-    let Some(start) = script.find(&needle) else {
-        return script.to_string();
-    };
-    // The statement ends at the first `;` at or after the opening paren. A `;`
-    // inside a string literal would end it early; none of these files have one
-    // inside a `CREATE TABLE`, and the panic below is how that assumption is
-    // checked rather than assumed.
-    let rel_end = script[start..]
-        .find(';')
-        .expect("CREATE TABLE with no terminator");
-    let end = start + rel_end + 1;
-    format!(
-        "{}-- (CREATE TABLE {table} elided: provided by the test stub)\n{}",
-        &script[..start],
-        &script[end..]
-    )
-}
-
-/// Remove the `--:sqlite <name> ... --:end` blocks.
-///
-/// The markers are how one migration carries two engine-specific forms: the
-/// sidecar file is substituted for the block on SQLite, and the block is
-/// dropped on Postgres.
-fn strip_sidecars(text: &str) -> String {
-    let mut out = Vec::new();
-    let mut skipping = false;
-    for line in text.lines() {
-        if line.starts_with("--:sqlite") {
-            skipping = true;
-            continue;
-        }
-        if line.trim() == "--:end" {
-            skipping = false;
-            continue;
-        }
-        if !skipping {
-            out.push(line);
-        }
-    }
-    out.join("\n")
-}
-
-async fn sqlite_store() -> Store {
-    Store::open_memory().await.unwrap()
-}
 
 // ------------------------------------------------------------------ fixtures
 
@@ -704,7 +502,13 @@ async fn deleting_an_object_removes_its_terms() {
         .unwrap();
     assert_eq!(store.search("ephemeral", None, 10).await.unwrap().len(), 1);
 
-    exec(&store, "DELETE FROM object WHERE id = ?", &["o-del"]).await;
+    // `Store::delete_object`, not a bare `DELETE FROM object`. This test used the
+    // bare delete and it worked only because `search_term.object_id` was a
+    // foreign key with `ON DELETE CASCADE`; migration 0017 dropped that
+    // constraint so a tag could be indexed, and the cascade went with it. The
+    // guarantee moved from the schema into this method, and the test is what
+    // says the method is doing its half.
+    store.delete_object("o-del").await.unwrap();
     let hits = store.search("ephemeral", None, 10).await.unwrap();
     assert!(
         hits.is_empty(),

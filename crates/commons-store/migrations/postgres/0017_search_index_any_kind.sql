@@ -1,0 +1,68 @@
+-- Migration: 0017 let the search index hold things that are not objects
+--
+-- A tag is searchable the moment it is created, and it could not be, because
+-- `search_term.object_id` is a foreign key to `object(id)` and a tag is not an
+-- object. The symptom was a clean, correct-looking error at the end of
+-- `create_tag`: "the tag was written but could not be indexed ... FOREIGN KEY
+-- constraint failed". The tag row existed and was unfindable, which is the worst
+-- of both — the user believes the tag is deleted, and it is not.
+--
+-- The alternative was to put every tag into `object`, and that is worse: a tag
+-- is a name, not a thing with a title and a date and a place in the library, and
+-- `object` is the row §8.1's proposals and §14's consent machinery all hang off.
+-- A tag pretending to be an object would need a kind nobody queries and would
+-- show up in every object query behind a filter nobody remembers to write.
+--
+-- So the foreign key is dropped, and the search index becomes the one table in
+-- the schema that indexes *anything by id*. That is a real loss of referential
+-- integrity and it is the right trade, for two reasons that are checkable:
+--
+--   * the row is derived data. Every writer can recompute it from the thing it
+--     describes, and T-P5-001 established that a stale index row is worse than
+--     no row because it is indistinguishable from a current one. A foreign key
+--     protects a row that nobody reads except through the row it describes.
+--   * the cascade goes with it, so an orphan becomes possible and the *caller*
+--     is what removes it. `Store::deindex_object` covers the object case and
+--     `Store::delete_tag` in `tags.rs` covers the tag case; the second is
+--     covered by `deleting_an_object_removes_its_terms` in
+--     `tests/search_parity.rs` for objects and by
+--     `deleting_a_tag_removes_its_index_rows` in `tests/tags.rs` for tags.
+--
+-- An orphan is inert: it names an id nothing has, so no query that starts from
+-- an object can reach it, and the only way to see one is to read the index
+-- directly. That is strictly better than a tag that cannot be indexed at all.
+--
+-- The column keeps the name `object_id` even though it now holds a tag id for
+-- some rows. Renaming a column in an applied migration is a second migration,
+-- and the name is right for the overwhelming majority of rows; the comment
+-- above is the correction, and `search_term`'s definition in 0014 carries the
+-- rest of the reasoning.
+
+-- `search_fuzzy` has the same constraint and the same need, for the same
+-- reason: a tag's fuzzy keys are written by `create_tag`, so a tag that could
+-- not be indexed exactly could not be indexed fuzzily either. 0015 wrote it
+-- with the constraint because at the time the only thing being indexed was an
+-- object; this migration widens both indexes together so the two cannot end up
+-- disagreeing about what is indexable.
+--:sqlite ../sqlite-forms/0017_search_index_any_kind.sql
+-- SQLite form: Postgres drops a constraint with `ALTER TABLE ... DROP
+-- CONSTRAINT`; SQLite has no such statement, so the table is rebuilt — which is
+-- also how 0002 and 0006 reached the same shape, so it is an established move in
+-- this set rather than a new one.
+--
+-- The statement between the markers is what Postgres runs. 0006's sidecar opens
+-- with "Nothing to run" because its statement is a *duplicate* of one stated
+-- outside the block; this one's is not, which is the whole difference between the
+-- two files and the reason the harness's `strip_sidecars` can drop a block
+-- wholesale and still run the right thing.
+ALTER TABLE search_term DROP CONSTRAINT search_term_object_id_fkey;
+--:end
+
+--:sqlite ../sqlite-forms/0017_search_fuzzy_index.sql
+ALTER TABLE search_fuzzy DROP CONSTRAINT search_fuzzy_object_id_fkey;
+--:end
+
+-- The index already exists: 0014 created `search_term_object_id_idx` for the
+-- same column, and the rebuild in the SQLite sidecar drops it along with the
+-- table it was on. So the constraint is all that is dropped, and adding a
+-- second index here would be a name collision rather than an optimisation.

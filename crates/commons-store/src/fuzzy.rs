@@ -299,6 +299,34 @@ pub struct FuzzyHit {
 /// Called from [`Store::index_fuzzy`]; separate from the exact index because
 /// the row count is a multiple of the term count and a caller that only wants
 /// exact search should not pay for it.
+/// Remove every fuzzy key for one field of one object.
+///
+/// The fuzzy half of [`crate::Store::clear_field`]. Both are called together by
+/// that method rather than by each alias operation, because an index whose two
+/// halves disagree is a state neither is designed to be in and only a read of
+/// both can detect.
+pub async fn clear_field(store: &Store, object_id: &str, field: Field) -> Result<u64, SearchError> {
+    let sql = "DELETE FROM search_fuzzy WHERE object_id = ? AND field = ?";
+    let bound = Store::bind_sql(sql);
+    let n = match store {
+        Store::Sqlite(p) => sqlx::query(&bound)
+            .bind(object_id.to_string())
+            .bind(field.as_str())
+            .execute(p)
+            .await
+            .map_err(StoreError::Query)?
+            .rows_affected(),
+        Store::Postgres(p) => sqlx::query(&bound)
+            .bind(object_id.to_string())
+            .bind(field.as_str())
+            .execute(p)
+            .await
+            .map_err(StoreError::Query)?
+            .rows_affected(),
+    };
+    Ok(n)
+}
+
 pub async fn index_terms(
     store: &Store,
     object_id: &str,
@@ -501,6 +529,15 @@ impl Store {
             }
         }
 
+        // An empty list is the case that needed `clear_field`. `index_object`
+        // deletes per *field* now, so re-indexing zero aliases has no field to
+        // scope the delete to and the removed alias stays indexed. This is the
+        // first call site to hit it -- `re_adding_an_alias_replaces_it_rather_than_doubling_it`
+        // in `tests/fuzzy.rs` failed on exactly the last alias, and would have
+        // kept passing for any object with two or more.
+        if remaining.is_empty() {
+            return self.clear_field(object_id, Field::Alias).await.map(|_| ());
+        }
         self.index_object(object_id, &remaining).await.map(|_| ())
     }
 }

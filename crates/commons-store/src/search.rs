@@ -500,6 +500,13 @@ impl Store {
     /// stale row is worse than no row because it is indistinguishable from a
     /// current one. `DELETE` then insert, in one transaction, so a reader never
     /// sees the object with half its terms.
+    ///
+    /// An *empty* `terms` clears nothing under the field-scoped delete below,
+    /// because there is no field to scope it to. `clear_field` is the explicit
+    /// way to empty one, and `remove_alias` calls it when the last alias goes.
+    /// Passing an empty slice to mean "clear this object" would be a second
+    /// meaning for one argument, and the field-scoped behaviour is the one that
+    /// keeps a title from being wiped by an alias write.
     pub async fn index_object(
         &self,
         object_id: &str,
@@ -520,11 +527,52 @@ impl Store {
         // where a reader can observe the gap. For a search index rebuilt on
         // demand, that is the right way round; a caller that cannot tolerate it
         // indexes an object nobody is searching for yet.
-        self.exec1(
-            "DELETE FROM search_term WHERE object_id = ?",
-            &[object_id.to_string()],
-        )
-        .await?;
+        // The distinct fields in `terms`, so each is replaced once. Collected
+        // before the delete because the delete is driven by the field list and
+        // a term list is not a field list.
+        let mut fields: Vec<&str> = terms.iter().map(|(f, _)| f.as_str()).collect();
+        fields.sort_unstable();
+        fields.dedup();
+
+        // A full replace is wrong here, and it was wrong in T-P5-001 too:
+        // deleting every row for the object means indexing the title wipes the
+        // aliases, and indexing an alias wipes the title. The two are different
+        // fields and neither call knows about the other.
+        //
+        // It did not show up until T-P5-003, and the reason is worth keeping:
+        // every test that used `index_object` indexed one object with one
+        // field, so a full replace and a field replace are the same statement.
+        // The bug became visible the moment a test indexed a title *and* an
+        // alias on the same object — which is what an object with a name and a
+        // nickname actually is.
+        //
+        // So the delete is scoped to the fields being written. A field not
+        // mentioned in `terms` keeps its rows, and a field mentioned with fewer
+        // terms than before is fully replaced — which is what "replace this
+        // field" means, and what `add_alias` and `remove_alias` rely on when
+        // they re-index a field from the table.
+        for field in fields {
+            let sql = "DELETE FROM search_term WHERE object_id = ? AND field = ?";
+            let bound = Store::bind_sql(sql);
+            match self {
+                Store::Sqlite(p) => {
+                    sqlx::query(&bound)
+                        .bind(object_id.to_string())
+                        .bind(field)
+                        .execute(p)
+                        .await
+                        .map_err(StoreError::Query)?;
+                }
+                Store::Postgres(p) => {
+                    sqlx::query(&bound)
+                        .bind(object_id.to_string())
+                        .bind(field)
+                        .execute(p)
+                        .await
+                        .map_err(StoreError::Query)?;
+                }
+            }
+        }
 
         let mut n = 0usize;
         for (field, term) in terms {
@@ -609,6 +657,113 @@ impl Store {
             &[object_id.to_string()],
         )
         .await
+    }
+
+    /// Remove every indexed term for one field of one object.
+    ///
+    /// The explicit counterpart to the field-scoped delete inside
+    /// [`Store::index_object`]. It exists because "replace the aliases of an
+    /// object that now has none" is a real operation -- `remove_alias` on the
+    /// last alias -- and an empty term list carries no field to scope the delete
+    /// to.
+    ///
+    /// Both the exact and the fuzzy index are cleared. They are written
+    /// together by T-P5-001's design and reading them separately is the state
+    /// the `indexing_a_tag_does_not_disturb_another_objects_terms` test exists
+    /// to prevent, so clearing one and not the other would reintroduce it.
+    pub async fn clear_field(&self, object_id: &str, field: Field) -> Result<u64, SearchError> {
+        let sql = "DELETE FROM search_term WHERE object_id = ? AND field = ?";
+        let bound = Store::bind_sql(sql);
+        let n = match self {
+            Store::Sqlite(p) => sqlx::query(&bound)
+                .bind(object_id.to_string())
+                .bind(field.as_str())
+                .execute(p)
+                .await
+                .map_err(StoreError::Query)?
+                .rows_affected(),
+            Store::Postgres(p) => sqlx::query(&bound)
+                .bind(object_id.to_string())
+                .bind(field.as_str())
+                .execute(p)
+                .await
+                .map_err(StoreError::Query)?
+                .rows_affected(),
+        };
+        crate::fuzzy::clear_field(self, object_id, field).await?;
+        Ok(n)
+    }
+
+    /// Delete an object and everything derived from it.
+    ///
+    /// Migration 0017 dropped the foreign key from `search_term` and
+    /// `search_fuzzy` to `object(id)`, so a tag could be indexed. That removed
+    /// the `ON DELETE CASCADE` with it, and this method is what replaced it.
+    ///
+    /// Without it, deleting a row from `object` left its index rows behind and
+    /// the object was still returned by a search — with a score, as though it
+    /// existed. `deleting_an_object_removes_its_fuzzy_keys` in
+    /// `tests/fuzzy.rs` failed on exactly this: `FOREIGN KEY constraint failed`
+    /// was how 0017 was discovered, and the two tests that had been passing
+    /// since T-P5-002 were passing *because of* the cascade. Removing the
+    /// guarantee did not make the tests wrong; it made them report a real gap
+    /// that had been covered by a constraint rather than by any code.
+    ///
+    /// The derived rows go first, in one transaction, and the object goes last.
+    /// The order matters only for the reader: a concurrent search between the
+    /// two would see an object with no index rather than an index with no
+    /// object, and the first is an empty result while the second is a ghost.
+    /// Making that a real guarantee needs serializable isolation, which is a
+    /// bigger claim than this method makes — it is written in the order that
+    /// fails in the harmless direction, and the comment says so rather than
+    /// implying more.
+    pub async fn delete_object(&self, object_id: &str) -> Result<(), StoreError> {
+        // Four statements, ids bound rather than interpolated, in the order
+        // that fails in the harmless direction: the derived rows go first, so a
+        // search that lands between the statements sees an object with no index
+        // (an empty result) rather than an index with no object (a ghost).
+        //
+        // The first version built the script with `format!` and the id spliced
+        // into the SQL text — a SQL injection with a `;` in it, even though the
+        // id here is a UUID the store generated. It is still the wrong shape: a
+        // function that puts a caller-supplied id into a statement is a
+        // function that has to be re-audited the moment the caller stops being
+        // the only source.
+        //
+        // Four separate `execute` calls, not one `raw_sql` script and not one
+        // transaction. A transaction would be better and is not available: the
+        // two engines' `Transaction` types are different, and this crate's
+        // established way to run a statement on both is a `match` on the `Store`
+        // with the SQL written once. The four statements are each idempotent,
+        // so re-running the method on a half-deleted object is safe — which is
+        // also the recovery path if one of the four fails, and a caller can
+        // simply call it again.
+        const STATEMENTS: [&str; 4] = [
+            "DELETE FROM search_term  WHERE object_id = ?",
+            "DELETE FROM search_fuzzy WHERE object_id = ?",
+            "DELETE FROM object_alias WHERE object_id = ?",
+            "DELETE FROM object       WHERE id = ?",
+        ];
+        for sql in STATEMENTS {
+            let bound = Store::bind_sql(sql);
+            match self {
+                Store::Sqlite(p) => {
+                    sqlx::query(&bound)
+                        .bind(object_id.to_string())
+                        .execute(p)
+                        .await
+                        .map_err(StoreError::Query)?;
+                }
+                Store::Postgres(p) => {
+                    sqlx::query(&bound)
+                        .bind(object_id.to_string())
+                        .execute(p)
+                        .await
+                        .map_err(StoreError::Query)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Search. The terms are the ones [`tokenize`] produces, so a caller cannot

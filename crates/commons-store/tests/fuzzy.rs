@@ -3,15 +3,20 @@
 //! The accept criterion: **a typo-tolerance test (`reciever` finds `receiver`)
 //! and a synonym test, both run against both engines with identical results.**
 //! Both are here and both run, against the same reachable local Postgres that
-//! T-P5-001's parity test uses — see that file's `postgres_store` for the two
-//! pre-existing migration defects it works around, which are not re-litigated
-//! here.
+//! T-P5-001's parity test uses. The harness and the two pre-existing migration
+//! defects it works around live in `tests/harness/mod.rs`, shared rather than
+//! copied — two copies of a harness can disagree, and a disagreement between
+//! two copies is indistinguishable from a disagreement between the engines.
 //!
 //! What is asserted is deliberately narrow. Fuzzy search is where "no results"
 //! is a *worse* bug than "too many": somebody who misspells a name and finds
 //! nothing concludes the person is not in the library. So these tests assert
 //! that the right thing is found, and just as much that the wrong thing is
 //! *not* — a typo tolerance that matches everything is not a search.
+
+#[path = "harness/mod.rs"]
+mod harness;
+use harness::{postgres_store, sqlite_store};
 
 use commons_core::ts::now;
 use commons_store::db::Store;
@@ -31,134 +36,6 @@ fn shares_a_key(a: &[String], b: &[String]) -> bool {
 }
 
 // ------------------------------------------------------------------ engines
-
-/// A private schema per test, applied by the same harness T-P5-001 uses.
-///
-/// Duplicated rather than shared because integration tests are separate crates
-/// and a `mod common` would be a new shared target for a test-only concern; the
-/// harness itself is the thing that would need to stay in step, and a copy that
-/// drifts is caught by the fact that these tests fail without the workarounds.
-mod pg {
-    use super::*;
-
-    pub async fn store() -> Store {
-        let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-            panic!(
-                "DATABASE_URL must be set and reachable: §3.5 makes two engines \\
-                 a property of the product, so a parity test that skips is a \\
-                 parity test that never runs. scripts/verify.sh sets it."
-            )
-        });
-        let admin = sqlx::postgres::PgPool::connect(&url).await.unwrap();
-        let schema = format!("fuzzy_{}", uuid::Uuid::new_v4().simple());
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
-            .execute(&admin)
-            .await
-            .unwrap();
-        admin.close().await;
-
-        let scoped = if url.contains('?') {
-            format!("{url}&options=-csearch_path%3D{schema}")
-        } else {
-            format!("{url}?options=-csearch_path%3D{schema}")
-        };
-
-        // The two pre-existing Postgres migration defects, worked around in the
-        // harness. See `search_parity.rs` and T-P5-001 in the plan.
-        let conn = sqlx::postgres::PgPool::connect(&scoped).await.unwrap();
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS producer (\
-               id            TEXT PRIMARY KEY,\
-               kind          TEXT NOT NULL DEFAULT 'unknown',\
-               name          TEXT NOT NULL,\
-               career_start  TEXT,\
-               career_end    TEXT,\
-               defunct       INTEGER NOT NULL DEFAULT 0,\
-               created_at    TEXT NOT NULL,\
-               updated_at    TEXT NOT NULL)",
-        )
-        .execute(&conn)
-        .await
-        .unwrap();
-        for stmt in [
-            "DROP INDEX IF EXISTS appearance_cluster_idx",
-            "DROP INDEX IF EXISTS appearance_ambiguous_idx",
-        ] {
-            sqlx::query(stmt).execute(&conn).await.unwrap();
-        }
-        apply_migrations(&conn).await;
-        conn.close().await;
-        Store::connect_index_url(&scoped).await.unwrap()
-    }
-
-    async fn apply_migrations(conn: &sqlx::postgres::PgPool) {
-        let dir = format!("{}/migrations/postgres", env!("CARGO_MANIFEST_DIR"));
-        let mut names: Vec<String> = std::fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().to_string())
-            .filter(|n| n.ends_with(".sql") && !n.ends_with(".sqlite.sql"))
-            .collect();
-        names.sort();
-        for name in names {
-            let mut script =
-                strip_sidecars(&std::fs::read_to_string(format!("{dir}/{name}")).unwrap());
-            if name.starts_with("0001") {
-                script = remove_create_table(&script, "producer");
-            }
-            if name.starts_with("0002") {
-                for idx in ["appearance_cluster_idx", "appearance_ambiguous_idx"] {
-                    script = format!("DROP INDEX IF EXISTS {idx};\n{script}");
-                }
-            }
-            sqlx::raw_sql(&script)
-                .execute(conn)
-                .await
-                .unwrap_or_else(|e| panic!("applying {name}:\n  {e}"));
-        }
-    }
-
-    fn strip_sidecars(text: &str) -> String {
-        let mut out = Vec::new();
-        let mut skipping = false;
-        for line in text.lines() {
-            if line.starts_with("--:sqlite") {
-                skipping = true;
-                continue;
-            }
-            if line.trim() == "--:end" {
-                skipping = false;
-                continue;
-            }
-            if !skipping {
-                out.push(line);
-            }
-        }
-        out.join("\n")
-    }
-
-    fn remove_create_table(script: &str, table: &str) -> String {
-        let needle = format!("CREATE TABLE {table} (");
-        let Some(start) = script.find(&needle) else {
-            return script.to_string();
-        };
-        let rel_end = script[start..]
-            .find(';')
-            .expect("CREATE TABLE with no terminator");
-        let end = start + rel_end + 1;
-        format!(
-            "{}-- (CREATE TABLE {table} elided: provided by the test harness)\n{}",
-            &script[..start],
-            &script[end..]
-        )
-    }
-}
-
-async fn sqlite_store() -> Store {
-    Store::open_memory().await.unwrap()
-}
-
-// ------------------------------------------------------------------ fixtures
 
 /// Index one object under one field, on both the exact and the fuzzy index.
 async fn index(store: &Store, id: &str, field: Field, text: &str) {
@@ -241,30 +118,16 @@ async fn insert_object(store: &Store, id: &str, title: &str, ts: &str) {
     }
 }
 
-/// Delete an object, and let the cascades do what they claim to.
-async fn delete_object(store: &Store, id: &str) {
-    match store {
-        Store::Sqlite(p) => {
-            sqlx::query("DELETE FROM object WHERE id = ?")
-                .bind(id.to_string())
-                .execute(p)
-                .await
-                .unwrap();
-        }
-        Store::Postgres(p) => {
-            let sql = Store::bind_sql("DELETE FROM object WHERE id = ?");
-            sqlx::query(&sql)
-                .bind(id.to_string())
-                .execute(p)
-                .await
-                .unwrap();
-        }
-    }
-}
+// A local `delete_object` helper used to live here, and it is gone because its
+// two call sites now use `Store::delete_object`. It did a bare
+// `DELETE FROM object` and relied on `ON DELETE CASCADE` for the index rows;
+// migration 0017 removed that cascade, so the helper would have left exactly
+// the orphans the tests around it are about. Clippy caught it as dead code,
+// which is the right way to find a helper the schema invalidated.
 
 /// Both engines, the same fixture, the same query, the same answer.
 async fn both_engines() -> (Store, Store) {
-    (sqlite_store().await, pg::store().await)
+    (sqlite_store().await, postgres_store().await)
 }
 
 // ---------------------------------------------------- the accept criterion
@@ -536,7 +399,10 @@ async fn deleting_an_object_drops_its_aliases() {
         insert_object(store, "o-gone", "Thing", &ts).await;
         store.add_alias("o-gone", "vanishing").await.unwrap();
         assert_eq!(store.search("vanishing", None, 10).await.unwrap().len(), 1);
-        delete_object(store, "o-gone").await;
+        // The store's own delete, for the same reason as
+        // `deleting_an_object_removes_its_fuzzy_keys`: the cascade that used to
+        // remove an alias with its object is gone, so the caller has to.
+        store.delete_object("o-gone").await.unwrap();
         assert!(
             store
                 .search("vanishing", None, 10)
@@ -896,19 +762,14 @@ async fn deleting_an_object_removes_its_fuzzy_keys() {
         !store.search_fuzzy("reciever", 10).await.unwrap().is_empty(),
         "precondition: the fuzzy index finds it"
     );
-    match &store {
-        Store::Sqlite(p) => {
-            sqlx::query("DELETE FROM object WHERE id = ?")
-                .bind("o-del")
-                .execute(p)
-                .await
-                .unwrap();
-        }
-        Store::Postgres(p) => {
-            let sql = Store::bind_sql("DELETE FROM object WHERE id = ?");
-            sqlx::query(&sql).bind("o-del").execute(p).await.unwrap();
-        }
-    }
+    // Through `Store::delete_object`, not a bare `DELETE FROM object`. The bare
+    // delete is what this test used to do, and it worked only because
+    // `search_fuzzy.object_id` was a foreign key to `object(id)` with
+    // `ON DELETE CASCADE`. Migration 0017 dropped that constraint — a tag has to
+    // be indexable and a tag is not an object — and the cascade went with it.
+    // The test was not wrong; the guarantee it was relying on was removed, and
+    // `Store::delete_object` is the code that now owes it.
+    store.delete_object("o-del").await.unwrap();
     let hits = store.search_fuzzy("reciever", 10).await.unwrap();
     assert!(
         hits.is_empty(),

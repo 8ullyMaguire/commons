@@ -13,6 +13,7 @@
 --     hides the difference and no query writes a literal
 --   * foreign keys need `PRAGMA foreign_keys = ON` per connection, which the
 --     store crate sets at open time
+
 -- §7.9: status is an enum, not a phrase. "passed away", "RIP" and "Passed" as
 -- free text would be three filters for one fact, and a `LIKE` cannot be indexed.
 -- `NULL` means unknown, which is the common case and is not the same as active.

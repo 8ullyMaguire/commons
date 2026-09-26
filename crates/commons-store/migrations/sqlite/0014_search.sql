@@ -1,30 +1,18 @@
--- Migration: 0014 search term index
+-- 0014_search.sql - SQLite mirror (Postgres: 0014_search.sql).
 --
--- §9.2's breadth and §9.3's "one behaviour across both engines".
+-- GENERATED from the Postgres file by scripts/sync-migrations.py. Do not
+-- hand-edit: edit migrations/postgres/0014_search.sql and re-run that script.
+-- T-P0-007's parity test fails if the two files' table sets ever diverge.
 --
--- The surprising thing about this table is that it is not an FTS table. §9.3
--- asks for "the same tokenizer ... in both Postgres and the embedded store",
--- and the only way to get that is to own the tokenizer: SQLite's FTS5
--- `unicode61` and Postgres's `to_tsvector('english', ...)` disagree about
--- stemming, stop words and hyphenation, and two native implementations have two
--- tokenizers, not one. So the terms are produced by `search::tokenize` in Rust
--- and stored as ordinary rows, and neither engine gets an opinion about them.
---
--- The table is deliberately an ordinary table rather than an FTS virtual table
--- or a `tsvector` column. It costs a scan per term, which for a personal
--- library is the right trade, and a hosted index can add a native index
--- *alongside* these rows -- keyed on the same terms -- to get the same answers
--- faster. What it cannot do is answer differently, which is the property that
--- actually matters.
---
--- `field` is part of the key rather than a weight column. A weight per row is a
--- number that has to be kept in step with the weighting table in
--- `search::Field::weight` when the weighting changes; a field name is resolved
--- through the same enum in both places, so there is one table and no rebuild.
---
--- One row per (object, field, term): a title and a description holding the
--- same word are two rows, so a title hit is distinguishable from a description
--- hit and a title ranks above a description without a second index.
+-- Portable-SQL rules in force (plan section 0.4):
+--   * ids are TEXT
+--   * timestamps are ISO-8601 UTC TEXT, so comparison and sort need no
+--     timezone function and both engines agree
+--   * no vector columns; embeddings live in a sidecar ANN file
+--   * booleans are INTEGER 0|1 here and BOOLEAN in Postgres; the store crate
+--     hides the difference and no query writes a literal
+--   * foreign keys need `PRAGMA foreign_keys = ON` per connection, which the
+--     store crate sets at open time
 
 CREATE TABLE search_term (
   object_id  TEXT NOT NULL REFERENCES object(id) ON DELETE CASCADE,

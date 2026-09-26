@@ -13,6 +13,7 @@
 --     hides the difference and no query writes a literal
 --   * foreign keys need `PRAGMA foreign_keys = ON` per connection, which the
 --     store crate sets at open time
+
 CREATE TABLE IF NOT EXISTS performer_claim (
     id          TEXT PRIMARY KEY,
     cluster_id  TEXT NOT NULL REFERENCES person_cluster(id) ON DELETE CASCADE,

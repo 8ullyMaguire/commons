@@ -13,6 +13,7 @@
 --     hides the difference and no query writes a literal
 --   * foreign keys need `PRAGMA foreign_keys = ON` per connection, which the
 --     store crate sets at open time
+
 CREATE TABLE object (
   id             TEXT PRIMARY KEY,
   kind           TEXT NOT NULL,

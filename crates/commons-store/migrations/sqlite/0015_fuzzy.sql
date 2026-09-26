@@ -1,36 +1,18 @@
--- Migration: 0015 fuzzy search keys
+-- 0015_fuzzy.sql - SQLite mirror (Postgres: 0015_fuzzy.sql).
 --
--- §9.3's fuzzy and phonetic matching, and the reason this table exists.
+-- GENERATED from the Postgres file by scripts/sync-migrations.py. Do not
+-- hand-edit: edit migrations/postgres/0015_fuzzy.sql and re-run that script.
+-- T-P0-007's parity test fails if the two files' table sets ever diverge.
 --
--- The obvious implementations are both unavailable. Postgres has `pg_trgm`
--- and SQLite has FTS5's `trigram` tokenizer; neither is in the portable subset
--- of §15.2, and worse, their *scales* differ -- Postgres's `similarity()` and
--- a trigram MATCH rank the same candidates differently. So a trigram search
--- would return the same rows in a different order on each engine, which is
--- worse than having no fuzzy search: two peers of one library answering the
--- same question differently. A Levenshtein scan in SQL is not expressible in
--- the portable subset at all.
---
--- So the keys are computed in Rust (`fuzzy::index_terms`) and stored as
--- ordinary rows. A fuzzy query is then an equality lookup on a precomputed
--- key, which is the same shape as every other search query and the reason both
--- engines agree.
---
--- `key` is deliberately NOT unique on `(object_id, term)`: one term has many
--- keys -- the term itself, every single-deletion variant, a transposition key
--- and a phonetic code. The UNIQUE is on all four columns, so indexing the same
--- term twice is a no-op rather than a score-doubling.
---
--- A key match is a *candidate*, never a result. `fuzzy::levenshtein` decides
--- whether a candidate was a match, in Rust, on both engines. That is the
--- discipline that makes a typo-tolerant search safe: a key collision can widen
--- the candidate set but can never by itself put a wrong row in the result.
---
--- A key longer than a short bound would be mostly deletions of itself, so a
--- long term generates a lot of rows. No cap is applied here rather than
--- silently: the row count is `terms * (len + 3)` and a library's vocabulary is
--- known, and a cap that quietly disables fuzzy matching for exactly the long
--- titles §9.2 cares about is worse than the rows.
+-- Portable-SQL rules in force (plan section 0.4):
+--   * ids are TEXT
+--   * timestamps are ISO-8601 UTC TEXT, so comparison and sort need no
+--     timezone function and both engines agree
+--   * no vector columns; embeddings live in a sidecar ANN file
+--   * booleans are INTEGER 0|1 here and BOOLEAN in Postgres; the store crate
+--     hides the difference and no query writes a literal
+--   * foreign keys need `PRAGMA foreign_keys = ON` per connection, which the
+--     store crate sets at open time
 
 CREATE TABLE search_fuzzy (
   object_id  TEXT NOT NULL REFERENCES object(id) ON DELETE CASCADE,

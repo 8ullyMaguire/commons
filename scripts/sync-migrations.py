@@ -109,7 +109,20 @@ def sync() -> int:
             continue
         target = lite_dir / pg_file.name
         text = pg_file.read_text()
-        header = SQLITE_HEADER.format(name=pg_file.name).rstrip("\n")
+        # One trailing newline, not zero. `PG_HEADER` matches the Postgres
+        # block *including* the newline that ends its last line, so a
+        # replacement with no trailing newline runs the header's last line into
+        # whatever followed -- which is the DDL. The symptom was a mirror whose
+        # first statement read `--   store crate sets at open timeCREATE TABLE
+        # reputation_event (`, and SQLite's error named a column rather than the
+        # line that was actually wrong, so it took a failing `db::tests` to find
+        # a corruption that `migration_parity` passed, because that test compares
+        # table *sets* and a broken `CREATE TABLE` declares no tables.
+        #
+        # `count=1` below means only the first block is replaced, so the
+        # replacement is exactly the block and nothing more; keeping the
+        # trailing newline is what preserves the separation.
+        header = SQLITE_HEADER.format(name=pg_file.name)
         # A lambda, not a replacement string: `re.sub` would otherwise read the
         # backslashes in the header as escapes and mangle them.
         body = PG_HEADER.sub(lambda _m: header, text, count=1)

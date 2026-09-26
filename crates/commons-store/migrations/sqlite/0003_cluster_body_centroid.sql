@@ -13,4 +13,5 @@
 --     hides the difference and no query writes a literal
 --   * foreign keys need `PRAGMA foreign_keys = ON` per connection, which the
 --     store crate sets at open time
+
 ALTER TABLE person_cluster ADD COLUMN body_centroid_hex TEXT;

@@ -1,18 +1,18 @@
--- Migration: 0010 edit_history
+-- 0010_edit_history.sql - SQLite mirror (Postgres: 0010_edit_history.sql).
 --
--- Mirrors postgres/0010. The differences are the ones SQLite forces and nothing
--- this migration chose:
+-- GENERATED from the Postgres file by scripts/sync-migrations.py. Do not
+-- hand-edit: edit migrations/postgres/0010_edit_history.sql and re-run that script.
+-- T-P0-007's parity test fails if the two files' table sets ever diverge.
 --
---   * `IF NOT EXISTS` on indexes, as everywhere in the sqlite tree.
---   * `REAL` is a real type in both, and `BIGINT` is `INTEGER` here.
---   * No expression appears in a `UNIQUE (...)` constraint: SQLite rejects one,
---     which 0008 and 0009 both learned the hard way. The partial unique index
---     below has no expression, so it is legal as written.
---
--- `field_edit.value_json` is TEXT holding a JSON document, 'null' included. A
--- deliberate null is a row whose value is the JSON literal `null`; an unset
--- field is no row. That distinction is stash-box#9 and it is the reason this is
--- a table with a value column rather than a nullable column on the subject.
+-- Portable-SQL rules in force (plan section 0.4):
+--   * ids are TEXT
+--   * timestamps are ISO-8601 UTC TEXT, so comparison and sort need no
+--     timezone function and both engines agree
+--   * no vector columns; embeddings live in a sidecar ANN file
+--   * booleans are INTEGER 0|1 here and BOOLEAN in Postgres; the store crate
+--     hides the difference and no query writes a literal
+--   * foreign keys need `PRAGMA foreign_keys = ON` per connection, which the
+--     store crate sets at open time
 
 CREATE TABLE IF NOT EXISTS field_edit (
     id              TEXT PRIMARY KEY,
@@ -20,49 +20,72 @@ CREATE TABLE IF NOT EXISTS field_edit (
     subject_type    TEXT NOT NULL,
     subject_id      TEXT NOT NULL,
     field           TEXT NOT NULL,
-    value_json      TEXT NOT NULL,
-    author          TEXT,
+    value_json      TEXT NOT NULL,          -- JSON, possibly 'null'
+    author          TEXT,                   -- NULL once unlinked (§8.6.5)
     weight          REAL NOT NULL,
     accepted_at     TEXT,
     retracted_at    TEXT,
-    removed_at      TEXT,
+    removed_at      TEXT,                   -- attribution removed, row kept
     justification   TEXT,
     created_at      TEXT NOT NULL,
     -- A monotonic sequence, assigned by the writer on both backends.
     --
-    -- SQLite cannot declare two primary keys, and `INTEGER PRIMARY KEY` has to
-    -- be the declared one, so an autoincrement is not available alongside a
-    -- text `id`. Rather than have SQLite's sequence and Postgres's BIGSERIAL
-    -- mean subtly different things -- one of them silently not existing -- the
-    -- column is written explicitly, from the same source on both.
+    -- Not a BIGSERIAL here and an autoincrement in SQLite: SQLite cannot declare
+    -- two primary keys and `INTEGER PRIMARY KEY` must be the declared one, so the
+    -- autoincrement is not available alongside a text `id`. One column, written
+    -- the same way on both, rather than two mechanisms that mean subtly
+    -- different things.
     --
     -- Why a sequence at all: a history's order is a fact about time, and
     -- `accepted_at` ties whenever two edits are written in the same millisecond,
     -- which is most pairs of edits in a real scan. The fallback was a uuid, so
     -- the tie was broken at random. See `field_history`.
-    seq             INTEGER NOT NULL
+    seq             BIGINT NOT NULL
 );
 
--- The `seq` order is the history order, so this index carries it. Named
--- `field_edit_order` because `field_edit_seq` is the sequence table below, and
--- the first version of this migration gave both the same name. SQLite rejects
--- that; Postgres does not, because a table and an index are in different
+-- The history order. Every per-field read is ordered by this, so it is indexed
+-- on its own rather than as a suffix of the field index: an `ORDER BY` over
+-- three fields of a filtered index is a sort, and this is the one query that must
+-- not sort.
+--
+-- Named `field_edit_order`, not `field_edit_seq`: the sequence *table* below is
+-- `field_edit_seq`, and the first version of this migration gave both the same
+-- name. SQLite caught it -- "there is already an index named field_edit_seq" --
+-- and Postgres would not have, because a table and an index live in different
 -- namespaces there.
 CREATE INDEX IF NOT EXISTS field_edit_order ON field_edit (seq);
 
+-- The accepted set for one field. Partial, because the index exists to answer
+-- "which rows count", and a retracted row is in none of those queries -- but it
+-- is still read for history, so the row is not deleted.
 CREATE INDEX IF NOT EXISTS field_edit_live
     ON field_edit (subject_id, field, accepted_at)
     WHERE retracted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS field_edit_proposal ON field_edit (proposal_id);
 
+-- A subject's edits in order, for the whole-subject history view. Field first
+-- because per-field is the common read (§8.6.1) and the whole-subject view is
+-- the same query without a filter.
 CREATE INDEX IF NOT EXISTS field_edit_subject
     ON field_edit (subject_id, created_at, id);
 
+-- One accepted edit per proposal. Without this, accepting the same proposal
+-- twice is two rows and the score is computed over an edit that happened once.
+--
+-- Partial on accepted_at IS NOT NULL, and that is what lets a rejected-then-
+-- accepted-then-retracted proposal be accepted again later: the constraint only
+-- applies to rows currently in the set.
 CREATE UNIQUE INDEX IF NOT EXISTS field_edit_uniq_proposal
     ON field_edit (proposal_id)
     WHERE accepted_at IS NOT NULL AND retracted_at IS NULL;
 
+-- A report about a history entry (stash-box#656).
+--
+-- `reporter` is NOT NULL and deliberately kept after the entry's attribution is
+-- removed. A report is a fact about the reporter, and an anonymous report is one
+-- the moderation queue cannot act on; the reporter asked for their *edit* to be
+-- unlinked, not for their report to vanish.
 CREATE TABLE IF NOT EXISTS history_report (
     id          TEXT PRIMARY KEY,
     entry_id    TEXT NOT NULL,
@@ -73,13 +96,20 @@ CREATE TABLE IF NOT EXISTS history_report (
 
 CREATE INDEX IF NOT EXISTS history_report_entry ON history_report (entry_id);
 
+-- §8.6.3: an object's merges, so a reader can tell a merge from an object that
+-- never had a second identity.
+--
+-- The same argument as `cluster_merge` in 0004, and the same shape: winner and
+-- loser rather than a from/to pair, because the operation is not symmetric -- the
+-- winner keeps its identity and the loser is retired. Nothing in the surviving
+-- rows says two identities were ever one.
 CREATE TABLE IF NOT EXISTS object_merge (
-    id            TEXT PRIMARY KEY,
-    winner_id     TEXT NOT NULL,
-    loser_id      TEXT NOT NULL,
-    moved_edits   BIGINT NOT NULL DEFAULT 0,
-    actor         TEXT,
-    created_at    TEXT NOT NULL
+    id                TEXT PRIMARY KEY,
+    winner_id         TEXT NOT NULL,
+    loser_id          TEXT NOT NULL,
+    moved_edits       BIGINT NOT NULL DEFAULT 0,
+    actor             TEXT,
+    created_at        TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS object_merge_winner ON object_merge (winner_id);

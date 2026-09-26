@@ -13,6 +13,7 @@
 --     hides the difference and no query writes a literal
 --   * foreign keys need `PRAGMA foreign_keys = ON` per connection, which the
 --     store crate sets at open time
+
 -- SQLite form of the statement above (../sqlite-forms/0002_appearance_nullable_cluster.sql).
 -- SQLite form of: ALTER TABLE appearance ALTER COLUMN cluster_id DROP NOT NULL;
 --

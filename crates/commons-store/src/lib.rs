@@ -23,6 +23,7 @@ pub mod index;
 pub mod locator;
 pub mod query;
 pub mod search;
+pub mod tags;
 
 pub use db::{
     artifact_kinds, clear_jobs, file_path_and_state, file_rows, insert_artifact, insert_file,
