@@ -11,6 +11,7 @@ pub mod hashing;
 pub mod progress;
 pub mod reconcile;
 pub mod segment;
+pub mod state;
 pub mod types;
 pub mod walker;
 pub mod watch;
@@ -25,6 +26,10 @@ pub use hashing::{
 pub use progress::{Confidence, Progress, Snapshot};
 pub use reconcile::{apply, plan, Move, Reconciled, Reconciliation, ScanInput};
 pub use segment::{split_file, CompilationRelation, ExistingMarker, Segment, Split, SplitError};
+pub use state::{
+    partition_for_bulk, BulkOutcome, FileState, Lease, LeaseGuard, LeaseRegistry, Volume,
+    VolumeProbe, VolumeState, VolumeTracker,
+};
 pub use types::*;
 pub use walker::{
     fs_type, glob_match, policy_for, read_head, walk, walk_resume, Checkpoint, FoundFile, SkipRule,
