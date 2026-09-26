@@ -2561,12 +2561,26 @@ unsaved-entry protection (#6466), CSV import (#1296), per-field ignore lists
 attempt navigation with an unsaved edit and assert a confirm appears.
 **Done when:** that test exists.
 
-**Progress (1-3 of 17).** Item 1, the selection model, and item 2, the list
+**Progress (1-4 of 17).** Item 1, the selection model, and item 2, the list
 table, are in `ui/src/lib/api/selection.ts` and
 `ui/src/lib/components/ListTable.svelte`. Item 3, the bulk write and its modal,
 is in `crates/commons-store/src/bulk.rs` and
 `ui/src/lib/components/BulkEditModal.svelte`, specced separately in
-`docs/spec/t-p5-006-bulk-mutation.md`.
+`docs/spec/t-p5-006-bulk-mutation.md`. Item 4, the unsaved guard, is in
+`ui/src/lib/api/guard.ts`, `guard-store.svelte.ts` and the app shell
+`ui/src/routes/+layout.svelte`, specced separately in
+`docs/spec/t-p5-006-unsaved-guard.md`.
+
+**The "done when" for this item was wrong, and the gap it hid is worth more
+than the item.** "That test exists" is satisfied by a guard that prompts on
+every navigation, forever, and by one that unmounts the page it is meant to
+protect — which is what the obvious implementation does, because SvelteKit
+destroys the outgoing page component when a navigation commits. A test asserting
+only that a confirm appeared passes for both. The 9-case spec that shipped
+covers the three cases the floor does not name: that the guard goes quiet when
+nothing is unsaved, that a save clears its registration, and that a navigation
+with no click behind it (the back button) is still handled. A guard is only
+worth having if it can be *absent*; that is now the assertion, not a footnote.
 
 Item 3 needed a server-side mutation that did not exist, and the interesting
 part of it was not the write. Two decisions are worth recording because they

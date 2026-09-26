@@ -754,3 +754,68 @@ not in the code: a provenance test that only ever *inserted* (so the
 `ON CONFLICT DO UPDATE` half was unproven) and a missing-tag test that asserted
 only `is_err` (which a foreign-key violation also satisfies). Both now take the
 same path twice.
+
+### T-P5-006 item 4 — the guard that destroyed what it was guarding
+
+The plan's floor for this item is one test: navigate with an unsaved edit,
+assert a confirm appears. It exists and passes. It is also not the interesting
+part, because the obvious implementation of a navigation guard passes its own
+test and is still wrong.
+
+Watch `page.url`. See the navigation. Call `goto()` back to where the user was.
+SvelteKit destroys the outgoing page component when a navigation commits, so
+that does not put the user back on their page — it mounts a fresh one. Every
+`$state` in it resets. An in-progress edit is destroyed by the very navigation
+the guard performed to protect it, and the confirm then renders over a
+now-clean page reporting nothing to save.
+
+The dialog appeared. The URL did not move. The test passed.
+
+The trace that gave it away, once I stopped guessing and started logging: the
+surface's effect logged `dirty=true`, the guard fired, and then the *same*
+surface logged `dirty=false draft=""` and deregistered itself. The guard had
+unmounted the thing it was guarding.
+
+So: intercept, do not undo. A capture-phase `click` listener on the document
+runs before the browser follows the link, so `preventDefault()` there stops the
+unmount outright — there is nothing to undo afterwards. The decision is held as
+a thunk and run only once the user has answered.
+
+Three things that cost the afternoon, all of them silent:
+
+- An `$effect` on `page.url` that also *wrote* `lastUrl`. Svelte kills that
+  with `effect_update_depth_exceeded` after a thousand rounds, and the symptom
+  is an empty dialog over a genuinely unsaved edit, because the loop starves
+  the render. The bookkeeping is a plain `let` now: it is never rendered.
+- A boolean set in a click handler and read inside an `$effect`. Not a
+  synchronisation bug — the effect is scheduled by `page.url`, so its body can
+  run before the handler's write lands. Recording the URL the handler saw and
+  comparing it puts both reads at a moment the watcher controls.
+- Deregistration on unmount was missing entirely, so a registration outlived
+  its component: the library page opened with "Unsaved changes" in the toolbar
+  forever, with no editor on it. Adding `onDestroy` then broke the back button,
+  because the unmount clears the registry one step before the guard reads it.
+  Hence `guard.last`, written by `add` and by nothing else — a surface
+  unmounting is a *consequence* of the navigation and must not erase the
+  evidence. `consume` clears it, because that is the one caller meaning "yes,
+  lose it".
+
+**Known limit, documented rather than papered over.** For a history navigation
+— back button, form submit, a `goto()` from code — there is no click to
+intercept, and by the time the URL watcher runs the page has already unmounted.
+`beforeunload` does not fire for same-document navigations. So "stay" means *go
+back to the page you were on*, and the unsaved edit does not survive the round
+trip; the confirm still names what was at risk, which is what §10.7 and §10.10
+ask for. A tab close is worse still — only `beforeunload` sees it and only the
+browser may render a prompt — so that case gets `beforeunload` plus a visible
+indicator and nothing more. Full reasoning in
+`docs/spec/t-p5-006-unsaved-guard.md` §3.
+
+What the mutation script found: both survivors the first run were gaps in the
+*tests*, and one was in the *code*. Replacing `if (!isDirty(reg))` with a size
+check in `summary` changed nothing observable, which is the script's way of
+saying that guard is dead. It was. Deleted, and the test that should have caught
+it now exists — every earlier `summary` test asked about a registry with
+something in it, and the empty case renders "You have ." into the dialog.
+
+| T-P5-006 | 4 | unsaved-entry guard: `guard.ts` + `+layout.svelte` | done | `ui/src/lib/api/guard.ts`, `guard-store.svelte.ts`, `ui/src/routes/+layout.svelte`, `ui/src/lib/components/EditSurface.svelte`, `ui/e2e/guard.spec.ts` (9), `ui/tests/guard.test.ts` (24), `scripts/mutate-guard-ui.py` (10/10), `docs/spec/t-p5-006-unsaved-guard.md` |
