@@ -1094,6 +1094,9 @@ an explanation.
 
 ## Phase 3 — Identity engine
 
+**Progress:** 1 of 8 (T-P3-000, the scan pipeline). **Status:** the library is
+populatable; identity is not started.
+
 **Exit:** a person with no name is linked across every appearance in a test
 corpus; C21–C32 closed. **This is the phase that makes the project what it is
 — do not let it slip behind the infrastructure phases.**
@@ -1125,6 +1128,35 @@ and is the exact regression §6.2 exists to prevent.
 
 **Done when:** the pipeline is the only way a library gets populated, and the
 idempotence assertion is in the suite.
+
+**Done** (`369ceec`). `commons_scan::pipeline`, 15 acceptance tests written
+before the module existed. Twelve mutations, twelve caught.
+
+Requirement 2 changed shape, and deliberately. "Every slow step is a job"
+is wrong for the hash: the decision of *what* to hash has to be made against
+the stored state synchronously, and a job that re-read the hint would race
+with the walk — a file renamed between the walk and the job is a move and a
+deletion at once. Job submission for the artifacts *after* a scan belongs to
+the caller, which knows what the library is for. What the pipeline does own
+is the interruptibility that requirement was reaching for: `WalkConfig::cancel`
+stops the walk at a batch boundary and leaves a resumable checkpoint.
+
+Composing the components found four bugs no component test could see, because
+every one of them is a property of the composition:
+
+1. The reconciler could not insert. A fresh library reported "12 new" and
+   stored zero rows. Every reconciler test passed because they all began from
+   a library that already had rows.
+2. **A partial scan marked most of the library deleted.** `ScanInput` had no
+   way to say "this scan did not finish", so every path an early-stopped walk
+   had not reached looked identical to a deleted file. This is the most
+   dangerous defect found so far, and §6.1 now states the rule explicitly.
+3. `mark_absent` wrote the literal `'absent'`, which is not a `FileState`.
+   A marked row carried a fifth state that `FileState::parse` returns `None`
+   for — a file the UI could not classify.
+4. `insert_object` was not idempotent, so a library with two copies of a file
+   — the ordinary case, since an object's id *is* its content hash — failed
+   with `UNIQUE constraint failed: object.id`.
 
 ### T-P3-001 — Face detection and embedding
 

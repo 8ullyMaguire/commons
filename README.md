@@ -147,7 +147,7 @@ that is still alive and would recover.
 
 ## Testing
 
-616 tests across the workspace. The ones that matter most are the ones that
+700 tests across the workspace. The ones that matter most are the ones that
 were verified by breaking the code on purpose:
 
 - **Zip-Slip** (`commons-media`, `archive.rs`) — a comic archive is the most
@@ -205,7 +205,7 @@ enforcing so the intent is not lost.
 | 0 — Foundations | done | schema, migrations, filter language, plugin host, server, memory harness |
 | 1 — Content types | done | detection, probing, segments, archives, hashing, the five remaining content types, and the windowed grid |
 | 2 — Library and scale | 8 of 8 | watcher, checkpoints, hashing, move detection, missing volumes, durable job queue, hardware acceleration, storage accounting, encoder configuration, the locator consent gate, the throughput budget |
-| 3 | next | identity engine: face detection, clustering, the performer model |
+| 3 | 1 of 8 | the scan pipeline (done), then faces, clustering, the performer model |
 | 4–6 | planned | federation, UI surfaces, review and automation |
 | 11 — community ecosystem | planned, **last** | adapt the stashapp ecosystem rather than fork it: 729 YAML scrapers, 155 Python scrapers, 79 plugin directories, 12 theme directories. Nothing is vendored — every artifact is fetched at install time, pinned by commit. |
 

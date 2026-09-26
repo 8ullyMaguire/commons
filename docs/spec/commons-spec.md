@@ -780,6 +780,23 @@ alone, plus 6 on SQL/query performance.
 Scan is idempotent and resumable. A scan interrupted by a crash resumes from
 its checkpoint; it never re-hashes an unchanged file (§6.2).
 
+**A partial scan may not conclude that anything is gone.** This is stated
+separately because "resumes from its checkpoint" does not imply it, and the
+distinction is the difference between an interrupted scan and a destroyed
+library. A walk that stopped early — a crash, a user pressing stop, a bounded
+run — has seen part of the tree, so every path it did not reach is *absent from
+the observed set* for exactly the same reason a deleted file is. Absence is
+evidence of deletion only when the walk finished. A scan that stopped after one
+batch of a 12-file library must leave the other eleven files exactly as they
+were, because the alternative is a row that says `missing` for a file that is
+present, which the user sees as a deletion and cannot tell from a real one.
+
+The rule is one field (`ScanInput::complete`) and it is the most
+consequential line in the scanner. It was added after T-P3-000, where
+composing the Phase 2 components produced exactly the failure above: a
+pipeline that reported "12 files, 0 new" and had marked the whole library
+gone.
+
 **The throughput budget.** §6.1's design is only worth stating if it has a
 number attached, so here it is, enforced by
 `benches/scan_100k.rs` and asserted by `commons_scan::budget`:

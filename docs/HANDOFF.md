@@ -10,11 +10,11 @@ instruction that cannot be satisfied without someone adding a remote.
 
 ## Where it is
 
-Phase 0, Phase 1 and Phase 2 are complete. Nothing is a stub.
+Phase 0, Phase 1 and Phase 2 are complete. Phase 3 has started. Nothing is a stub.
 
 | | State |
 |---|---|
-| Rust workspace | 616 tests, 0 failures |
+| Rust workspace | 700 tests, 0 failures |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | `cargo fmt --all --check` | clean |
 | UI unit tests | 43 pass (`node ./tests/run-tests.mjs`) |
@@ -23,7 +23,7 @@ Phase 0, Phase 1 and Phase 2 are complete. Nothing is a stub.
 | UI build | clean, no compiler warnings |
 
 **Tags:** `phase-1-scan-core`, `phase-1-content-types`, `phase-1-complete`,
-`phase-2-scan`, `phase-2-jobs`.
+`phase-2-scan`, `phase-2-jobs`, `phase-2-complete`.
 
 `crates/commons-api` is still an empty placeholder crate. There is no GraphQL
 server, so the UI is verified against a stubbed network. That is Phase 4+ work
@@ -38,7 +38,7 @@ cd ~/code-local/rust/commons
 # Set this FIRST. The hardware-acceleration and encoder acceptance tests drive
 # the real ffmpeg against this machine's VA-API device. Unset, they fall back
 # to whatever `ffmpeg` is on PATH and the hardware cases have nothing to run
-# against -- 664 either way, but the hardware assertions are vacuous.
+# against -- the count is the same either way, but the hardware assertions are vacuous.
 export COMMONS_FFMPEG=~/.hermes/tools/ffmpeg-9.0.1-linux-x64/bin/ffmpeg
 
 CARGO_TARGET_DIR=~/.cargo-target/commons cargo test --workspace   # 664
@@ -283,38 +283,41 @@ T-P11-007 is genuinely last even within the phase.
 
 ## Next
 
-**Phase 3 — the identity engine**, and the plan is emphatic that this is the
-phase that makes the project what it is: *"do not let it slip behind the
-infrastructure phases."* Six tickets, §7.1–§7.12, C21–C32:
+**T-P3-001 — face detection.** The first ticket that needs the Phase 3
+premise to be true: faces in frames, and they need a scanned library to have
+any frames in it. T-P3-000 made that possible.
 
-| Ticket | What |
-|---|---|
-| T-P3-001 | Face detection and embedding (ONNX via `ort`, CPU-first) |
-| T-P3-002 | The clustering engine |
-| T-P3-003 | Body/appearance embedding and composite scoring |
-| T-P3-004 | Merge, split, alias, disambiguation |
-| T-P3-005 | Self-service performer claim (§7.5 — the takedown path depends on it) |
-| T-P3-006 | Performer field model and multi-valued attributes |
+What T-P3-000 did *not* do, and what a reader should know before starting:
 
-Start with T-P3-001. It is the only Phase 3 ticket with a hard external
-dependency — an ONNX model — so it is the one most likely to need a decision
-about where the model comes from and how it is pinned, and that decision is
-better made before the clustering engine is built on top of it.
+- **Artifact jobs are not submitted by the pipeline.** It hashes and
+  reconciles; the caller submits thumbnails, sprites and phash to the T-P2-004
+  queue. This is deliberate (§6.3's "every slow thing is a job" would put the
+  hash in a job too, and that is wrong — see the plan's Done note) but it means
+  nothing currently submits generation jobs, because there is no server layer
+  yet. Phase 4.
+- **No volume-state integration.** T-P2-003's `VolumeTracker` backoff is not
+  consulted by the pipeline; the walk reports volume errors and the caller
+  would feed them to the tracker. Still open.
+- **Postgres is untested on this path.** Every test here is SQLite. The
+  accessors are shared, but the SQL dialect difference is unproven.
+- **The pipeline does not honour a `ScanInput` supplied by a caller.** It
+  builds one from the walk. `reconcile::plan` is the reusable entry point for
+  anything that is not a filesystem scan.
 
-**Still not a ticket, and still worth an owner decision.** Phase 2 built and
-tested every piece of a scan pipeline and nothing calls them in sequence: the
-walker is not driven by the job queue, the job queue is not driven by a scan,
-and the reconciler is wired to nothing. Phase 3's exit criterion is "a person
-with no name is linked across every appearance in a test corpus", which needs
-a library that has been scanned. This has been flagged at the end of T-P2-006,
-T-P2-007 and T-P2-008, and it is the open item most likely to stop Phase 3
-from proving anything.
+## A pattern worth naming
 
-**Left over from earlier phases, unchanged.** `ui/static/favicon.png` is a
-transparent placeholder; paraglide is an unresolved acceptance-audit item;
-T-P2-004's journal has a verified SQLite path and no Postgres execution path;
-its `WorkerPool` is a serial bounded loop rather than parallel workers; the
-suspend-inhibitor lock is a pathname, so it can remove a file another process
-replaced; the persistent volume-state table is not yet reconciled with
-T-P2-003; and `xxhash-rust 0.8.18` has no streaming XXH3-128, so the one-read
-construction folds per-buffer one-shot values and wants a canonical audit.
+Four defects in T-P3-000 were invisible to every component's own tests, and
+all four were *properties of the composition* — the reconciler could not
+insert, a partial scan deleted the library, `mark_absent` wrote a state the
+enum does not have, `insert_object` was not idempotent. Each component was
+correctly tested and the sequence was catastrophically wrong.
+
+T-P2-002's reconciler had 13 passing tests and could not create a single row,
+because all 13 started from a library that already had rows. Coverage of a
+component is not coverage of its use.
+
+The general form: when a ticket says "compose these", the tests that matter
+are the ones where the components meet, and they have to include the
+*degenerate* case for each boundary — a scan that saw nothing, a scan that
+saw half, content that already exists, an object that already exists. Every
+one of the four bugs above was a degenerate case.
