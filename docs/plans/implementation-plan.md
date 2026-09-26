@@ -1419,10 +1419,12 @@ count-shaped assertion would have caught:
 
 All twelve mutations caught, including five that survived the first pass.
 
-### T-P3-005 — Self-service performer claim
+### T-P3-005 — Self-service performer claim — **DONE**
 
 **Spec:** §7.5
-**Files:** `crates/commons-identity/src/claim.rs`, `crates/commons-api/src/claim.rs`
+**Files:** `crates/commons-identity/src/claim.rs`, `crates/commons-api/src/claim.rs`,
+`crates/commons-store/migrations/{postgres,sqlite}/0005_performer_claim.sql`,
+`crates/commons-identity/tests/claim.rs`, `crates/commons-api/tests/claim_api.rs`
 
 1. A performer claims a cluster; the claim enters the steward queue (§8.5).
 2. On approval, the performer gets a dashboard of their appearances and can
@@ -1434,6 +1436,47 @@ All twelve mutations caught, including five that survived the first pass.
 approve → assert dashboard scope is exactly the claimed cluster and cannot
 touch another performer's record. The scope assertion is the point.
 **Done when:** the negative case (cannot edit another record) is asserted.
+
+**Implementation notes.**
+
+The rules live in `commons-identity` and the router holds none of them, so the
+rules have exactly one implementation whether they are reached over HTTP, from
+the CLI, or from a maintenance tool. The API layer's only real logic is the error
+mapping, and it is the one place a decision was needed per variant — `NotYourRecord`
+is 403 rather than 404 because the caller is authenticated and 404 would promise
+the record does not exist, which is a promise §7.5 should not make about another
+person's identity; `FieldNotCorrectable` is 422 rather than 403 because the
+permission is fine and the field is not, and 403 would tell a performer they
+cannot edit their own name.
+
+Three properties the ticket did not name and that the tests turned out to need:
+
+* **`performer_verification` is keyed by `cluster_id`**, so one cluster is one
+  person, verified once. This is load-bearing rather than a primary-key
+  accident: if two accounts could be verified against one cluster, a takedown
+  request would go to both, and each would learn that the other is verified
+  against the same content.
+* **A takedown request stores no recipient.** The recipient is derived from the
+  claim at read time, so a request cannot outlive the claim it was aimed at and
+  there is no row recording who was told. A request with no recipient escalates
+  to the stewards (`to_stewards`) rather than being dropped, which is the one
+  outcome §7.5's third clause exists to prevent.
+* **The correctable fields are an allowlist, not a blocklist.** The dangerous
+  fields are the ones that are not metadata — a consent tier, a verification, a
+  claim state. A blocklist is a list of the fields someone thought of, and the
+  next one would be writable until somebody noticed.
+
+One account claiming two clusters resolves to one performer record; minting a
+second would give one human two identities to write to, and the scope rule is
+written against a performer id.
+
+**Mutations:** nine, all caught. Two survived the first pass and both were test
+gaps rather than code gaps — every single-cluster fixture made "the verified
+account" and "the verified account of *this* cluster" the same string, so
+`takedown_recipients` ignoring the cluster was invisible. The dashboard's account
+filter had the same problem: with one verified account, "every appearance in the
+database" and "this account's appearances" are the same query result. Both are
+now covered by two-account, two-cluster tests.
 
 ### T-P3-006 — Performer field model and multi-valued attributes
 

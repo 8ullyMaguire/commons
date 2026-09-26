@@ -11,6 +11,7 @@ commons-store = { workspace = true }
 commons-jobs = { workspace = true }
 commons-consent = { workspace = true }
 commons-index = { workspace = true }
+commons-identity = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

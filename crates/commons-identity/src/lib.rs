@@ -8,3 +8,8 @@
 //! the mechanism the whole product runs on.
 
 pub mod cluster;
+
+// §7.5's self-service performer claim. Separate from `cluster` because it is
+// about *people*: who is allowed to say which cluster is theirs, and what they
+// may then change. The cluster engine has no opinion on any of that.
+pub mod claim;

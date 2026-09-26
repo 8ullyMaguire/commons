@@ -10,20 +10,21 @@ instruction that cannot be satisfied without someone adding a remote.
 
 ## Where it is
 
-Phases 0, 1 and 2 are complete. Phase 3 has five of eight tickets done
+Phases 0, 1 and 2 are complete. Phase 3 has six of eight tickets done
 (T-P3-000 the scan pipeline, T-P3-001 face detection, T-P3-002 clustering,
-T-P3-003 the §7.4 composite score, T-P3-004 merge/split/alias/disambiguate);
-T-P3-005, T-P3-006 and all of Phases 4 through 8 are not started. Nothing built is a stub.
+T-P3-003 the §7.4 composite score, T-P3-004 merge/split/alias/disambiguate,
+T-P3-005 §7.5's self-service performer claim); T-P3-006 and all of Phases 4
+through 8 are not started. Nothing built is a stub.
 
 `python3 scripts/plan-status.py` is the authority on that sentence, not this
-file and not the plan. It counts 29 of 84 tickets closed and 47 genuinely
+file and not the plan. It counts 30 of 84 tickets closed and 46 genuinely
 unstarted, and it exits non-zero if any ticket is *marked* done while the file
 it names is absent -- the failure mode that reads as progress and builds as
 nothing. `scripts/verify.sh` runs it, so the claim cannot rot.
 
 | | State |
 |---|---|
-| Rust workspace | 797 tests, 0 failures |
+| Rust workspace | 826 tests, 0 failures |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | `cargo fmt --all --check` | clean |
 | UI unit tests | 43 pass (`node ./tests/run-tests.mjs`) |
@@ -409,3 +410,33 @@ rather than a gap in the code.
 A freshly added migration was "no such table" at runtime against a green build.
 `touch crates/commons-store/src/lib.rs` forces the re-embed. If a migration is
 missing from a test database, suspect the build before the SQL.
+
+---
+
+## Two lessons from T-P3-005, both about fixtures
+
+**A fixture with one of everything cannot test a filter.** The first pass of
+T-P3-005's mutation sweep had two survivors, and both were the same mistake: every
+fixture had exactly one verified account and exactly one cluster. With one
+account, "return this account's appearances" and "return every appearance in the
+database" are the same result set, and with one cluster, "the verified account" and
+"the verified account *of this cluster*" are the same string. A mutation that
+replaced `WHERE v.account = ?` with `WHERE 1 = 1` passed.
+
+The fix is not a better assertion, it is a second account. A test of a *filter*
+needs at least two things to filter between, and the assertion that matters is
+the one on the row that must **not** appear. Every filter in this repo should be
+read with that question: what is the second thing?
+
+**One performer per cluster is a decision, not a primary key.** `performer_verification`
+is keyed by `cluster_id`, so one cluster is one person. I hit this as a test that
+would not set up -- three accounts, one cluster, `UNIQUE constraint failed` -- and
+nearly "fixed" it by loosening the schema. That would have been the wrong fix: two
+accounts verified against one cluster means a takedown request goes to both, and
+each learns that the other is verified against the same content. The constraint is
+load-bearing. It is now written down in the migration and asserted directly.
+
+**When a test will not set up, check whether the schema is telling you something.**
+A unique-violation error is the database disagreeing with the fixture, and the
+disagreement is usually about the domain, not about the test.
+
