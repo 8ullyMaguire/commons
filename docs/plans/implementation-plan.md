@@ -1988,21 +1988,76 @@ so it is a cap on a person rather than on a corpus's shape.
 Verification: `994 tests, 0 failures`; `cargo fmt --check` clean; `cargo clippy
 --workspace --all-targets -- -D warnings` clean.
 
-### T-P4-006 — Leaderboards, badges, points
+### T-P4-006 — Leaderboards, badges, points — DONE
 
 **Spec:** §8.4
-**Files:** `commons-index/src/points.rs`
+**Files:** `crates/commons-index/src/points.rs`, migration 0012
 
-Leaderboards over **contributors, never performers** (§2). Badges, bounties,
-quests, reward points for invited contributors, configurable invite-key count
-(stash-box#551). Points are earned by **accepted** proposals, tying the economy
-to T-P4-001.
+Points are a **ledger**, not a balance. There is no `points_total` column
+anywhere; a balance is `SUM(points) WHERE withdrawn_at IS NULL`, recomputed on
+read. This is T-P4-004's rule applied to money, and the reason transfers
+directly: a stored number has to be kept in step with §8.1's output, which changes
+on every vote, and nothing in the system knows the right answer to check it
+against. The ledger knows.
 
-**Accept:** test that points are awarded on acceptance and withdrawn on
-rejection-after-acceptance; test that no query surfaces a "top performers"
-ranking.
-**Done when:** the negative test (no performer-popularity surface) exists —
-it guards §2's most easily eroded promise.
+`points_award` is unique on `(account_id, proposal_id)`, and that one index does
+two jobs: reconcile is idempotent, and a proposal that loses then wins again
+returns to *the same row* rather than forking an account's history. Neither
+would hold with an autoincrement key, which is the obvious choice.
+
+**The negative test, which is the ticket's done-when.** `no_surface_ranks_people_by_
+popularity` scans every SQL string in the crate for popularity orderings and for
+function names that promise a ranking. It is a scan rather than a function test
+because a test asserting `leaderboard()` returns accounts is satisfied by a
+`top_performers()` sitting beside it, unreviewed and reachable from a route — the
+scan fails when the query is *added*, which is the moment the decision is made.
+
+`the_popularity_scan_ignores_comments` exists because the obvious response to a
+failing guard is to delete it: it is the only test in the suite that fails on
+something nobody wrote, and one that fires on a doc comment explaining the
+promise is one that gets switched off. Both directions are verified — the scan
+catches a real `ORDER BY popularity` query and names the line, and it stays
+silent on a comment naming the same string.
+
+`LeaderboardEntry` carries no performer field, which is the structural half of the
+same promise: no query can put a performer in a leaderboard row without changing
+the row type, and a test reconstructs the struct field by field so a new field
+would not compile.
+
+The one real bug the tests found, and it is the ticket's own accept criterion:
+
+**A rival that simply took over left the old award live.** The withdraw branch
+fired only when the field had *no* winner at all, so an overtaken proposal kept
+its points and the account was paid twice for one field — the counter bug, one
+layer up, in a module written specifically to avoid it. "Which award should
+stand" is not the same question as "is there an award", and the second is the
+wrong one. The fix inverts the question: withdraw every live award for the field
+that is not the one §8.1 currently names as the winner.
+
+Three rules the tests pinned, each of which is a way to get rich:
+
+* **A machine proposal pays nobody.** §8.1 says its weight carries no authority.
+  A scan that paid would make bulk import the cheapest way to earn points, and the
+  leaderboard would rank who imported most rather than who curated best.
+* **A locked field pays nobody.** A lock is the *absence* of a vote (§8.1 rule
+  three), so no proposal won it. A lock that paid would make stewardship the most
+  profitable activity in the system.
+* **A tie pays nobody.** §8.1 reports a tie as one needing a human.
+
+Badges are predicates over the ledger, never a `has_badge` column — a stored flag
+goes stale the moment a vote is retracted. The threshold is tested at exactly
+`BADGE_HUNDRED - 1` and `BADGE_HUNDRED`, because `>= 100` and `> 99` agree
+everywhere except at 100, which is the single number nobody would test.
+
+Invite redemption is exactly-once via a conditional `UPDATE ... WHERE uses <
+max_uses`: two simultaneous redemptions of the last use see one update zero rows.
+A read-then-write check lets both through. The cap is counted over *live* keys,
+so a deployment cannot lock itself out with spent ones.
+
+Verification: `1013 tests, 0 failures`; fmt clean; `clippy --workspace
+--all-targets -- -D warnings` clean. Eight mutations killed, including
+re-introducing the withdraw bug, `User` → `MlTagger` in the human-only check,
+`>=` → `>` on a badge threshold, and dropping the leaderboard's disabled filter.
 
 ### T-P4-007 — Consent tiers as a store-layer filter
 

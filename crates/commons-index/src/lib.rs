@@ -8,5 +8,6 @@
 pub mod candidates;
 pub mod history;
 pub mod moderation;
+pub mod points;
 pub mod reputation;
 pub mod resolve;
