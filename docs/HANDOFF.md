@@ -10,7 +10,7 @@ instruction that cannot be satisfied without someone adding a remote.
 
 ## Where it is
 
-Phase 0 and Phase 1 are complete. Phase 2 is 7 of 8 tickets. Nothing is a stub.
+Phase 0, Phase 1 and Phase 2 are complete. Nothing is a stub.
 
 | | State |
 |---|---|
@@ -87,6 +87,7 @@ node_modules/.bin/playwright test           # browser, against the build
 | T-P2-006 storage | `e45924b` | three bases, each with the `du` that computes it |
 | T-P2-006 encoders | `c8b44a2` | format, quality, threads — all previously literals |
 | T-P2-007 locators | `78a0ac0` | the write path that was a stub |
+| T-P2-008 throughput | `9eb7800` | the budget, as a number that fails |
 
 ## Six things to know before writing more code here
 
@@ -282,26 +283,32 @@ T-P11-007 is genuinely last even within the phase.
 
 ## Next
 
-**T-P2-008 — Throughput benchmark gate.** The last Phase 2 ticket, and the
-only one left. §6.1 states a budget — a 100k-item library scanned and browsable
-within a stated time — and the plan is explicit that this must be an executable
-benchmark rather than a claim. Nothing in the workspace measures it yet.
+**Phase 3 — the identity engine**, and the plan is emphatic that this is the
+phase that makes the project what it is: *"do not let it slip behind the
+infrastructure phases."* Six tickets, §7.1–§7.12, C21–C32:
 
-The parts that gate it are all in place and tested: the walker checkpoints
-(T-P2-001) so a scan can resume rather than restart, the one-read hash
-(T-P2-002) so throughput is bounded by I/O once rather than twice, the
-per-`(JobKind, target)` concurrency limit (T-P2-004) so a 100k-item library
-does not open 100k ffmpeg processes, and the §6.1 visible-window grid with
-keyset pagination (T-P1-008) so browsing is not an OFFSET query. What is
-missing is the measurement, and with it a baseline to catch a regression that
-is invisible until someone's 100k-item library takes a day.
+| Ticket | What |
+|---|---|
+| T-P3-001 | Face detection and embedding (ONNX via `ort`, CPU-first) |
+| T-P3-002 | The clustering engine |
+| T-P3-003 | Body/appearance embedding and composite scoring |
+| T-P3-004 | Merge, split, alias, disambiguation |
+| T-P3-005 | Self-service performer claim (§7.5 — the takedown path depends on it) |
+| T-P3-006 | Performer field model and multi-valued attributes |
 
-**Not a ticket, and worth an owner decision.** The plan has no orchestrator
-ticket, and every Phase 2 piece is now built and tested but nothing calls them
-in sequence: the walker is not driven by the job queue, the job queue is not
-driven by a scan, and the reconciler is wired to nothing. Phase 3 assumes a
-scan pipeline that exists. This has been flagged at the end of T-P2-006 and
-T-P2-007 and is still open.
+Start with T-P3-001. It is the only Phase 3 ticket with a hard external
+dependency — an ONNX model — so it is the one most likely to need a decision
+about where the model comes from and how it is pinned, and that decision is
+better made before the clustering engine is built on top of it.
+
+**Still not a ticket, and still worth an owner decision.** Phase 2 built and
+tested every piece of a scan pipeline and nothing calls them in sequence: the
+walker is not driven by the job queue, the job queue is not driven by a scan,
+and the reconciler is wired to nothing. Phase 3's exit criterion is "a person
+with no name is linked across every appearance in a test corpus", which needs
+a library that has been scanned. This has been flagged at the end of T-P2-006,
+T-P2-007 and T-P2-008, and it is the open item most likely to stop Phase 3
+from proving anything.
 
 **Left over from earlier phases, unchanged.** `ui/static/favicon.png` is a
 transparent placeholder; paraglide is an unresolved acceptance-audit item;

@@ -1,6 +1,6 @@
 # Commons — Implementation Plan
 
-**Status:** in progress. Phase 0 and Phase 1 complete; Phase 2 at 7 of 8.
+**Status:** in progress. Phase 0, 1 and 2 complete; Phase 3 next.
 **Created:** 2026-09-26 · **Phase 11 added** 2026-09-26 (community ecosystem,
 at the owner's request; deliberately last)
 **Spec:** `~/secondbrain/10-Projects/2026-09-26T110000+0200-commons-platform-spec.md` (v1.3, 2,636 lines)
@@ -729,7 +729,7 @@ noted in the handoff.
 **Exit:** a 100k-item library scans and browses within budget; C15–C20 closed;
 locator hashes computed.
 
-**Progress:** 7 of 8 tickets done (T-P2-001 … T-P2-007).
+**Progress:** 8 of 8 tickets done. Phase 2 is complete.
 
 ### T-P2-001 — Filesystem watcher and scan checkpoints
 
@@ -1053,6 +1053,44 @@ report) if exceeded by 25 %.
 **Done when:** the budgets are written down and the 25 % margin is real.
 
 ---
+
+**Done.** The ticket's acceptance criterion pointed at §6.1 and §4.3 for the
+budget and both were silent — §4.3 gives memory figures, §6.1 names fifteen
+throughput issues and describes the design, and neither states a time. Phase
+2's exit criterion ("100k-item library scan and browse within a stated
+budget") therefore had no number behind it, which is the same shape of gap as
+C20 in T-P2-006: a ticket citing an authority that does not contain the thing
+it needs.
+
+The numbers are now in `commons_scan::budget` — initial walk 30 s, incremental
+decision pass 4 s, margin 25 % — with the measured figures beside them and the
+reasoning for the looseness. The spec carries the same table.
+
+Two corrections the first version needed, both found by running it rather than
+by reading it:
+
+* It benchmarked the walk twice and asserted the second was faster. It failed,
+  correctly: the walk does identical work both times, because whether a file
+  is read is the caller's decision, not the walker's. The walker contains no
+  read at all, so the re-scan figure is now the cost of *deciding* not to
+  hash — which is what §6.1 actually promises — and the gate asserts the
+  relationship (decide < open) as well as the absolute ceilings.
+* A `benches/` binary is not a test target. `cargo test` does not compile it,
+  so gate logic written there has no coverage: four of six mutations passed
+  with the benchmark green, including "never fail" and "ignore the margin". The
+  decision logic moved into the library, where 8/8 mutations are caught, and
+  the benchmark measures and calls it.
+
+**One requirement was changed, deliberately.** The ticket said "a criterion
+benchmark". This is hand-rolled instead, because a criterion benchmark reports
+numbers and always exits 0 — it cannot be a gate, and the ticket's own "Done
+when" is that "the 25 % margin is real". A gate that cannot fail is a report.
+The reasoning is recorded at the `[[bench]]` entry in `Cargo.toml` so nobody
+re-adds criterion later thinking it was an oversight.
+
+The benchmark also refuses to run on tmpfs — `/tmp` is tmpfs on this host, and
+100k files in RAM measures RAM. Verified by pointing it there: it exits 2 with
+an explanation.
 
 ## Phase 3 — Identity engine
 

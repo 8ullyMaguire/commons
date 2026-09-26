@@ -780,6 +780,32 @@ alone, plus 6 on SQL/query performance.
 Scan is idempotent and resumable. A scan interrupted by a crash resumes from
 its checkpoint; it never re-hashes an unchanged file (§6.2).
 
+**The throughput budget.** §6.1's design is only worth stating if it has a
+number attached, so here it is, enforced by
+`benches/scan_100k.rs` and asserted by `commons_scan::budget`:
+
+| Operation | Budget | Margin |
+|---|---|---|
+| Initial walk of a 100,000-file tree | 30 s | 25 % |
+| Incremental decision pass over the same tree | 4 s | 25 % |
+
+Two properties, not one. The first is an absolute ceiling: a scan that takes
+minutes where the design says seconds is the O(n²) or per-directory-`stat`
+regression, and it is what the fifteen issues in this section are about. The
+second is a *relationship* — deciding not to hash must cost less than opening
+the file it avoids — because that is the actual promise. Both absolute numbers
+can look healthy while the incremental path has quietly become a full scan, so
+the gate asserts the ratio as well as the ceilings.
+
+The 30 s budget is roughly 130× the measured walk cost on the development host.
+That margin is deliberate rather than lazy: a budget that fails on a cold page
+cache, a slower disk, or a CI runner with fewer cores is a budget people learn
+to ignore, and a gate that is always ignored is not a gate. It still catches
+every regression that matters, because those are minutes at this scale rather
+than seconds. The numbers were chosen, not measured against a user
+requirement — §4.3's memory figures are the only budgets in this spec that
+came from one — so they are a starting point to be moved with evidence.
+
 ### 6.2 Incremental correctness (C16)
 
 - `(mtime, size)` is a *hint*; content hash is truth, but only recomputed when
