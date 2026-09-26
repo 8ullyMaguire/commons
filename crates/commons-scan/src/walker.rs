@@ -363,6 +363,12 @@ pub struct WalkConfig {
     pub on_batch: Option<BatchSink>,
     /// How many files per batch. Also how often `on_batch` is called.
     pub batch_size: usize,
+    /// Live progress, if the caller wants it.
+    ///
+    /// `Option` rather than always-present because a walk with no UI on it
+    /// should not pay for the atomics, and because a caller may already be
+    /// holding a handle to the progress it wants to read.
+    pub progress: Option<crate::progress::Progress>,
 }
 
 /// Hand-written because `on_batch` is a trait object, which cannot derive
@@ -414,6 +420,7 @@ impl Default for WalkConfig {
             follow_symlinks: false,
             on_batch: None,
             batch_size: 256,
+            progress: None,
         }
     }
 }
@@ -427,6 +434,7 @@ impl WalkConfig {
             follow_symlinks: false,
             on_batch: None,
             batch_size: 256,
+            progress: None,
         }
     }
 }
@@ -606,6 +614,10 @@ impl Walker {
             // the checkpoint is meaningless.
             children.sort();
 
+            if let Some(p) = &self.config.progress {
+                p.enter_dir(children.len() as u64);
+            }
+
             for path in children {
                 let meta = if self.config.follow_symlinks {
                     std::fs::metadata(&path)
@@ -644,6 +656,9 @@ impl Walker {
                 if file_type.is_dir() {
                     if self.should_skip(&path, &child_rel) {
                         self.stats.skipped += 1;
+                        if let Some(p) = &self.config.progress {
+                            p.skipped();
+                        }
                         continue;
                     }
                     stack.push(path);
@@ -677,6 +692,9 @@ impl Walker {
                             .map(|d| d.as_nanos() as i128),
                         path,
                     };
+                    if let Some(p) = &self.config.progress {
+                        p.file(found.size);
+                    }
                     self.batch.push(found);
                     if self.batch.len() >= self.config.batch_size {
                         self.flush(&mut report);
@@ -1549,5 +1567,62 @@ mod tests {
             b"0123456789"
         );
         assert!(read_head(&d.path().join("missing"), 4).is_err());
+    }
+
+    /// The walk has to actually drive the progress handle. A progress module
+    /// that the walk never calls is a progress module that always reads zero,
+    /// and a bar stuck at 0% is indistinguishable from a hung scan.
+    #[test]
+    fn the_walk_drives_the_progress_handle() {
+        let d = temp();
+        let mut paths = Vec::new();
+        for dir in 0..12 {
+            for f in 0..10 {
+                paths.push(format!("d{dir:02}/f{f}.mp4"));
+            }
+        }
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        tree(d.path(), &refs);
+
+        let p = crate::progress::Progress::start();
+        let cfg = WalkConfig {
+            progress: Some(p.clone()),
+            ..WalkConfig::default()
+        };
+        let r = Walker::new(d.path()).with_config(cfg).walk();
+
+        let s = p.snapshot();
+        assert_eq!(s.files_seen, 120, "every file the walk looked at");
+        assert_eq!(s.dirs_seen, 13, "12 subdirectories plus the root");
+        // The fixture helper writes one byte per file, so 120 files is 120
+        // bytes. This is here to catch a `file()` call that forgets to pass
+        // the size, which would read zero -- a plausible-looking zero.
+        assert_eq!(s.bytes_seen, 120, "sizes reach the progress handle");
+        assert!(s.rate.is_finite());
+        assert_eq!(
+            s.confidence,
+            crate::progress::Confidence::Good,
+            "13 directories is enough to extrapolate"
+        );
+        assert!(s.fraction > 0.0 && s.fraction <= 0.99, "{}", s.fraction);
+        assert_eq!(r.files.len(), 120);
+    }
+
+    /// A skipped file advances the bar without inflating the library count.
+    #[test]
+    fn skipped_files_do_not_count_as_library_files() {
+        let d = temp();
+        tree(d.path(), &["keep.mp4", "drop.mp4"]);
+        let p = crate::progress::Progress::start();
+        let cfg = WalkConfig {
+            skip: vec![SkipRule::Name("drop.mp4".to_string())],
+            progress: Some(p.clone()),
+            ..WalkConfig::default()
+        };
+        let r = Walker::new(d.path()).with_config(cfg).walk();
+        let s = p.snapshot();
+        assert_eq!(r.files.len(), 1);
+        assert_eq!(s.files_seen, 1, "the skipped file is not a library file");
+        assert!(s.fraction > 0.0, "the work still happened: {}", s.fraction);
     }
 }

@@ -7,6 +7,7 @@
 
 pub mod detect;
 pub mod funscript;
+pub mod progress;
 pub mod segment;
 pub mod types;
 pub mod walker;
@@ -15,6 +16,7 @@ pub use detect::{detect, detect_from_bytes, Container, Detection, Evidence};
 pub use funscript::{
     discover, Action, Axis, Funscript, FunscriptError, FunscriptSource, FunscriptWarning,
 };
+pub use progress::{Confidence, Progress, Snapshot};
 pub use segment::{split_file, CompilationRelation, ExistingMarker, Segment, Split, SplitError};
 pub use types::*;
 pub use walker::{
