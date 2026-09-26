@@ -197,6 +197,41 @@ pub async fn object(store: &Store, id: &str) {
     db::insert_object(store, id, "photo").await.unwrap();
 }
 
+/// An object row dated `date`, for the tests that need §7.11's span to have
+/// something to derive from.
+///
+/// A dated object rather than an undated one because the span reads `object.date`
+/// and a test that wants to check a span over three years needs three years of
+/// dates on the rows. Kept beside [`object`] so the two insert the same row
+/// shape and a change to the `object` table breaks them together.
+pub async fn dated_object(store: &Store, date: &str) -> String {
+    let id = format!("obj-date-{date}");
+    db::insert_object(store, &id, "scene").await.unwrap();
+    sqlx::query("UPDATE object SET date = ? WHERE id = ?")
+        .bind(date)
+        .bind(&id)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    id
+}
+
+/// An object with no date, for the tests about undated items.
+///
+/// A real `object` row with `date` left NULL, because "an item with no date" is
+/// the shape §7.11's derivation has to cope with and inventing it in the test
+/// would not exercise the same query.
+pub async fn undated_object(store: &Store) -> String {
+    let id = "obj-undated".to_string();
+    db::insert_object(store, &id, "scene").await.unwrap();
+    sqlx::query("UPDATE object SET date = NULL WHERE id = ?")
+        .bind(&id)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    id
+}
+
 /// The fixture index an object name refers to: `obj17` is appearance 17.
 pub fn index_of(object_id: &str) -> usize {
     object_id

@@ -10,21 +10,21 @@ instruction that cannot be satisfied without someone adding a remote.
 
 ## Where it is
 
-Phases 0, 1 and 2 are complete. Phase 3 has six of eight tickets done
-(T-P3-000 the scan pipeline, T-P3-001 face detection, T-P3-002 clustering,
-T-P3-003 the §7.4 composite score, T-P3-004 merge/split/alias/disambiguate,
-T-P3-005 §7.5's self-service performer claim); T-P3-006 and all of Phases 4
+Phases 0, 1, 2 and 3 are complete. Phase 3's eight tickets are T-P3-000 the
+scan pipeline, T-P3-001 face detection, T-P3-002 clustering, T-P3-003 the §7.4
+composite score, T-P3-004 merge/split/alias/disambiguate, T-P3-005 §7.5's
+self-service performer claim, T-P3-006 the performer field model. All Phases 4
 through 8 are not started. Nothing built is a stub.
 
 `python3 scripts/plan-status.py` is the authority on that sentence, not this
-file and not the plan. It counts 30 of 84 tickets closed and 46 genuinely
+file and not the plan. It counts 31 of 84 tickets closed and 45 genuinely
 unstarted, and it exits non-zero if any ticket is *marked* done while the file
 it names is absent -- the failure mode that reads as progress and builds as
 nothing. `scripts/verify.sh` runs it, so the claim cannot rot.
 
 | | State |
 |---|---|
-| Rust workspace | 826 tests, 0 failures |
+| Rust workspace | 846 tests, 0 failures |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | `cargo fmt --all --check` | clean |
 | UI unit tests | 43 pass (`node ./tests/run-tests.mjs`) |
@@ -440,3 +440,41 @@ load-bearing. It is now written down in the migration and asserted directly.
 A unique-violation error is the database disagreeing with the fixture, and the
 disagreement is usually about the domain, not about the test.
 
+---
+
+## Phase 3 is closed, and what it left behind
+
+The identity engine is the part of Commons with the most expensive mistakes, so
+the shape of it is worth stating for whoever picks up Phase 4.
+
+**`commons-core` owns the decisions, the crates above it own the work.** §7.12's
+"does this appearance count" is `AppearanceType::counts_as_appearance` in
+`commons-core`. The appear-with graph in `commons-identity` reads it. During
+T-P3-006 the graph first had its own list of credited type strings, which is the
+same decision in two places and the copy is what goes stale. If a rule is a rule
+about the domain, it belongs in `commons-core` and everything else reads it.
+
+**The schema is the authority wherever a query could depend on it.** Which
+attribute types exist, which are multi-valued, which statuses are legal: all
+three are tables or constraints, and `AttrType::from_schema` refuses to proceed
+if the Rust enum disagrees. It fired during T-P3-006 (`date` was seeded
+single-valued, the enum said multi) and it fires in the right place — at the
+first read of a field, not three screens later.
+
+**Two schema bugs predating Phase 3, both found by tests written for a feature
+that needed them.** 0002 made `appearance` unique per (object, type), which
+means a scene with two performers cannot be recorded at all — and §7.12's graph
+is built by joining appearances through `object_id`, so the feature was
+unbuildable against the constraint. 0001 made `custom_field_value` unique per
+(subject, date), which means a `multi` field cannot hold two values written on
+the same day. Both were fixed in 0006 by rebuilding the constraint properly
+rather than by working around it in the query layer. **If a feature is
+unimplementable, the schema is the thing to read first** — the workaround is
+always available and always worse.
+
+**§7.11's career span is a query, not a column.** No stored span, because a
+stored span drifts, cannot explain itself, and turns "editable but derived" into
+two sources of truth with a rule about which wins. The index on
+`(cluster_id, object_id)` makes it as cheap as it needs to be; the cost of a
+stored column is paid on every write forever and this one is paid on a read that
+already touches the row.

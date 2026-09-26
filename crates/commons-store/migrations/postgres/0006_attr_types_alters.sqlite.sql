@@ -1,0 +1,10 @@
+-- Nothing to run: on SQLite `custom_field_value`'s shape is produced whole by the
+-- table rebuild further down this migration, and `custom_field.created_at` is
+-- added above this block by the shared `ALTER TABLE`.
+--
+-- The block exists to mark the one statement that is *not* portable. The Postgres
+-- form adds `recorded_at` to `custom_field_value` by ALTER; SQLite gets the same
+-- column by rebuilding the table, because a rebuild is the only way to drop the
+-- unnamed `UNIQUE` from 0001. So the Postgres statement has no SQLite equivalent
+-- of its own, and the sidecar says so rather than repeating a statement that
+-- would fail with "duplicate column name".

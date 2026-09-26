@@ -99,6 +99,14 @@ def sync() -> int:
 
     changed = 0
     for pg_file in sorted(pg_dir.glob("*.sql")):
+        # `*.sqlite.sql` is a sidecar holding the SQLite form of one statement
+        # inside a migration; it is read by `expand_sqlite_blocks`, not applied.
+        # Copying it into the mirror directory as if it were a migration would
+        # make sqlx run a bare CREATE TRIGGER as version N, which is exactly the
+        # sort of thing that only fails on a database that has been migrated
+        # twice.
+        if pg_file.name.endswith(".sqlite.sql"):
+            continue
         target = lite_dir / pg_file.name
         text = pg_file.read_text()
         header = SQLITE_HEADER.format(name=pg_file.name).rstrip("\n")

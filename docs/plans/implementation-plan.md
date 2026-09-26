@@ -1478,7 +1478,7 @@ filter had the same problem: with one verified account, "every appearance in the
 database" and "this account's appearances" are the same query result. Both are
 now covered by two-account, two-cluster tests.
 
-### T-P3-006 — Performer field model and multi-valued attributes
+### T-P3-006 — Performer field model and multi-valued attributes — **DONE**
 
 **Spec:** §7.6, §7.7, §7.9, §7.10, §7.11, §7.12
 
@@ -1499,6 +1499,74 @@ measurements produces the correct derived career span and the correct age at a
 given item's date.
 **Done when:** the derivation test exists and recomputes identically after a
 no-op rescan (i.e. it is derived, not incrementally drifted).
+
+**Implementation notes.**
+
+*Files:* `crates/commons-identity/src/attrs.rs`, `.../span.rs`,
+`crates/commons-store/migrations/{postgres,sqlite}/0006_attr_types.sql`,
+`crates/commons-identity/tests/attrs.rs`, and `tests/common/{mod.rs}` for the two
+object fixtures.
+
+**The vocabulary is the schema's.** `attr_type_vocab` in the migration is the
+statement of which types exist and which are multi-valued, and
+`AttrType::from_schema` reads it and *refuses* to proceed if the Rust enum
+disagrees. It fired during development: `date` was seeded single-valued while
+`is_multi` said multi. That is the guard working, and it is the reason the
+vocabulary is a table rather than a `match` in Rust — the two would have drifted.
+
+**Values are refused, not coerced.** Every `AttributeError` names what was wrong.
+A wrong-typed value stored anyway reads back as something the writer never meant,
+and nothing anywhere reports it. `measurement` is checked for its date *before*
+its type, so an undated measurement is reported as undated rather than as "a
+number where a measurement belongs" — the first is the thing the writer can act
+on.
+
+**`AttrValue` is externally tagged.** Adjacently tagged (`{type, v}`) was nicer
+and is not possible: serde cannot serialise a bare primitive inside an internally
+tagged enum, and `Text(String)` is a bare primitive. The store's
+`no_internally_tagged_enum_carries_a_bare_primitive` test is what caught it, and
+it exists because the mistake compiles.
+
+**Two bugs the tests found in code that predates this ticket:**
+
+*0002's uniqueness on `appearance` forbids two performers in one scene.* It
+restated 0001's `(object_id, cluster_id, appearance_type)` as
+`(object_id, appearance_type)` partial indexes. The stated reason was sound — a
+NULL compares unequal to every NULL, so with `cluster_id` nullable the original
+constraint stopped constraining the ambiguous rows — but the fix dropped
+`cluster_id` from the key, so **one appearance per object per type**. A scene
+with two people in it could not be recorded, and §7.12's appear-with graph is
+built by joining appearances through `object_id`, so the whole feature is
+unbuildable against it. 0006 restores the key using
+`COALESCE(cluster_id, '')` as an *expression* index column rather than a
+sentinel written into the data, which is what 0002's own comment was reaching for
+and rejecting for the wrong reason.
+
+*0001's uniqueness on `custom_field_value` allows one value per subject per
+date.* For a `multi` field that is precisely wrong: two values written on the
+same day collide, and the refusal names no field and no value. 0006 drops it and
+rebuilds with `value_json` in the key. On SQLite that is the twelve-step table
+rebuild, written out in full in the sidecar — the unnamed table-level `UNIQUE`
+cannot be dropped any other way.
+
+**`date` is single-valued, not multi.** A person has one birth date. The
+repeated-over-time case is `measurement`, which carries its own date. This was
+the disagreement the vocabulary guard caught.
+
+**`derive` counts undated items.** The bounds need two dates so they come from
+the dated ones; the *count* is a number and an item with no date is still an
+item. An inner join would have made the count silently drop them.
+
+**Mutations:** fourteen. Two survived the first pass. `add()`'s duplicate check
+had no test — a silently doubled value is a list claiming three ethnicities when
+there are two. And the age boundary was only tested a month clear of the
+birthday, so a comparison off by a day in either direction passed; the test now
+covers the day before, the day of and the day after, plus a 29 February birthday
+in both a leap and a common year. One further survivor was a genuine no-op:
+removing `rescan`'s touch-loop changes nothing because `derive` inside it
+queries anyway, so the function is correct by construction rather than by
+assertion — recorded in the code rather than papered over with a test that
+cannot fail.
 
 ---
 

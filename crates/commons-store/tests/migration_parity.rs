@@ -21,7 +21,7 @@ fn migration_files(engine: &str) -> Vec<String> {
         .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
         .filter_map(|e| e.ok())
         .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| n.ends_with(".sql"))
+        .filter(|n| n.ends_with(".sql") && !n.ends_with(".sqlite.sql"))
         .collect();
     names.sort();
     names
@@ -113,6 +113,15 @@ fn merge(a: Option<BTreeSet<String>>, b: Option<BTreeSet<String>>) -> Option<BTr
 /// other is a divergence, and a reader that only collects additions sees both
 /// sides as identical.
 fn column_changes(sql: &str, table: &str) -> (BTreeSet<String>, BTreeSet<String>) {
+    // `ADD CONSTRAINT` and `ADD PRIMARY KEY` add a *constraint*, not a column,
+    // and they are spelled without the `COLUMN` keyword -- which is what makes the
+    // `(?:COLUMN\s+)?` dangerous: it captures the word `constraint`, and the
+    // parity test then reports a column Postgres has and SQLite does not.
+    //
+    // Filtered in code rather than with a negative lookahead because the `regex`
+    // crate has no look-around, and a keyword list in a `filter` reads more
+    // clearly than it would as a lookahead anyway.
+    const NOT_A_COLUMN: [&str; 5] = ["constraint", "primary", "foreign", "unique", "check"];
     let add = regex::Regex::new(&format!(
         r"(?i)ALTER\s+TABLE\s+{table}\s+ADD\s+(?:COLUMN\s+)?(\w+)"
     ))
@@ -124,6 +133,7 @@ fn column_changes(sql: &str, table: &str) -> (BTreeSet<String>, BTreeSet<String>
     let added = add
         .captures_iter(sql)
         .map(|c| c[1].to_lowercase())
+        .filter(|w| !NOT_A_COLUMN.contains(&w.as_str()))
         .collect();
     let dropped = drop
         .captures_iter(sql)
@@ -222,8 +232,20 @@ fn index_names(sql: &str) -> BTreeSet<String> {
 
 #[test]
 fn every_migration_has_a_mirror() {
-    let pg = migration_files("postgres");
-    let lite = migration_files("sqlite");
+    // `*.sqlite.sql` files are sidecars: the SQLite form of one statement inside
+    // a migration, read by scripts/sync-migrations.py and never applied. Counting
+    // them as migrations would fail for every migration that needs an
+    // engine-specific statement, which is the mechanism working rather than
+    // breaking -- and they only exist in the postgres directory, so the
+    // comparison below is not symmetric without this filter.
+    let pg: Vec<String> = migration_files("postgres")
+        .into_iter()
+        .filter(|n| !n.ends_with(".sqlite.sql"))
+        .collect();
+    let lite: Vec<String> = migration_files("sqlite")
+        .into_iter()
+        .filter(|n| !n.ends_with(".sqlite.sql"))
+        .collect();
     assert!(
         !pg.is_empty(),
         "no postgres migrations found; the schema is missing"

@@ -9,6 +9,16 @@
 
 pub mod cluster;
 
+// §7.7's typed attributes and §7.9's status. Separate from `cluster` because a
+// cluster is "these appearances are the same person" and a field is "this person
+// has this value" -- the second needs the first to exist and says nothing about
+// it.
+pub mod attrs;
+
+// §7.11's derived career span. Reads `object.date` through `appearance` and
+// stores nothing, which is the whole design.
+pub mod span;
+
 // §7.5's self-service performer claim. Separate from `cluster` because it is
 // about *people*: who is allowed to say which cluster is theirs, and what they
 // may then change. The cluster engine has no opinion on any of that.
