@@ -47,6 +47,7 @@ commons-api = { path = "crates/commons-api" }
 # Third-party. Pinned minor versions; crates reference these as workspace=true
 # so a version cannot drift between members.
 anyhow = "1.0"
+async-trait = "0.1"
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

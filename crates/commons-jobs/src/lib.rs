@@ -16,6 +16,7 @@
 //! the whole of stash#2913 and #6837, and it is the reason the queue is a
 //! data structure first and a thread pool second.
 
+pub mod journal;
 pub mod queue;
 pub mod spec;
 pub mod supervise;

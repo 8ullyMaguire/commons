@@ -20,8 +20,9 @@ pub mod db;
 pub mod filter_ast;
 
 pub use db::{
-    artifact_kinds, file_path_and_state, file_rows, insert_artifact, insert_file, insert_object,
-    mark_absent, set_path, Mode, NewFile, Result, Store, StoreError, StoredFile,
+    artifact_kinds, clear_jobs, file_path_and_state, file_rows, insert_artifact, insert_file,
+    insert_job_if_absent, insert_object, job_by_dedupe_key, job_rows, mark_absent, set_path,
+    update_job, Mode, NewFile, NewJob, Result, Store, StoreError, StoredFile, StoredJob,
 };
 pub use filter_ast::{
     base64url_decode, base64url_encode, BuiltinField, CallerId, CmpOp, ConsentTiers, Engine,

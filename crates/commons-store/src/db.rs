@@ -437,6 +437,146 @@ pub async fn file_path_and_state(store: &Store, file_id: &str) -> Result<Option<
     Ok(row.map(|r| (r.get("path"), r.get("state"))))
 }
 
+// ----------------------------------------------------------------- job rows
+
+/// A row of the `job` table.
+///
+/// The queue's persistent form. `commons-jobs` owns the policy -- what a
+/// retry means, when a job is a poison pill -- and this owns the row.
+///
+/// SQLite-only for now, and deliberately so: the `Store` enum's Postgres arm
+/// is a pool this crate cannot bind through without a second code path, and a
+/// half-written second path is worse than an honest limitation. Every
+/// statement below therefore goes through `store.pool()`, which *panics* on
+/// Postgres rather than returning a plausible wrong answer. See
+/// `tests/job_rows.rs` for what that means in practice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredJob {
+    pub id: String,
+    pub kind: String,
+    pub state: String,
+    /// The idempotency key. Unique in the schema, and that constraint is what
+    /// makes `submit` idempotent even across a crash: two processes racing to
+    /// submit the same work hit the same row.
+    pub dedupe_key: String,
+    pub target_id: Option<String>,
+    pub attempts: i64,
+    pub last_error: Option<String>,
+}
+
+/// A job to write.
+#[derive(Debug, Clone)]
+pub struct NewJob<'a> {
+    pub id: &'a str,
+    pub kind: &'a str,
+    pub state: &'a str,
+    pub dedupe_key: &'a str,
+    pub target_id: Option<&'a str>,
+    pub attempts: i64,
+    pub last_error: Option<&'a str>,
+    pub now: &'a str,
+}
+
+/// Every job row, for restore-on-startup.
+pub async fn job_rows(store: &Store) -> Result<Vec<StoredJob>> {
+    let rows =
+        sqlx::query("SELECT id, kind, state, dedupe_key, target_id, attempts, last_error FROM job")
+            .fetch_all(store.pool())
+            .await
+            .map_err(StoreError::Query)?;
+    Ok(rows.into_iter().map(stored_job_from_row).collect())
+}
+
+/// The job with this dedupe key, if there is one.
+pub async fn job_by_dedupe_key(store: &Store, dedupe_key: &str) -> Result<Option<StoredJob>> {
+    let row = sqlx::query(
+        "SELECT id, kind, state, dedupe_key, target_id, attempts, last_error FROM job WHERE dedupe_key = ?",
+    )
+    .bind(dedupe_key)
+    .fetch_optional(store.pool())
+    .await
+    .map_err(StoreError::Query)?;
+    Ok(row.map(stored_job_from_row))
+}
+
+fn stored_job_from_row(r: sqlx::sqlite::SqliteRow) -> StoredJob {
+    StoredJob {
+        id: r.get("id"),
+        kind: r.get("kind"),
+        state: r.get("state"),
+        dedupe_key: r.get("dedupe_key"),
+        target_id: r.get("target_id"),
+        attempts: r.get("attempts"),
+        last_error: r.get("last_error"),
+    }
+}
+
+/// Insert a job, or leave the existing one alone.
+///
+/// Returns whether a row was created. `false` is the *normal* outcome for a
+/// watcher firing repeatedly -- not an error, and not something a caller
+/// should have to find out by querying first. Doing it in one statement is the
+/// only version that is correct when two processes submit the same key
+/// simultaneously, which a scan and a watcher very much do: check-then-insert
+/// has a window, and the window is exactly when a scan and a watcher both see
+/// a new file.
+pub async fn insert_job_if_absent(store: &Store, job: &NewJob<'_>) -> Result<bool> {
+    let r = sqlx::query(
+        "INSERT INTO job (id, kind, state, dedupe_key, target_id, attempts, last_error, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (dedupe_key) DO NOTHING",
+    )
+    .bind(job.id)
+    .bind(job.kind)
+    .bind(job.state)
+    .bind(job.dedupe_key)
+    .bind(job.target_id)
+    .bind(job.attempts)
+    .bind(job.last_error)
+    .bind(job.now)
+    .bind(job.now)
+    .execute(store.pool())
+    .await
+    .map_err(StoreError::Query)?;
+    Ok(r.rows_affected() > 0)
+}
+
+/// Update a job's mutable fields.
+pub async fn update_job(
+    store: &Store,
+    id: &str,
+    state: &str,
+    attempts: i64,
+    last_error: Option<&str>,
+    now: &str,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE job SET state = ?, attempts = ?, last_error = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(state)
+    .bind(attempts)
+    .bind(last_error)
+    .bind(now)
+    .bind(id)
+    .execute(store.pool())
+    .await
+    .map_err(StoreError::Query)?;
+    Ok(())
+}
+
+/// Delete every job row.
+///
+/// Not "used by tests" -- a real user operation. A queue whose jobs are all
+/// terminal holds no information, and a library that has been rescanned since
+/// has a queue full of rows about files that no longer exist.
+pub async fn clear_jobs(store: &Store) -> Result<()> {
+    sqlx::query("DELETE FROM job")
+        .execute(store.pool())
+        .await
+        .map_err(StoreError::Query)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

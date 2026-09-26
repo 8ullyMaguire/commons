@@ -625,6 +625,25 @@ pub enum JobState {
 }
 
 impl JobState {
+    /// Read a persisted state name back, defaulting an unknown one to `Queued`.
+    ///
+    /// The `job.state` column is free text with no `CHECK`, because a
+    /// database outlives the binary that wrote it. An unrecognised name is
+    /// therefore a real possibility -- a downgrade, a hand-edited row, a
+    /// future version -- and it maps to `Queued` rather than panicking or
+    /// being dropped. Re-running a job is a waste; refusing to start because
+    /// of an unknown string in a table is worse.
+    pub fn parse_or_queued(name: &str) -> Self {
+        match name {
+            "running" => JobState::Running,
+            "done" => JobState::Done,
+            "failed" => JobState::Failed,
+            "skipped" => JobState::Skipped,
+            "cancelled" => JobState::Cancelled,
+            _ => JobState::Queued,
+        }
+    }
+
     pub const ALL: [JobState; 6] = [
         JobState::Queued,
         JobState::Running,
