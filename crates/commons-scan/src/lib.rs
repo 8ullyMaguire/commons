@@ -9,6 +9,7 @@ pub mod detect;
 pub mod funscript;
 pub mod hashing;
 pub mod progress;
+pub mod reconcile;
 pub mod segment;
 pub mod types;
 pub mod walker;
@@ -22,6 +23,7 @@ pub use hashing::{
     hash_file, hash_files, hash_reader, FileDisposition, FileHashes, Rehash, BUFFER_BYTES,
 };
 pub use progress::{Confidence, Progress, Snapshot};
+pub use reconcile::{apply, plan, Move, Reconciled, Reconciliation, ScanInput};
 pub use segment::{split_file, CompilationRelation, ExistingMarker, Segment, Split, SplitError};
 pub use types::*;
 pub use walker::{

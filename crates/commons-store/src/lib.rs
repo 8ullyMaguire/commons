@@ -19,7 +19,10 @@
 pub mod db;
 pub mod filter_ast;
 
-pub use db::{Mode, Store, StoreError};
+pub use db::{
+    artifact_kinds, file_path_and_state, file_rows, insert_artifact, insert_file, insert_object,
+    mark_absent, set_path, Mode, NewFile, Result, Store, StoreError, StoredFile,
+};
 pub use filter_ast::{
     base64url_decode, base64url_encode, BuiltinField, CallerId, CmpOp, ConsentTiers, Engine,
     FieldRef, Filter, FilterError, SqlFragment, Value,

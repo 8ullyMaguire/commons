@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use sqlx::migrate::Migrator;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::Row;
 use sqlx::{Executor, PgPool, SqlitePool};
 use std::str::FromStr;
 
@@ -253,6 +254,187 @@ impl std::fmt::Debug for Store {
             Store::Postgres(p) => f.debug_tuple("Postgres").field(&p.size()).finish(),
         }
     }
+}
+
+// ---------------------------------------------------------------- file rows
+
+/// A row of the `file` table, as the scanner needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredFile {
+    pub id: String,
+    pub object_id: String,
+    pub path: String,
+    pub size_bytes: i64,
+    pub mtime_ns: i64,
+    pub hash_blake3: Option<String>,
+}
+
+/// Every `file` row, in whatever order the database returns.
+///
+/// The caller must not depend on the order. The first version of the
+/// reconciler did, and picked whichever row a hash lookup returned first --
+/// which made whether two identical files got merged depend on the query
+/// planner.
+pub async fn file_rows(store: &Store) -> Result<Vec<StoredFile>> {
+    let rows =
+        sqlx::query("SELECT id, object_id, path, size_bytes, mtime_ns, hash_blake3 FROM file")
+            .fetch_all(store.pool())
+            .await
+            .map_err(StoreError::Query)?;
+    Ok(rows
+        .into_iter()
+        .map(|r| StoredFile {
+            id: r.get("id"),
+            object_id: r.get("object_id"),
+            path: r.get("path"),
+            size_bytes: r.get("size_bytes"),
+            mtime_ns: r.get("mtime_ns"),
+            hash_blake3: r.get("hash_blake3"),
+        })
+        .collect())
+}
+
+/// Rewrite a file row's path, keeping its id, object, and artifacts.
+///
+/// This is the move. Everything expensive about a file -- extracted metadata,
+/// thumbnails, sprites, proxies -- hangs off `file.id` and is therefore
+/// untouched by design rather than by remembering not to delete it.
+pub async fn set_path(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    file_id: &str,
+    path: &str,
+) -> Result<()> {
+    sqlx::query("UPDATE file SET path = ? WHERE id = ?")
+        .bind(path)
+        .bind(file_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::Query)?;
+    Ok(())
+}
+
+/// Mark a file absent without deleting it.
+///
+/// A file that stopped being seen is usually on a volume that is not mounted,
+/// not deleted. Deleting the row would cascade away its artifacts, so the
+/// next mount of the volume would find a directory of files with no
+/// thumbnails and no metadata, and re-extract all of it.
+pub async fn mark_absent(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    file_id: &str,
+) -> Result<()> {
+    sqlx::query("UPDATE file SET state = 'absent' WHERE id = ?")
+        .bind(file_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::Query)?;
+    Ok(())
+}
+
+/// A new `file` row.
+///
+/// A struct rather than eight positional arguments: a call site with eight
+/// `&str`/`i64`/`Option<&str>` arguments gets two of them the wrong way round
+/// and the compiler cannot help, because every one of them is the same type.
+#[derive(Debug, Clone)]
+pub struct NewFile<'a> {
+    pub id: &'a str,
+    pub object_id: &'a str,
+    pub path: &'a str,
+    pub size_bytes: i64,
+    pub mtime_ns: i64,
+    pub hash_xxh128: Option<&'a str>,
+    pub hash_blake3: Option<&'a str>,
+}
+
+impl NewFile<'_> {
+    /// The row, as the reconciler reads it back.
+    pub fn to_stored(&self) -> StoredFile {
+        StoredFile {
+            id: self.id.to_string(),
+            object_id: self.object_id.to_string(),
+            path: self.path.to_string(),
+            size_bytes: self.size_bytes,
+            mtime_ns: self.mtime_ns,
+            hash_blake3: self.hash_blake3.map(str::to_string),
+        }
+    }
+}
+
+/// Insert a file row. Used by the scanner for genuinely new files.
+pub async fn insert_file(store: &Store, f: &NewFile<'_>) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO file (id, object_id, path, size_bytes, mtime_ns, hash_xxh128, hash_blake3)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(f.id)
+    .bind(f.object_id)
+    .bind(f.path)
+    .bind(f.size_bytes)
+    .bind(f.mtime_ns)
+    .bind(f.hash_xxh128)
+    .bind(f.hash_blake3)
+    .execute(store.pool())
+    .await
+    .map_err(StoreError::Query)?;
+    Ok(())
+}
+
+/// Insert a bare object row. Tests and the scanner's new-file path.
+pub async fn insert_object(store: &Store, id: &str, kind: &str) -> Result<()> {
+    sqlx::query("INSERT INTO object (id, kind, created_at, updated_at) VALUES (?, ?, '', '')")
+        .bind(id)
+        .bind(kind)
+        .execute(store.pool())
+        .await
+        .map_err(StoreError::Query)?;
+    Ok(())
+}
+
+/// Insert an artifact row. Used by the media pipeline and by tests.
+pub async fn insert_artifact(
+    store: &Store,
+    id: &str,
+    file_id: &str,
+    kind: &str,
+    path: &str,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO artifact (id, file_id, kind, path, mtime_ns, size_bytes, \
+         generator_version, created_at) VALUES (?, ?, ?, ?, 1, 10, 1, '')",
+    )
+    .bind(id)
+    .bind(file_id)
+    .bind(kind)
+    .bind(path)
+    .execute(store.pool())
+    .await
+    .map_err(StoreError::Query)?;
+    Ok(())
+}
+
+/// The artifact kinds attached to a file, sorted.
+///
+/// Exposed as a typed accessor rather than letting callers run their own
+/// query, so the "did a move preserve the artifacts" question has one answer
+/// that every caller gets the same way.
+pub async fn artifact_kinds(store: &Store, file_id: &str) -> Result<Vec<String>> {
+    let rows = sqlx::query("SELECT kind FROM artifact WHERE file_id = ? ORDER BY kind")
+        .bind(file_id)
+        .fetch_all(store.pool())
+        .await
+        .map_err(StoreError::Query)?;
+    Ok(rows.into_iter().map(|r| r.get("kind")).collect())
+}
+
+/// One file row's path and state, or `None` if there is no such row.
+pub async fn file_path_and_state(store: &Store, file_id: &str) -> Result<Option<(String, String)>> {
+    let row = sqlx::query("SELECT path, state FROM file WHERE id = ?")
+        .bind(file_id)
+        .fetch_optional(store.pool())
+        .await
+        .map_err(StoreError::Query)?;
+    Ok(row.map(|r| (r.get("path"), r.get("state"))))
 }
 
 #[cfg(test)]
