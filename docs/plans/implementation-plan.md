@@ -463,8 +463,13 @@ migrations on a fresh dir.
 
 **Exit:** all seven types scan, generate and browse (C01–C14).
 
+**Progress:** 5 of 8 tickets done (T-P1-001..005). Remaining: T-P1-006
+(thumbnails/sprites), T-P1-007 (the four remaining content types), T-P1-008
+(frontend shell + virtualized grid).
+
 ### T-P1-001 — Type detection by content, not extension
 
+**Status:** DONE — `a501953`. 
 **Spec:** §5.2, §5.3, §5.4, §5.5
 **Files:** `crates/commons-scan/src/detect.rs`
 **Depends:** T-P0-003
@@ -490,6 +495,7 @@ cases are individually named in comments.
 
 ### T-P1-002 — ffprobe wrapper and media probing
 
+**Status:** DONE — `9dd4419`. 
 **Spec:** §5.2
 **Files:** `crates/commons-media/src/probe.rs`
 **Depends:** T-P1-001
@@ -511,6 +517,7 @@ with a non-zero start offset reports it.
 
 ### T-P1-003 — Segment model and multi-scene files
 
+**Status:** DONE — `e7d63b3`. 
 **Spec:** §5.2
 **Files:** `crates/commons-scan/src/segment.rs`, `crates/commons-core/src/object.rs`
 **Depends:** T-P1-002
@@ -531,6 +538,7 @@ boundaries, assert four segments, assert a marker at 00:30 landed in segment 2.
 
 ### T-P1-004 — Gallery and archive handling
 
+**Status:** DONE — `fa3d23c`. 
 **Spec:** §5.3
 **Files:** `crates/commons-media/src/archive.rs`
 **Depends:** T-P1-001
@@ -553,6 +561,7 @@ highest-severity item in this phase.
 
 ### T-P1-005 — Artifact cache with content-keyed invalidation
 
+**Status:** DONE — `1076570`. 
 **Spec:** §10.1, §6.2
 **Files:** `crates/commons-media/src/artifacts.rs`
 **Depends:** T-P0-003
