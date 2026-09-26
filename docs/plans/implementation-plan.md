@@ -719,7 +719,7 @@ noted in the handoff.
 **Exit:** a 100k-item library scans and browses within budget; C15–C20 closed;
 locator hashes computed.
 
-**Progress:** 2 of 8 tickets done (T-P2-001, T-P2-002).
+**Progress:** 3 of 8 tickets done (T-P2-001, T-P2-002, T-P2-003).
 
 ### T-P2-001 — Filesystem watcher and scan checkpoints
 
@@ -804,6 +804,24 @@ completes, files are `Missing`, and CPU does not spike (assert the number of
 stat calls, by instrumenting the walker with a counter).
 **Done when:** the stat-call counter assertion exists — it is the only
 objective measure of stash#5683.
+
+**Status: DONE (1-5).** `state.rs`: the volume tracker with exponential
+backoff to a ceiling, the per-volume opt-out, bulk-operation skipping with the
+one-line outcome, and generation-scoped leases. `FileState` itself was already
+in `commons-core` from Phase 0, so the scan crate uses that one and keeps only
+the policy.
+
+**The acceptance test uses a real loopback mount** (`tests/missing_volume.rs`):
+a 64MB ext4 image, 400 files, a walk, a real `umount` with the loop device
+detached, and a remount. The stat counter is `VolumeTracker::stats`, on the
+production type, so a test-local counter cannot pass for a real one. It skips
+loudly with a reason where a mount is impossible rather than faking one.
+
+Three bugs were found by writing it, and by the test file taking 92 seconds to
+run: `record` anchored the backoff to the last *success* (so a permanently
+absent volume never ramped and every scan got a probe), `backoff_for` computed
+`2 << n` where it meant `1 << n`, and `configure` took the observed volume
+state from the config file. Nine mutations, all caught.
 
 ### T-P2-004 — Job engine
 
