@@ -332,7 +332,15 @@ pub async fn mark_absent(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     file_id: &str,
 ) -> Result<()> {
-    sqlx::query("UPDATE file SET state = 'absent' WHERE id = ?")
+    // `FileState::Missing`, not the string "absent". The two names drifted
+    // apart: the schema's DEFAULT is 'present' and the enum is
+    // present|missing|unreadable|remote, so a row marked by this function was
+    // carrying a fifth value that `FileState::parse` returns `None` for -- a
+    // file the UI could not classify and a scan that could not reconcile it.
+    // The name is taken from the enum rather than repeated, so the next rename
+    // cannot reintroduce the drift.
+    sqlx::query("UPDATE file SET state = ? WHERE id = ?")
+        .bind(commons_core::FileState::Missing.as_str())
         .bind(file_id)
         .execute(&mut **tx)
         .await
@@ -389,14 +397,61 @@ pub async fn insert_file(store: &Store, f: &NewFile<'_>) -> Result<()> {
     Ok(())
 }
 
+/// Update a file row after its content changed.
+///
+/// The new hash, size, mtime, and — because identity is content — the object.
+/// Without the object update, a modified file keeps pointing at the object its
+/// *old* content belonged to, so two rows can name the same object with
+/// different hashes and §13's dedup breaks silently.
+///
+/// A missing row is not an error: the reconciler decides from a snapshot and a
+/// concurrent scan may have deleted it. Returning `false` lets the caller
+/// report that rather than pretend the write happened.
+pub async fn update_file_content(
+    store: &Store,
+    file_id: &str,
+    object_id: &str,
+    size_bytes: i64,
+    mtime_ns: i64,
+    hash_blake3: Option<&str>,
+) -> Result<bool> {
+    let res = sqlx::query(
+        "UPDATE file SET object_id = ?, size_bytes = ?, mtime_ns = ?, hash_blake3 = ? WHERE id = ?",
+    )
+    .bind(object_id)
+    .bind(size_bytes)
+    .bind(mtime_ns)
+    .bind(hash_blake3)
+    .bind(file_id)
+    .execute(store.pool())
+    .await
+    .map_err(StoreError::Query)?;
+    Ok(res.rows_affected() > 0)
+}
+
 /// Insert a bare object row. Tests and the scanner's new-file path.
 pub async fn insert_object(store: &Store, id: &str, kind: &str) -> Result<()> {
-    sqlx::query("INSERT INTO object (id, kind, created_at, updated_at) VALUES (?, ?, '', '')")
-        .bind(id)
-        .bind(kind)
-        .execute(store.pool())
-        .await
-        .map_err(StoreError::Query)?;
+    // `INSERT OR IGNORE`, not a plain insert, and the reason is the object
+    // model: an object's id *is* its content hash, so two files with the same
+    // bytes legitimately need the same object row and the second insert is
+    // correct, not a duplicate. A plain insert turned the ordinary case of a
+    // library with two copies of a file into "UNIQUE constraint failed:
+    // object.id" -- an error that says the data is wrong when the data is
+    // right and the insert is not idempotent.
+    //
+    // An existing object's `kind` is left alone rather than overwritten. A
+    // rescan that sniffs a different kind for the same bytes has learned
+    // something new, but overwriting would flip a typed object on the strength
+    // of a sniffer that read a truncated head; the upgrade path for a wrong
+    // kind is a deliberate re-type, not a scan.
+    sqlx::query(
+        "INSERT OR IGNORE INTO object (id, kind, created_at, updated_at) VALUES (?, ?, '', '')",
+    )
+    .bind(id)
+    .bind(kind)
+    .execute(store.pool())
+    .await
+    .map_err(StoreError::Query)?;
     Ok(())
 }
 

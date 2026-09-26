@@ -1098,6 +1098,34 @@ an explanation.
 corpus; C21–C32 closed. **This is the phase that makes the project what it is
 — do not let it slip behind the infrastructure phases.**
 
+### T-P3-000 — The scan pipeline that joins the pieces
+
+**Spec:** §6.1, §6.3
+**Files:** `crates/commons-scan/src/pipeline.rs`
+**Added:** 2026-09-26, after Phase 2 completed. This ticket did not exist when
+Phase 2 was planned; it exists because Phase 2 built every component of a scan
+pipeline and nothing called them in sequence, and Phase 3's exit criterion
+("a person with no name is linked across every appearance in a test corpus")
+needs a library that has been scanned. Flagged at the end of T-P2-006,
+T-P2-007 and T-P2-008 before being written.
+
+1. One entry point that walks, reconciles, hashes only what the hint says
+   changed, and writes the result — composing T-P2-001's walker, T-P2-002's
+   reconciler and hashing, and T-P2-003's volume state.
+2. Every slow step is a job on the existing queue (T-P2-004), not a direct
+   call, so a scan is interruptible, resumable, and bounded by the same
+   per-`(JobKind, target)` concurrency the rest of the system uses.
+3. Idempotent: running it twice over an unchanged library produces no writes
+   and no jobs. Asserted as a database readback, not as a log line.
+
+**Accept:** a test that scans a generated tree, asserts the file rows exist,
+re-scans, and asserts **zero** new writes and zero new jobs. That second
+assertion is the ticket — a re-scan that re-hashes everything passes the first
+and is the exact regression §6.2 exists to prevent.
+
+**Done when:** the pipeline is the only way a library gets populated, and the
+idempotence assertion is in the suite.
+
 ### T-P3-001 — Face detection and embedding
 
 **Spec:** §7.1

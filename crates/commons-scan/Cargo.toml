@@ -24,6 +24,11 @@ chrono = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# The mtime hint has to be moved forward explicitly in the "changed file" test.
+# Relying on a write to bump mtime is a test that fails on a filesystem with
+# coarse timestamp granularity -- exactly the case §6.2 says the hint cannot be
+# trusted for, so the test must not rely on it either.
+filetime = "0.2"
 tokio = { workspace = true, features = ["full", "test-util"] }
 
 [[bench]]

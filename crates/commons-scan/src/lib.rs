@@ -9,6 +9,7 @@ pub mod budget;
 pub mod detect;
 pub mod funscript;
 pub mod hashing;
+pub mod pipeline;
 pub mod progress;
 pub mod reconcile;
 pub mod segment;

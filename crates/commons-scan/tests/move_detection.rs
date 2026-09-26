@@ -6,7 +6,9 @@
 //! implementation that also threw the thumbnails away, which is the thing the
 //! ticket exists to prevent.
 
+use commons_core::FileState;
 use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use commons_scan::reconcile::{apply, plan, Move, Reconciled, ScanInput};
@@ -82,6 +84,9 @@ async fn a_renamed_file_keeps_its_row_and_its_artifacts() {
         present: BTreeSet::from([p("after.mp4")]),
         hashes: [(p("after.mp4"), "aaa".to_string())].into_iter().collect(),
         modified: BTreeSet::new(),
+        stats: HashMap::new(),
+        kinds: HashMap::new(),
+        complete: true,
     };
 
     let plan = plan(&store, &input).await.unwrap();
@@ -127,6 +132,9 @@ async fn an_in_place_overwrite_of_the_same_length_is_a_change() {
             .into_iter()
             .collect(),
         modified: BTreeSet::from(["file-1".to_string()]),
+        stats: HashMap::new(),
+        kinds: HashMap::new(),
+        complete: true,
     };
 
     let plan = plan(&store, &input).await.unwrap();
@@ -160,6 +168,9 @@ async fn an_unrelated_new_file_is_new_not_a_move() {
         .into_iter()
         .collect(),
         modified: BTreeSet::new(),
+        stats: HashMap::new(),
+        kinds: HashMap::new(),
+        complete: true,
     };
     let plan = plan(&store, &input).await.unwrap();
     assert_eq!(plan.report.unchanged, 1);
@@ -189,6 +200,9 @@ async fn two_missing_files_with_the_same_hash_are_not_merged() {
             .into_iter()
             .collect(),
         modified: BTreeSet::new(),
+        stats: HashMap::new(),
+        kinds: HashMap::new(),
+        complete: true,
     };
     let plan = plan(&store, &input).await.unwrap();
 
@@ -213,6 +227,10 @@ async fn a_file_that_stopped_being_seen_is_marked_absent_not_deleted() {
     // The volume is not mounted, so the scan sees an empty library.
     let input = ScanInput {
         present: BTreeSet::new(),
+        // A complete scan that saw nothing. Without this the reconciler
+        // correctly refuses to call anything missing, and the test would be
+        // asserting the opposite of what it says it is testing.
+        complete: true,
         ..Default::default()
     };
     let plan = plan(&store, &input).await.unwrap();
@@ -222,7 +240,7 @@ async fn a_file_that_stopped_being_seen_is_marked_absent_not_deleted() {
     apply(&store, &plan).await.unwrap();
     let (path, state) = file_at(&store, "file-1").await.unwrap();
     assert_eq!(path, "on-the-nas.mp4", "the row is not deleted");
-    assert_eq!(state, "absent");
+    assert_eq!(state, FileState::Missing.as_str());
     assert_eq!(
         artifacts_of(&store, "file-1").await.len(),
         1,
@@ -245,6 +263,9 @@ async fn a_moved_file_is_not_also_marked_absent() {
         present: BTreeSet::from([p("new.mp4")]),
         hashes: [(p("new.mp4"), "aaa".to_string())].into_iter().collect(),
         modified: BTreeSet::new(),
+        stats: HashMap::new(),
+        kinds: HashMap::new(),
+        complete: true,
     };
     let plan = plan(&store, &input).await.unwrap();
     assert_eq!(plan.report.moved, 1);
@@ -285,6 +306,9 @@ async fn a_file_that_moved_and_whose_hint_moved_is_not_re_artificacted() {
         hashes: [(p("new.mp4"), "aaa".to_string())].into_iter().collect(),
         // The hint moved as well.
         modified: BTreeSet::from(["file-1".to_string()]),
+        stats: HashMap::new(),
+        kinds: HashMap::new(),
+        complete: true,
     };
     let plan = plan(&store, &input).await.unwrap();
     assert_eq!(plan.report.moved, 1, "{}", plan.report.summary());
@@ -317,6 +341,9 @@ async fn a_duplicate_of_a_present_file_is_not_a_move() {
         .into_iter()
         .collect(),
         modified: BTreeSet::new(),
+        stats: HashMap::new(),
+        kinds: HashMap::new(),
+        complete: true,
     };
     let plan = plan(&store, &input).await.unwrap();
     assert_eq!(plan.report.moved, 0, "the original is still there");
@@ -335,6 +362,9 @@ async fn a_path_with_no_computed_hash_is_never_a_move() {
         present: BTreeSet::from([p("unreadable.mp4")]),
         hashes: Default::default(),
         modified: BTreeSet::new(),
+        stats: HashMap::new(),
+        kinds: HashMap::new(),
+        complete: true,
     };
     let plan = plan(&store, &input).await.unwrap();
     assert_eq!(plan.report.moved, 0);
@@ -360,6 +390,9 @@ async fn reconciling_twice_is_idempotent() {
         .into_iter()
         .collect(),
         modified: BTreeSet::new(),
+        stats: HashMap::new(),
+        kinds: HashMap::new(),
+        complete: true,
     };
 
     let first = plan(&store, &input).await.unwrap();
@@ -405,6 +438,9 @@ async fn many_moves_in_one_scan() {
         present,
         hashes,
         modified: BTreeSet::new(),
+        stats: HashMap::new(),
+        kinds: HashMap::new(),
+        complete: true,
     };
     let plan = plan(&store, &input).await.unwrap();
     assert_eq!(plan.report.moved, 20, "{}", plan.report.summary());
@@ -432,6 +468,9 @@ async fn a_move_records_the_object_it_belongs_to() {
         present: BTreeSet::from([p("y.mp4")]),
         hashes: [(p("y.mp4"), "h".to_string())].into_iter().collect(),
         modified: BTreeSet::new(),
+        stats: HashMap::new(),
+        kinds: HashMap::new(),
+        complete: true,
     };
     let plan = plan(&store, &input).await.unwrap();
     assert_eq!(

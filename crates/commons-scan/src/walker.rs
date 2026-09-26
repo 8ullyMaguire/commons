@@ -253,6 +253,12 @@ pub struct WalkStats {
     pub dirs: u64,
     /// Directories skipped by a rule.
     pub skipped: u64,
+    /// Whether the walk stopped on a cancel flag rather than finishing.
+    ///
+    /// Distinct from "the walk found nothing": a cancelled walk that found
+    /// nothing looks exactly like an empty tree to every caller that only
+    /// counts files, and the difference is whether the library is populated.
+    pub cancelled: bool,
 }
 
 /// How far a walk got, so it can resume.
@@ -361,6 +367,19 @@ pub struct WalkConfig {
     /// up access to it. Sharing the sink means the implementation and the
     /// observer can both hold it.
     pub on_batch: Option<BatchSink>,
+    /// Stop the walk when this is set.
+    ///
+    /// An `Arc<AtomicBool>` rather than a method on the walker, because the
+    /// thing that knows when to stop is the batch callback -- it is the only
+    /// code that sees batches as they go -- and the thing that has to act on it
+    /// is the loop. `on_batch` returning nothing leaves no other way to say
+    /// "enough", which is why a caller that needed a bounded walk had to
+    /// discard the files it did not want and then report success.
+    ///
+    /// Checked once per batch, so a walk stops at a batch boundary: never
+    /// mid-directory, which is what makes the checkpoint it hands back
+    /// resumable.
+    pub cancel: Option<CancelFlag>,
     /// How many files per batch. Also how often `on_batch` is called.
     pub batch_size: usize,
     /// Live progress, if the caller wants it.
@@ -402,6 +421,9 @@ pub struct Batch<'a> {
 /// able to read the count the walk is updating.
 pub type BatchSink = std::sync::Arc<std::sync::Mutex<dyn FnMut(&Batch<'_>) + Send>>;
 
+/// A flag the batch callback sets and the walk loop reads.
+pub type CancelFlag = std::sync::Arc<std::sync::atomic::AtomicBool>;
+
 /// Wrap a closure as a [`BatchSink`].
 pub fn batch_sink<F>(f: F) -> BatchSink
 where
@@ -419,6 +441,7 @@ impl Default for WalkConfig {
                 .collect(),
             follow_symlinks: false,
             on_batch: None,
+            cancel: None,
             batch_size: 256,
             progress: None,
         }
@@ -433,6 +456,7 @@ impl WalkConfig {
             skip: Vec::new(),
             follow_symlinks: false,
             on_batch: None,
+            cancel: None,
             batch_size: 256,
             progress: None,
         }
@@ -550,7 +574,7 @@ impl Walker {
             stack.push(self.root.clone());
         }
 
-        while let Some(dir) = stack.pop() {
+        'walk: while let Some(dir) = stack.pop() {
             let relative = dir
                 .strip_prefix(&self.root)
                 .map(Path::to_path_buf)
@@ -698,17 +722,41 @@ impl Walker {
                     self.batch.push(found);
                     if self.batch.len() >= self.config.batch_size {
                         self.flush(&mut report);
+                        // A cancelled walk stops at a batch boundary. Inside
+                        // the directory loop rather than inside `flush`,
+                        // because only here is the pending stack in scope --
+                        // and the pending stack is what makes the checkpoint
+                        // resumable rather than merely a position.
+                        //
+                        // `self.checkpoint.pending` is already current: the
+                        // loop head refreshes it on every directory, and this
+                        // runs inside the directory it is leaving.
+                        if self.is_cancelled() {
+                            self.stats.cancelled = true;
+                            break 'walk;
+                        }
                     }
                 }
             }
         }
 
         self.flush(&mut report);
+        if self.is_cancelled() {
+            self.stats.cancelled = true;
+        }
         self.checkpoint.files_done = self.stats.files;
         report.checkpoint = self.checkpoint.clone();
         report.stats = self.stats;
         report.files = std::mem::take(&mut report.files);
         report
+    }
+
+    /// Whether a caller has asked the walk to stop.
+    fn is_cancelled(&self) -> bool {
+        self.config
+            .cancel
+            .as_ref()
+            .is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     fn should_skip(&self, path: &Path, relative: &Path) -> bool {
