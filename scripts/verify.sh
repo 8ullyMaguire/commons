@@ -61,9 +61,9 @@ fi
 # a number that rots, and the two mutations it found were both in code the
 # ordinary suite called green.
 if [ "${COMMONS_MUTATE:-0}" = "1" ]; then
-  # Every mutation script, not just the first one. Three features now have a
+  # Every mutation script, not just the first one. Six features now have a
   # mutation pass, and a gate that only runs the oldest is a gate that has
-  # quietly stopped covering two thirds of the code it claims to.
+  # quietly stopped covering most of the code it claims to.
   #
   # The list is explicit rather than globbed: a glob over `scripts/mutate-*.py`
   # would pick up a scratch script and, worse, would silently stop covering a
@@ -85,14 +85,19 @@ if [ "${COMMONS_MUTATE:-0}" = "1" ]; then
   # from `ui/`; `mutate-dedup.py` and `mutate-bulk.py` target Rust and its
   # `#[cfg(test)]` suites, so they run from the repo root. Same loop, different
   # working directory, named per script rather than guessed from the filename.
-  for mut in bulk-ui gestures guard-ui selection; do
+  for mut in bulk-ui gestures guard-ui selection commands-ui; do
     script="$REPO/scripts/mutate-$mut.py"
     [ -f "$script" ] || { echo "   FAILED: $script is missing"; fail=1; continue; }
     echo "== mutation pass ($mut, ui)"
     if (cd "$REPO/ui" && python3 "$script" > "/tmp/commons-mutate-$mut.txt" 2>&1); then
-      tail -1 "/tmp/commons-mutate-$mut.txt" | sed 's/^/   /'
+      # The summary line, not the last line. `mutate-commands-ui.py` ends with a
+      # per-mutant explanation of its known-equivalent mutants, so `tail -1`
+      # printed a long parenthetical in the middle of an otherwise green log --
+      # which reads as a failure to anyone skimming, and is the kind of thing
+      # that trains people to ignore this section.
+      grep -E '^[0-9]+/[0-9]+ killed$' "/tmp/commons-mutate-$mut.txt" | sed 's/^/   /'
     else
-      sed -n '/survived/,$p' "/tmp/commons-mutate-$mut.txt" | sed 's/^/   /'
+      sed -n '/real survivors/,$p' "/tmp/commons-mutate-$mut.txt" | sed 's/^/   /'
       echo "   FAILED: a mutation survived, so a test is not testing what it claims"
       fail=1
     fi

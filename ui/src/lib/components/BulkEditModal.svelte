@@ -37,6 +37,7 @@
   library, and a client count is a guess.
 -->
 <script lang="ts">
+  import { commands } from '$lib/api/commands-ui.js';
   import {
     IDLE,
     canApply,
@@ -121,6 +122,51 @@
   // wired correctly to a prop that could not change, and the symptom was a
   // modal that never opened no matter what the parent did. The props *object*
   // stays reactive, so `p.open` is the tracked read.
+
+  /**
+   * Claim the keyboard while this modal is open.
+   *
+   * `register(..., true)` pushes a frame for the scope if it is not already on
+   * the stack, and `popScope(id)` removes it -- so the frame cannot outlive the
+   * modal, because both happen in the same effect that opens and closes the
+   * dialog. `popScope` refuses to pop a frame that is not on top, so if two
+   * modals ever overlap this one's cleanup is a no-op rather than a corruption of
+   * the stack.
+   *
+   * The `Escape` entry is a *declining* no-op: it wins the key, then returns
+   * `false` so the browser still gets it. That is the whole trick. The top frame
+   * has to win, or the app scope's `select.clear` runs behind an open modal --
+   * but winning and then preventing is worse, because the native `<dialog>`
+   * dismissal is the thing that should actually happen and a swallowed Escape is
+   * a modal that will not close.
+   *
+   * Declining is not the same as not binding. A frame that binds nothing lets
+   * `resolve` walk outward to the app frame and find `select.clear` there.
+   */
+  $effect(() => {
+    commands.register(
+      {
+        id: 'bulk.escape',
+        title: 'Close the bulk editor',
+        detail: 'Dismiss this without writing',
+        keywords: ['cancel', 'dismiss', 'close'],
+        scope: 'bulk-edit',
+        binding: { key: 'Escape', code: 'Escape', mods: [] },
+        run: () => {
+          // Decline. The dialog's own `oncancel` closes it, via the browser's
+          // native Escape; this command's only job is to keep the app scope's
+          // `select.clear` from running first.
+          return false;
+        }
+      },
+      true
+    );
+    return () => {
+      commands.drop('bulk.escape');
+      commands.popScope('bulk-edit');
+    };
+  });
+
   $effect(() => {
     const el = dialog;
     if (!el) return;

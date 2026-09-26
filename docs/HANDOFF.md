@@ -819,3 +819,64 @@ it now exists — every earlier `summary` test asked about a registry with
 something in it, and the empty case renders "You have ." into the dialog.
 
 | T-P5-006 | 4 | unsaved-entry guard: `guard.ts` + `+layout.svelte` | done | `ui/src/lib/api/guard.ts`, `guard-store.svelte.ts`, `ui/src/routes/+layout.svelte`, `ui/src/lib/components/EditSurface.svelte`, `ui/e2e/guard.spec.ts` (9), `ui/tests/guard.test.ts` (24), `scripts/mutate-guard-ui.py` (10/10), `docs/spec/t-p5-006-unsaved-guard.md` |
+
+### T-P5-006 item 5 — command palette and shortcut map
+
+`docs/spec/t-p5-006-commands.md`. Commit on the `phase-5-006-commands` tag.
+
+One `keydown` listener on `window` in the shell, resolving through a command
+registry (`ui/src/lib/api/commands.ts`) with a scope stack. Before this there
+were three independent listeners — the lightbox, the bulk modal, the list table
+— so one `Escape` was interpreted by components that could not know about each
+other. #2833 is not a feature that can be added to that arrangement; it is what
+having one resolver makes possible.
+
+- `keys.ts` — `Chord`, `normalizeKey`, `chordsEqual`, `inTextField`, `formatChord`
+- `commands.ts` — `CommandRegistry`: register/drop/resolve, the scope stack, the
+  palette filter, `reorder` for the #6218/#5587 selection shortcuts
+- `commands-ui.ts` — `handleKey`, `paletteRows`, `moveHighlight`
+- `command-bindings.ts` — the app's eight commands and their keys
+- `CommandPalette.svelte` — the dialog, mounted in the shell
+
+Three decisions worth knowing about, because each replaced something that looked
+right:
+
+**The palette chord is a registered command, not a special case.** The first
+version recognised `Ctrl+P` in the keydown handler and returned a magic
+`'opened-palette'` outcome; the layout discarded the return value, so the chord
+was correctly recognised, correctly `preventDefault`ed, and did nothing at all.
+Every layer reported success and no palette appeared. It is now a command with
+`global: true`, resolved before the scope stack, so a modal cannot swallow it
+and the palette lists it like everything else.
+
+**A command may decline.** `run` returning `false` leaves the key to the
+browser. The bulk modal's `Escape` depends on it: its frame wins the key so the
+app scope's `select.clear` does not run behind an open modal, and then declines
+so the browser's native dialog dismissal still happens. Winning-and-preventing
+would have been a modal that will not close.
+
+**Disabled is a state, not a filter.** A command needing a selection is shown
+greyed out rather than hidden — hiding it makes the palette an incomplete map,
+and "why is bulk tag not in here" is a worse answer than "it is, and it needs a
+selection".
+
+Tests: 226 UI unit (`tests/commands.test.ts`, `tests/commands-ui.test.ts`,
+`tests/commands-rank.test.ts`), 53 e2e, and `scripts/mutate-commands-ui.py` at
+43/52 with **zero real survivors** — the other nine are documented as
+known-equivalent in the script, each with the reason it is unobservable.
+
+The mutation pass earned its keep twice. It found that every mutant in
+`commands-ui.ts` survived, which is true: no unit test had ever called
+`handleKey`, because the e2e only asserts what a user can *see*, and a
+`preventDefault` has no visible consequence. And it found that my own ranking
+tests all used title pairs differing on two axes at once, so removing any single
+ranking rule left the right answer on top anyway. Both are now covered by
+single-axis cases.
+
+§10.7 is met except for one thing, recorded in the spec as §3.4: the three
+selection-and-bulk bindings are registered and listed but their *handlers* live
+on the list route, which owns the selection, so the shell delegates them as a
+`CustomEvent` and cannot confirm they ran. `view.search` is likewise registered
+without a focusable target. Both are visible in the palette rather than hidden,
+which is the honest state, but they are not complete and the spec says so.
+

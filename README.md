@@ -145,9 +145,20 @@ supervisor holding no credential can still check the process. `/livez`
 deliberately skips the database, so a database outage does not kill a process
 that is still alive and would recover.
 
+## Shortcuts
+
+- `Ctrl+P` — command palette. Every command in the app, with its binding
+  spelled out; a command with no key shows an em dash rather than being hidden,
+  so the palette *is* the shortcut map and cannot drift from it.
+- One `keydown` listener for the whole app, resolving through a command registry
+  with a scope stack. A modal claims the keyboard while it is open, which is how
+  a modal's `Escape` and the app's `Escape` stop fighting (#2833, #2542).
+- A bare letter in a text field is a letter. A chord is ours, because you cannot
+  type a control character.
+
 ## Testing
 
-1164 Rust tests across the workspace, plus 144 UI unit tests and 41 Playwright end-to-end tests (11 grid, 5 lightbox, 6 list, 10 bulk, 9 guard). The ones that matter most are the ones that
+1164 Rust tests across the workspace, plus 226 UI unit tests and 53 Playwright end-to-end tests (11 grid, 5 lightbox, 6 list, 10 bulk, 9 guard, 12 commands). The ones that matter most are the ones that
 were verified by breaking the code on purpose:
 
 - **Zip-Slip** (`commons-media`, `archive.rs`) — a comic archive is the most

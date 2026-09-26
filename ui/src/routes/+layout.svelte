@@ -78,6 +78,10 @@
   import { goto } from '$app/navigation';
   import { guard } from '$lib/api/guard-store.svelte.js';
   import { decide, isDirty, summary } from '$lib/api/guard.js';
+  import CommandPalette from '$lib/components/CommandPalette.svelte';
+  import { commands, handleKey } from '$lib/api/commands-ui.js';
+  import { registerAppCommands, CMD } from '$lib/api/command-bindings.js';
+  import type { Command } from '$lib/api/commands.js';
 
   let { children } = $props();
 
@@ -108,6 +112,97 @@
   let registry = $derived(guard.last);
   let dirty = $derived(isDirty(guard.reg));
   let message = $derived(summary(snapshot));
+
+  // ---------------------------------------------------------------- commands
+
+  /**
+   * How many objects are selected, for the commands that need some.
+   *
+   * A number rather than a selection object: the registry must not be able to
+   * *decide* whether a command is allowed, only name it. `resolve` returns
+   * `disabled` and the surface decides what to do about it, which is what keeps
+   * "is this command runnable" from becoming a second source of truth next to
+   * the selection itself.
+   *
+   * Published by whoever owns the selection rather than derived here. There is
+   * nothing in the URL to derive it from -- `viewFromLocation` decodes sort,
+   * filter, density and direction, and selection is deliberately component state
+   * -- so the shell has to be told. Defaulting to 0 instead would leave every
+   * gated command permanently disabled, which looks like a broken gate rather
+   * than like a constant, and that is the more expensive mistake.
+   */
+  let selectedCount = $state(0);
+
+  let paletteOpen = $state(false);
+  /** Set while the palette is open, so the shell knows not to also act. */
+  let paletteQuery = $state('');
+
+  registerAppCommands();
+
+  /**
+   * The one keydown listener for the whole app.
+   *
+   * There were three before this item, each calling `window.addEventListener`
+   * independently -- in the lightbox, the bulk modal, and the list table -- so a
+   * single Escape was interpreted by components that could not know about each
+   * other. #2833 is not a feature that can be added to that arrangement; it is
+   * what having one resolver makes possible, and it cannot be arrived at one
+   * handler at a time.
+   *
+   * `window` and not `document`: the listener has to see keys aimed at an
+   * `<input>`, because deciding a key is *text* and staying out of the way is
+   * also a decision. A listener that never sees input keystrokes cannot make it.
+   */
+  $effect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // While the palette is up it owns the keyboard entirely. It is a modal
+      // over whatever opened it, including a modal, so "the top scope wins"
+      // would be true and useless -- and its own Arrow/Enter handling is below.
+      if (paletteOpen) return;
+
+      handleKey(e, commands, runCommand, selectedCount);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
+  /**
+   * Perform a command by id. `false` declines, and the key is left to the browser.
+   */
+  function runCommand(id: string): boolean {
+    switch (id) {
+      case CMD.palette:
+        paletteOpen = true;
+        return true;
+      case CMD.search:
+        // A real surface to focus would be a filter input on the list route;
+        // until there is one, the command is registered and discoverable rather
+        // than absent, and says so.
+        // Declined, not run: there is no input to focus yet, so claiming the
+        // key would leave `/` doing nothing at all. It falls through to the
+        // browser, which types `/` -- the honest behaviour for a command that
+        // is registered but not yet wired.
+        console.info('commons: search is not yet focusable from the keyboard');
+        return false;
+      case CMD.clear:
+        window.dispatchEvent(new CustomEvent('commons:clear-selection'));
+        return true;
+      default:
+        // The selection and bulk commands are handled by the list route, which
+        // owns the selection. A command the shell cannot perform is a no-op
+        // *here* and not a dead command, because the route's own listener will
+        // see the same keystroke through the same registry.
+        // Delegated to the route that owns the selection. Whether it actually
+        // ran is that route's answer to give, so this declines: the command is
+        // handled elsewhere and the shell has no way to know it landed.
+        window.dispatchEvent(new CustomEvent('commons:command', { detail: id }));
+        return false;
+    }
+  }
+
+  function onPaletteRun(c: Command) {
+    runCommand(c.id);
+  }
 
 
   /**
@@ -396,6 +491,19 @@
     {@render children()}
   </main>
 </div>
+
+<!--
+  The command palette. Mounted here, in the shell, rather than inside any
+  surface: `Ctrl+P` has to work from anywhere including from inside a modal, and
+  a palette mounted inside the list route does not exist on the index route or
+  inside the lightbox. One instance, one registry, one keyboard.
+-->
+<CommandPalette
+  open={paletteOpen}
+  selected={selectedCount}
+  onclose={() => (paletteOpen = false)}
+  onrun={onPaletteRun}
+/>
 
 <!--
   The confirm. `role="alertdialog"` and not `role="dialog"`: this one blocks a
