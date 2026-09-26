@@ -40,6 +40,7 @@
 //! here -- a file that is *nominally* WebP can still have a composited black
 //! background.
 
+use super::encode::EncodeSettings;
 use super::hwaccel_plan::AccelPlan;
 use crate::probe::{MediaInfo, ProbeError};
 use parking_lot::Mutex;
@@ -410,6 +411,9 @@ pub struct Generator {
     /// transition. This is why a scene with chapters has sprites that look like
     /// the content rather than like its cuts.
     sample_midpoint: bool,
+    /// Encoder, quality, threads and lossless-ness for every generated
+    /// artifact. Defaults reproduce the previous hardcoded arguments exactly.
+    encode: EncodeSettings,
 }
 
 impl Generator {
@@ -419,6 +423,7 @@ impl Generator {
             ffprobe: PathBuf::from("ffprobe"),
             budget,
             plan: super::hwaccel_plan::AccelPlan::Software,
+            encode: EncodeSettings::default(),
             sample_midpoint: true,
         }
     }
@@ -539,17 +544,17 @@ impl Generator {
             self.with_suffix(self.plan.scale_filter(width, "-2")),
             // WebP with alpha. `-pix_fmt` on the encoder is what preserves the
             // alpha channel; without it ffmpeg writes yuvj and the transparency
-            // is composited to black. This flag is the whole alpha guarantee,
-            // and it survives acceleration because the encoder never changes:
-            // there is no hardware WebP encoder to switch to.
-            "-c:v".to_string(),
-            self.plan.encoder().to_string(),
-            "-pix_fmt".to_string(),
-            "yuva420p".to_string(),
-            "-quality".to_string(),
-            "82".to_string(),
+            // is composited to black. The pixel format comes from the format
+            // itself, and it survives acceleration because the encoder never
+            // changes: there is no hardware WebP encoder to switch to.
             out.display().to_string(),
         ]);
+        // Codec settings go last, just before the output, where ffmpeg's
+        // per-output options belong. Appended separately because it is a
+        // group, and splicing a group into an array literal is how a
+        // comma ends up in the wrong place.
+        let last = args.len() - 1;
+        args.splice(last..last, self.encode.args());
         self.run(source, out, &args)
     }
 
@@ -580,12 +585,10 @@ impl Generator {
             "1".to_string(),
             "-vf".to_string(),
             self.with_suffix(self.plan.scale_filter(width, "-2")),
-            "-c:v".to_string(),
-            self.plan.encoder().to_string(),
-            "-pix_fmt".to_string(),
-            "yuva420p".to_string(),
             out.display().to_string(),
         ]);
+        let last = args.len() - 1;
+        args.splice(last..last, self.encode.args());
         self.run(source, out, &args)
     }
 
@@ -637,17 +640,41 @@ impl Generator {
                 width,
                 &[&format!("fps={fps:.8}")],
             ),
-            // WebP, and q=80 rather than 82: a sheet is `frames` times the
-            // pixels, so the quality knob matters more here than anywhere else.
-            "-c:v".to_string(),
-            self.plan.encoder().to_string(),
-            "-pix_fmt".to_string(),
-            "yuva420p".to_string(),
-            "-quality".to_string(),
-            "80".to_string(),
             out.display().to_string(),
         ]);
+        let last = args.len() - 1;
+        args.splice(last..last, self.encode.args());
         self.run(source, out, &args)
+    }
+
+    /// Logical CPUs on this machine, for resolving `ThreadCount::Auto`.
+    ///
+    /// `available_parallelism` rather than `std::thread::available_parallelism`
+    /// alone because it accounts for cgroup CPU limits and affinity masks,
+    /// which is what a container sees. A container given 2 of a 64-core host's
+    /// CPUs and then handed 63 threads is the exact failure `Auto` exists to
+    /// prevent.
+    fn cores(&self) -> usize {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    }
+
+    /// The encoder settings in force. Exposed so a caller can report what a
+    /// generated file was made with, which is what makes "configuration is
+    /// respected, not guessed" checkable from outside.
+    pub fn encode_settings(&self) -> EncodeSettings {
+        self.encode
+    }
+
+    /// Change the encoder settings, refusing an invalid combination.
+    ///
+    /// Returns the error rather than clamping: a user who sets
+    /// `lossless` on JPEG should be told, not quietly given a lossy file.
+    pub fn set_encode(&mut self, settings: EncodeSettings) -> Result<(), String> {
+        settings.validate()?;
+        self.encode = settings;
+        Ok(())
     }
 
     fn run(&self, source: &Path, out: &Path, args: &[String]) -> Generated<PathBuf> {
@@ -658,7 +685,12 @@ impl Generator {
                 }
             }
         }
-        let output = Command::new(&self.ffmpeg).args(args).output();
+        // Global options first: -threads must precede the input, or ffmpeg
+        // applies it to the output encoder instead of the run.
+        let output = Command::new(&self.ffmpeg)
+            .args(self.encode.global_args(self.cores()))
+            .args(args)
+            .output();
         match output {
             Ok(o) if o.status.success() => Generated::Wrote(out.to_path_buf()),
             Ok(o) => {

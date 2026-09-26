@@ -8,6 +8,7 @@
 
 pub mod archive;
 pub mod archive_io;
+pub mod encode;
 pub mod hwaccel;
 pub mod hwaccel_plan;
 pub mod probe;

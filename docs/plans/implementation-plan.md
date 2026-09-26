@@ -1,6 +1,6 @@
 # Commons — Implementation Plan
 
-**Status:** in progress. Phase 0 and Phase 1 complete; Phase 2 at 5 of 8.
+**Status:** in progress. Phase 0 and Phase 1 complete; Phase 2 at 6 of 8.
 **Created:** 2026-09-26 · **Phase 11 added** 2026-09-26 (community ecosystem,
 at the owner's request; deliberately last)
 **Spec:** `~/secondbrain/10-Projects/2026-09-26T110000+0200-commons-platform-spec.md` (v1.3, 2,636 lines)
@@ -729,7 +729,7 @@ noted in the handoff.
 **Exit:** a 100k-item library scans and browses within budget; C15–C20 closed;
 locator hashes computed.
 
-**Progress:** 5 of 8 tickets done (T-P2-001 … T-P2-005).
+**Progress:** 6 of 8 tickets done (T-P2-001 … T-P2-006).
 
 ### T-P2-001 — Filesystem watcher and scan checkpoints
 
@@ -914,16 +914,41 @@ caught. fmt and clippy `-D warnings` clean.
 
 ### T-P2-006 — Storage accounting
 
-**Spec:** §6.6, §5.2
-**Files:** `crates/commons-scan/src/size.rs`, `crates/commons-server/src/stats.rs`
+**Spec:** §6.6, §5.2 · **Status: done** (`T-P2-006: three numbers, because "how big"
+has three answers`)
+**Files:** `crates/commons-scan/src/size.rs`,
+`crates/commons-scan/tests/storage_accounting.rs`
 
 Real on-disk size per file, a per-library rollup, free/available disk space on
 the statistics page (stash#7194), and a configurable temp root distinct from
 `generated/` (stash#5646).
 
 **Accept:** integration test with a fixture library; assert the rollup equals
-the sum of file sizes and equals `du -sb` of the tree within 1 %.
-**Done when:** the `du` cross-check is in the test.
+the sum of file sizes **for each of the three bases**, and equals the `du`
+invocation that computes *that* basis, exactly.
+**Done when:** the `du` cross-check is in the test, for all three bases.
+
+> **Corrected 2026-09-26, after implementing it.** The original criterion was
+> "equals `du -sb` of the tree within 1 %". That is the wrong cross-check and it
+> cannot be made right. `du -sb` is `du --apparent-size -b`, which is *apparent*
+> size, while §5.2 asks for "real on-disk size" — and `du` counts each inode
+> once by default *including* under `--apparent-size`, so `du -sb` is apparent
+> size **per inode**, a fourth quantity that matches none of the three bases.
+> On the acceptance fixture it is 7 096 against the physical rollup's 11 192, a
+> 58 % gap. The criterion is now exact equality per basis, which is checkable
+> and leaves no room for the bug this ticket is about.
+
+**The three bases, and the `du` that computes each:**
+
+| basis | meaning | cross-check |
+|---|---|---|
+| `Apparent` | `metadata.len()` | `du -s -B1 --apparent-size --count-links` |
+| `Allocated` | `blocks * 512`, per path | `du -s -B1 --count-links` |
+| `Physical` | `blocks * 512`, each inode once | `du -s -B1` |
+
+`Physical` is the default and the one a statistics page wants. Exactness is
+deliberate: a tolerance hides exactly the failure that matters, which is
+having picked the wrong field.
 
 ### T-P2-007 — Locator hash computation (plugin interface, core storage)
 

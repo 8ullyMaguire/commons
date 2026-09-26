@@ -818,6 +818,64 @@ as a design constraint rather than a feature request. Fingerprints themselves
 are salted per-peer before publication (§15.7), so a published fingerprint
 cannot be replayed against a local file to confirm its contents.
 
+### 6.6 Storage accounting (C20)
+
+**"How big is this library" has three answers, and answering with the wrong one
+is worse than not answering.**
+
+The obvious implementation — sum `metadata.len()` — is wrong in three separate
+ways, and each has produced a bug report upstream:
+
+| quantity | definition | what it is not |
+|---|---|---|
+| **apparent** | `metadata.len()` | not what the file *costs*: a 1-byte file occupies a 4 KiB block |
+| **allocated** | `blocks * 512` | not unique: two hardlinks to one file cost one file's worth of disk, not two |
+| **physical** | allocated, each inode counted once | not per-path, so it under-reports what a naive `du` shows |
+
+A library of 4 KiB JPEGs is nearly all block overhead; the apparent total can
+understate the real one by 50 % or more. A library of hardlinked site rips
+(stash#4409) overstates it by the number of links. §5.2's phrase "real on-disk
+size" is the **physical** basis.
+
+**The requirement.** Every size the system reports or persists names the basis
+it is in. A rollup carries `total` *and* `basis`, and a per-file `FileSize`
+carries all three quantities, so a caller cannot accidentally sum lengths and
+call it disk usage. Hardlink identity is `(device, inode)`, not inode alone:
+inode numbers are per-device, and two libraries mounted at once would otherwise
+silently merge.
+
+**`st_blocks` is in 512-byte units**, whatever the filesystem's block size.
+This is POSIX, and `du`, `stat` and `ls` all agree. Multiplying by the
+filesystem block size instead is off by 8 on a 4 KiB filesystem and disagrees
+with `du` for a reason that looks like a bug in this code.
+
+**Free space is two numbers.** `f_bfree` includes blocks reserved for root;
+`f_bavail` is what an unprivileged process can actually write. A statistics
+page shows the available figure and the gap, because a user told they have
+40 GB free on a filesystem with 5 % reserved has been told something they
+cannot use (stash#7194).
+
+**Temporary files do not live under `generated/`.** They have different
+lifetimes and different backup policy, and a library served from a read-only
+mount — or one where `generated/` is a separate volume — cannot run a transcode
+at all if they do (stash#5646). The temp root is configurable and defaults
+under the OS temp area. Configuring it *into* `generated/` is refused, because
+that reintroduces the bug by configuration.
+
+**Cross-checking.** Each basis is verified against the `du` invocation that
+computes that same basis, exactly rather than within a tolerance:
+
+| basis | `du` |
+|---|---|
+| apparent, per path | `du -s -B1 --apparent-size --count-links` |
+| allocated, per path | `du -s -B1 --count-links` |
+| physical, per inode | `du -s -B1` |
+
+`du -sb` is **not** a valid cross-check for any of them: it is apparent size
+*per inode*, because `du` counts each inode once by default even under
+`--apparent-size`. A tolerance would also hide the only class of failure that
+matters, which is having summed the wrong field.
+
 ## 7. People, identity, and the cluster
 
 This is the section that answers the user's central requirement, and the area
