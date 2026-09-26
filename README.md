@@ -204,7 +204,7 @@ enforcing so the intent is not lost.
 |---|---|---|
 | 0 — Foundations | done | schema, migrations, filter language, plugin host, server, memory harness |
 | 1 — Content types | done | detection, probing, segments, archives, hashing, the five remaining content types, and the windowed grid |
-| 2 — Library and scale | in progress | watcher and checkpoints done; 100k-item performance next |
+| 2 — Library and scale | in progress | watcher, checkpoints, hashing, move detection, missing volumes, job queue |
 | 3–6 | planned | identity, federation, UI surfaces, review and automation |
 
 Closed so far, among others: #3530 (one file, many objects — 38 comments

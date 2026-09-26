@@ -719,7 +719,7 @@ noted in the handoff.
 **Exit:** a 100k-item library scans and browses within budget; C15–C20 closed;
 locator hashes computed.
 
-**Progress:** 3 of 8 tickets done (T-P2-001, T-P2-002, T-P2-003).
+**Progress:** 4 of 8 tickets done (T-P2-001, T-P2-002, T-P2-003, T-P2-004).
 
 ### T-P2-001 — Filesystem watcher and scan checkpoints
 
@@ -823,33 +823,44 @@ absent volume never ramped and every scan got a probe), `backoff_for` computed
 `2 << n` where it meant `1 << n`, and `configure` took the observed volume
 state from the config file. Nine mutations, all caught.
 
-### T-P2-004 — Job engine
+### T-P2-004 — Job engine — **DONE**
 
 **Spec:** §6.3
-**Files:** `crates/commons-jobs/src/lib.rs`, `queue.rs`, `worker.rs`, `supervise.rs`
+**Files:** `crates/commons-jobs/src/lib.rs`, `queue.rs`, `worker.rs`, `supervise.rs`, `journal.rs`
 **Depends:** T-P0-004
+**Tests:** 47 in `crates/commons-jobs` (32 acceptance, 8 persistence, 7 supervisor)
 
 1. One durable queue for every slow operation: `scan, generate, identify, match,
    cluster, transcode, autotag, cluster_refresh, backup, index_sync`.
 2. Properties, each with the issue it answers:
-   - bounded worker pool, one job type per file (stash#2824, #5709)
+   - bounded worker pool, one job type per file (stash#2824, #5709) — bounded
+     per (kind, *target*), not per kind; a global one-per-kind bound makes the
+     100k target unreachable
    - **per-item skip list** — a file that fails N times is marked `Skipped` and
      never retried in the same run (stash#2913 queue looping, #6837)
    - resume after crash from the persisted `job` table (stash#1445)
    - progress, cancel, retry with exponential backoff (stash#3237)
-   - subprocess supervision with zombie reaping (stash#5709 is literally a
-     defunct Python process)
+   - subprocess supervision with zombie reaping (stash#5709)
    - inhibit-suspend during tasks (stash#5517)
    - plugins submit into the same queue (stash#5944)
 3. `JobQueue::submit(JobSpec)` is idempotent on a `dedupe_key`, so a watcher
-   firing 50 times for one file produces one job.
+   firing 50 times for one file produces one job. Enforced by the unique index
+   on `job.dedupe_key`, not only by the in-memory check — a check-then-insert
+   has a window, and the window is when a scan and a watcher both see a new file.
 
-**Accept:** `cargo test -p commons-jobs` — (a) submit 1,000 duplicate keys,
-assert 1 job; (b) a job that always fails, assert it lands in `Skipped` and
-the queue keeps draining; (c) kill the process mid-job, restart, assert
-resume.
-**Done when:** all three are named tests, especially (b) — the poison-pill
-case is the one that produces infinite loops upstream.
+**Accept:** all three are named tests. (a) 1,000 duplicate keys, through
+SQLite, assert 1 row; (b) a job that always fails, assert `Skipped` and the
+queue keeps draining; (c) a `Running` row survives a second `Store` opening the
+same file and comes back `Queued` with `attempts: 0`.
+
+**Notes:**
+- No migration: the `job` table was in the Phase 0 schema already. The
+  accessors are the work, and they live in `commons-store` — `commons-jobs`
+  names no SQLx types.
+- SQLite only, and said so in the code. `Store`'s Postgres arm is a pool this
+  crate cannot bind through without a second path; `store.pool()` panics there
+  rather than returning a plausible wrong answer. **Postgres parity for the
+  job table is a real remaining gap.**
 
 ### T-P2-005 — Hardware acceleration reporting
 
