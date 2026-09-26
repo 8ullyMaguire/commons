@@ -299,12 +299,22 @@
         <div class="grid-row" style:height="{rowHeight}px" data-testid="grid-row">
           {#each row.items as item, i (keyFor(item, i))}
             {#if item}
+              {@const index = row.rowIndex * cols + i}
+              <!--
+                The tile's absolute index in the whole list, not its position in
+                the rendered window. `ImageGrid` reads this to open the lightbox
+                on the image that was clicked, and the lightbox pages by the same
+                number -- so it is computed from `rowIndex * cols` here and
+                nowhere else. A window-relative index would open the wrong image
+                for every tile below the first row.
+              -->
               <a
                 class="tile"
                 href="?id={item.id}"
                 style:width="{density}px"
                 data-testid="grid-tile"
                 data-id={item.id}
+                data-lightbox-index={index}
               >
                 {#if item.coverPath}
                   <img src={item.coverPath} alt="" loading="lazy" width={density} />

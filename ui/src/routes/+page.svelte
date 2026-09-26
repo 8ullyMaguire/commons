@@ -13,7 +13,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import VirtualGrid from '$lib/components/VirtualGrid.svelte';
+  import ImageGrid from '$lib/components/ImageGrid.svelte';
   import { viewFromLocation, viewToHref, type ViewState } from '$lib/api/view.js';
 
   // The whole view, read from the URL. `$derived` because it must recompute
@@ -78,7 +78,7 @@
 </div>
 
 <div class="grid-host">
-  <VirtualGrid query={view} density={view.density} />
+  <ImageGrid query={view} density={view.density} />
 </div>
 
 <style>

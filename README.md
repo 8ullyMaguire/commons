@@ -147,7 +147,7 @@ that is still alive and would recover.
 
 ## Testing
 
-1155 tests across the workspace. The ones that matter most are the ones that
+1155 Rust tests across the workspace, plus 60 UI unit tests and 16 Playwright end-to-end tests (11 grid, 5 lightbox). The ones that matter most are the ones that
 were verified by breaking the code on purpose:
 
 - **Zip-Slip** (`commons-media`, `archive.rs`) — a comic archive is the most

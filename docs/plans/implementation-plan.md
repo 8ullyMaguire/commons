@@ -2507,7 +2507,28 @@ types, so a classifier proposal written *before* a user's "not a duplicate"
 outranked it — and since `auto_merge` consults `is_ruled_out` before every
 merge, the next pass re-merged the pair the user had just split.
 
-### T-P5-005 — Lightbox, image organization, per-image metadata
+### T-P5-005 — Lightbox, image organization, per-image metadata (DONE)
+
+**Status: DONE.** 60 unit tests, 16 Playwright tests (5 new for the lightbox),
+11 of 11 mutations killed by `scripts/mutate-gestures.py`, no survivors.
+Spec: `docs/spec/t-p5-005-lightbox.md`.
+
+Three notes on what this cost, because they are the parts a reader cannot get
+from the code:
+
+- The gesture rules live in `ui/src/lib/api/gestures.ts` as four pure
+  functions, and the component holds no thresholds. That split is the only
+  reason the mutation count above is computable at all.
+- `classifyWheel` takes a `dragging` flag and checks it **first**. A drag on a
+  fitted image has nowhere to pan, so a `pannable`-first ordering still
+  navigates under the user's finger — and that is the ticket's own accept
+  criterion, which failed until the flag existed.
+- The lightbox pages over the loaded list, not the grid's virtual window, and
+  clamps to it. Paging past the loaded prefix is T-P5-006's bulk-navigation
+  work; the worst case here is that "next" stops, never that it shows the wrong
+  image. `dirty` is a prop and the dirty-back rule is a pure function, because
+  there is no edit form in the app yet to set it from.
+
 
 **Spec:** §10.2, §9.6
 **Files:** `ui/src/lib/components/Lightbox.svelte`, `ui/src/lib/components/ImageGrid.svelte`

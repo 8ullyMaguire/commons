@@ -93,6 +93,43 @@ if [ "${COMMONS_SCAN_SECRETS:-0}" = "1" ]; then
   echo
 fi
 
+# The UI. Both halves, and the build between them.
+#
+# The build is not optional before the e2e: these are static routes served from
+# `build/`, and a stale build serves an *older* bundle that still returns HTTP
+# 200 for every route. A green e2e run against a stale bundle proves nothing
+# about the code on disk, which is the single most expensive way to lose an
+# afternoon here.
+if [ "${COMMONS_SKIP_UI:-0}" != "1" ] && [ -d "$REPO/ui/node_modules" ]; then
+  echo "== ui: build"
+  if (cd "$REPO/ui" && node node_modules/vite/bin/vite.js build) > /tmp/commons-ui-build.txt 2>&1; then
+    echo "   ok"
+  else
+    tail -20 /tmp/commons-ui-build.txt | sed 's/^/   /'
+    echo "   FAILED: the UI did not build"
+    fail=1
+  fi
+
+  echo "== ui: unit tests"
+  if (cd "$REPO/ui" && node ./tests/run-tests.mjs) > /tmp/commons-ui-unit.txt 2>&1; then
+    grep -E '^. (tests|pass|fail) ' /tmp/commons-ui-unit.txt | sed 's/^/   /'
+  else
+    grep -E '^. (tests|pass|fail) |not ok' /tmp/commons-ui-unit.txt | head -20 | sed 's/^/   /'
+    echo "   FAILED: a UI unit test failed"
+    fail=1
+  fi
+
+  echo "== ui: end-to-end"
+  if (cd "$REPO/ui" && node_modules/.bin/playwright test) > /tmp/commons-ui-e2e.txt 2>&1; then
+    grep -E 'passed' /tmp/commons-ui-e2e.txt | tail -1 | sed 's/^/   /'
+  else
+    grep -E '✘|failed|passed' /tmp/commons-ui-e2e.txt | head -20 | sed 's/^/   /'
+    echo "   FAILED: a Playwright test failed"
+    fail=1
+  fi
+  echo
+fi
+
 # The plan's own bookkeeping. A ticket marked done whose file is not there is
 # the expensive failure -- it reads as progress and builds as nothing -- so that
 # is a gate. An unwritten future ticket is normal and only reported.

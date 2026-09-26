@@ -28,7 +28,7 @@ nothing. `scripts/verify.sh` runs it, so the claim cannot rot.
 
 | | State |
 |---|---|
-| Rust workspace | 1155 tests, 0 failures |
+| Rust workspace | 1155 tests, 0 failures; 60 UI unit + 16 Playwright, 0 failures |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | `cargo fmt --all --check` | clean |
 | `scripts/scan-history-secrets.py` | 499 blobs, 0 findings |
@@ -81,6 +81,46 @@ prove it rather than asserting that they would.
 | T-P5-002 | §9.3 | typo tolerance, phonetics, synonyms, aliases | 11 |
 | T-P5-003 | §5.15, §9.4 | namespaces, typed attributes, groups, confidence | 11 |
 | T-P5-004 | §9.7, §5.18 | `Identical`/`ReEncode`/`Similar`/`Distinct`, relations, opt-in auto-merge | 12 |
+| T-P5-005 | §10.2, §9.6 | the lightbox: pan, flick, wheel, zoom, back on a dirty modal | 11 |
+
+**T-P5-005 is the first UI ticket in this phase, and it is the first one whose
+tests could not all be written against the pure function.** The ticket's own
+accept criterion — a wheel event dispatched mid-pan must not change the image
+index — failed against a first implementation that was correct by every reading
+of the gesture rules. A drag on a *fitted* image has nowhere to pan, so
+`classifyWheel` checking "is there anything to pan?" first still navigated under
+the user's finger. The fix is a third argument, `dragging`, checked *before* the
+others: which gesture owns the input is a different question from what the input
+would mean. That ordering is the whole ticket, and it is why the four
+recognizer functions take their arguments in the order they do.
+
+Three things cost real time here and are worth not learning again:
+
+- **The e2e gestures are in absolute CSS pixels, not fractions of the stage.**
+  They were fractions first. The stage grew from 212px to 640px when the
+  fixture's preview was fixed, and the same 4% went from 8px (a flick) to 25px
+  (a pan) — a green test turned red with no change to the code under test. The
+  thresholds are in pixels; a fraction of a box is not a pixel.
+- **A collapsed gesture surface reads as a flick.** With a 1x1 preview image the
+  stage was 1px wide, every coordinate was the same point, a zero-travel
+  release is a flick, and the lightbox advanced under a user who only tried to
+  drag. The stage now carries `min-width`/`min-height`. This looked like a
+  recognizer bug and was a fixture bug, and the way to tell them apart was to
+  log the stage's rect and the measured travel rather than to reason about it.
+- **`data-lightbox-index` on a tile is `rowIndex * cols + i`,** the absolute
+  index. The inner `each` index alone is window-relative, which opens the wrong
+  image for every tile below the first row — and the first row is the only one
+  that would look right in a test.
+
+Left for T-P5-006: paging past the loaded prefix. The lightbox clamps to the
+rows it was given, so the worst case is that "next" stops, never that it shows
+the wrong image. Deep-linking to an image is also not done: the index is
+component state, not URL state, because the pan offset and zoom are not
+serialisable and a URL carrying only the index produces a back button that
+reopens the lightbox somewhere the user did not leave it. `dirty` is a prop
+with a tested pure function behind it, but no route sets it yet — there is no
+edit form in the app to set it from — so the e2e covers the clean path and says
+so in the file.
 
 **The decision these tickets rest on.** With native FTS, "the same tokenizer in
 both engines" is unimplementable: SQLite's `unicode61` and Postgres's
