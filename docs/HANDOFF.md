@@ -10,11 +10,11 @@ instruction that cannot be satisfied without someone adding a remote.
 
 ## Where it is
 
-Phase 0, Phase 1 and Phase 2 are complete. Phase 3 has started. Nothing is a stub.
+Phase 0, Phase 1 and Phase 2 are complete. Phase 3 is 2 of 8. Nothing is a stub.
 
 | | State |
 |---|---|
-| Rust workspace | 700 tests, 0 failures |
+| Rust workspace | 751 tests, 0 failures |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | `cargo fmt --all --check` | clean |
 | UI unit tests | 43 pass (`node ./tests/run-tests.mjs`) |
@@ -25,6 +25,11 @@ Phase 0, Phase 1 and Phase 2 are complete. Phase 3 has started. Nothing is a stu
 **Tags:** `phase-1-scan-core`, `phase-1-content-types`, `phase-1-complete`,
 `phase-2-scan`, `phase-2-jobs`, `phase-2-complete`.
 
+`scripts/verify.sh` is the single command that does all of this, and it uses
+`--no-fail-fast`. A target earlier in the list masks later ones: two failures
+were sitting in `commons-scan` and `commons-store` while every run before them
+reported green. See section 9 below.
+
 `crates/commons-api` is still an empty placeholder crate. There is no GraphQL
 server, so the UI is verified against a stubbed network. That is Phase 4+ work
 and is not a Phase 2 blocker.
@@ -32,7 +37,10 @@ and is not a Phase 2 blocker.
 ## How to verify
 
 ```sh
-# Rust
+# One command: fmt, clippy, and the full test suite with --no-fail-fast.
+./scripts/verify.sh
+
+# Or by hand:
 cd ~/code-local/rust/commons
 
 # Set this FIRST. The hardware-acceleration and encoder acceptance tests drive
@@ -41,7 +49,7 @@ cd ~/code-local/rust/commons
 # against -- the count is the same either way, but the hardware assertions are vacuous.
 export COMMONS_FFMPEG=~/.hermes/tools/ffmpeg-9.0.1-linux-x64/bin/ffmpeg
 
-CARGO_TARGET_DIR=~/.cargo-target/commons cargo test --workspace   # 664
+CARGO_TARGET_DIR=~/.cargo-target/commons cargo test --workspace --no-fail-fast   # 751
 CARGO_TARGET_DIR=~/.cargo-target/commons cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 
@@ -184,6 +192,29 @@ was wrong. The fix was to stop testing the syscall and test the composition
 filesystem where they differ). This recurs; when a test "cannot see" a bug,
 the first question is whether the host can express the case at all.
 
+### 9. A green run above a failing run is not a green run
+
+`cargo test --workspace` stops at the first failing target. Two tests were
+sitting broken behind one that had just started failing: an inotify test that
+asserted settledness after a fixed 900 ms (so it failed on CPU contention
+rather than on a debounce bug), and a consent test whose table contradicted
+§14.1. Both were reported green for as long as something above them passed.
+**Always verify with `--no-fail-fast`**, and read the count of failures, not
+just the exit code.
+
+### 10. A test that asserts a count cannot see a sequence bug
+
+The keyframe clamp divided a *count* by a count and used the result as a
+*distance* in milliseconds: a three-hour file got a 22 ms stride and sampled its
+first second in 50 samples. Right count, strictly increasing, starting at zero —
+every property a reasonable test asserts, and completely wrong. The same shape
+appears in the Phase 2 pipeline bugs and in the SHA-256 chunking bug, where
+every published test vector was too small to reach the broken path.
+
+So: assert where the *last* item lands, not how many there are; assert *which*
+error came back, not merely that one did; and when a bug survives a mutation
+check, ask whether the test only ever exercised the failing path.
+
 ## Deliberately not done
 
 **Paraglide message extraction (part of T-P1-008 point 1).** Every user-visible
@@ -242,6 +273,47 @@ Real, and not yet fixed.
 - This machine has a Radeon with a working VA-API render node at
   `/dev/dri/renderD128`, so the acceleration acceptance tests really do run.
 
+## Next
+
+**T-P3-002 — clustering.** Faces exist and have vectors; nothing has ever put
+two of them in the same cluster. This is the first ticket where §7.1's
+*proposal* framing has to be carried, not just its mechanics: a link between
+two appearances is a claim about a person, and the spec requires that a person
+can decline it.
+
+**T-P3-001's honest limitation, which T-P3-002 inherits.** No ONNX runtime is
+linked, so no test asserts that a real face is found in a real frame, and none
+claims to. `Detector` takes its recogniser as a parameter
+(`with_recognising`), which is how the 36 tests drive it; linking a runtime is
+a change behind that seam, not through it. Until then, the *detection rate* is
+untested and the *decision logic around it* is tested hard. Anyone reading
+T-P3-002 should treat the thresholds as uncalibrated — the clustering distance
+threshold is a number with no measurement behind it yet.
+
+**What a reader should know before starting:**
+
+- **The sidecar is a file, deliberately.** `sidecar.rs` is not a TODO. It
+  writes vectors and provenance to `faces.usearch` with a digest trailer, and
+  the reason is rule 2: `pgvector` is an extension, and depending on one would
+  make the index need Postgres. Losing the file costs a re-detect; the
+  clusters in SQL are the expensive part and they are unaffected.
+- **The search is an exact scan, deliberately.** Not an approximate index, and
+  not yet a `usearch` one. At 200k faces an exact cosine scan is a few
+  milliseconds of SIMD. The ANN index is where T-P3-003 earns its keep —
+  introduced when a measurement says the exact scan is too slow, because an
+  approximate index that silently drops a true match is much harder to debug
+  than a slow one.
+- **The two masked failures are fixed and the test command changed.** See
+  "How to verify": `--no-fail-fast` is now part of it, and the two bugs it
+  exposed (an inotify test that asserted settledness after a fixed wait, and a
+  consent test that contradicted §14.1) are in `b7a8870`.
+
+**Still open from T-P3-000, unchanged:** artifact jobs are not submitted by
+the pipeline, volume backoff is not consulted, Postgres is unproven on the scan
+path, and `ScanInput` supplied by a caller is ignored (the pipeline builds one
+from the walk; `reconcile::plan` is the reusable entry point).
+
+
 ## Phase 11 — the community ecosystem (added 2026-09-26)
 
 The owner asked for the whole `stashapp` ecosystem, specifically
@@ -280,29 +352,6 @@ Three decisions, and the reasoning matters more than the decisions:
 
 The phase's one hard dependency is `commons-api`, which does not exist yet, so
 T-P11-007 is genuinely last even within the phase.
-
-## Next
-
-**T-P3-001 — face detection.** The first ticket that needs the Phase 3
-premise to be true: faces in frames, and they need a scanned library to have
-any frames in it. T-P3-000 made that possible.
-
-What T-P3-000 did *not* do, and what a reader should know before starting:
-
-- **Artifact jobs are not submitted by the pipeline.** It hashes and
-  reconciles; the caller submits thumbnails, sprites and phash to the T-P2-004
-  queue. This is deliberate (§6.3's "every slow thing is a job" would put the
-  hash in a job too, and that is wrong — see the plan's Done note) but it means
-  nothing currently submits generation jobs, because there is no server layer
-  yet. Phase 4.
-- **No volume-state integration.** T-P2-003's `VolumeTracker` backoff is not
-  consulted by the pipeline; the walk reports volume errors and the caller
-  would feed them to the tracker. Still open.
-- **Postgres is untested on this path.** Every test here is SQLite. The
-  accessors are shared, but the SQL dialect difference is unproven.
-- **The pipeline does not honour a `ScanInput` supplied by a caller.** It
-  builds one from the walk. `reconcile::plan` is the reusable entry point for
-  anything that is not a filesystem scan.
 
 ## A pattern worth naming
 

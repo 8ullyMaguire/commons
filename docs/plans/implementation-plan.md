@@ -1182,6 +1182,20 @@ assert norms ≈ 1.0, assert the sidecar file round-trips. A test with the
 manifest's checksum altered must refuse to load the model.
 **Done when:** the checksum-refusal test exists.
 
+**Status:** done (b7a8870). 36 tests, 16/16 mutations caught.
+
+**What shipped.** `model.rs` (verified loading), `face.rs` (crops, provenance, the keyframe plan, the detector), `sidecar.rs` (the vector file). The detector takes its recogniser as a parameter, so the tests drive it without a runtime and the runtime can be added behind that seam without touching the call sites.
+
+**Not shipped, deliberately.** No ONNX runtime is linked, so `ort` is not a dependency and no test asserts that a real face is found in a real frame. The remaining work is a model download path and the inference call itself, behind `Detector::with_recognising`.
+
+**Three bugs the tests found, and the shape they share.** All three were in code that was correct in isolation and wrong in sequence -- the same failure mode as the Phase 2 scan pipeline:
+
+  * SHA-256 produced a different digest for identical bytes fed in pieces. No published test vector could catch it: they are all shorter than one 64-byte block, and the large vector is a whole multiple of the read chunk. The smallest failing input is 8 bytes.
+  * The keyframe clamp computed a stride by dividing a count by a count, then added the result as a distance in milliseconds. A three-hour file at a ten-second interval got a 22 ms stride and sampled its first second in 50 samples -- looking entirely correct to a test that checked the sample *count*.
+  * A bounding box with a negative origin was accepted, so a detection running off the left edge of a frame became a crop reading from before the buffer.
+
+**The lesson to carry to the rest of Phase 3.** A test that asserts a *count* or a *flag* is the shape most likely to survive a sequence bug, because a sequence bug usually preserves the count while destroying what the items mean. Assert where the last item lands, and assert which specific error came back, not merely that an error did.
+
 ### T-P3-002 — The clustering engine
 
 **Spec:** §7.1

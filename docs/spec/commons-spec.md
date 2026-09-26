@@ -980,6 +980,34 @@ appearances, at which point the UI offers to name it.
    existing performer record, or nothing. Anonymous clusters are first-class;
    a cluster with no name is a valid, browsable state, and it is the *default*.
 
+**Sampling, and what a sample budget may do.** Detection runs over *generated*
+keyframes, not over every frame, because the cost is per-frame and the benefit
+is not. A keyframe interval is a user setting; a per-file sample budget bounds
+the work on a long file.
+
+The budget is a ceiling on work, not a grid, and that distinction decides where
+the samples go. When a file needs more samples than the budget allows, they are
+spread evenly from the first frame to the last. They are **not** the first N of
+the requested interval, and not that interval at a coarser stride: both
+concentrate the budget at the start, and a face in the last act of a long video
+is then never looked at. The budget is spent, whole, across the file. A test
+for this asserts where the *last* sample lands — asserting only the sample count
+cannot distinguish a correct plan from one that covered the first minute of a
+three-hour file and stopped.
+
+**A detector that cannot run is not a detector that found nothing.** If the
+model is missing, unverified, or the runtime is absent, detection fails
+visibly, with a reason. It does not return an empty result: an empty result
+indexes a library as face-free, which is a silent and permanent-looking claim
+about a user's content that is in fact a missing file.
+
+**A model is untrusted input.** A face model is fetched over the network and
+then executed, so it is treated like any other downloaded executable: its
+SHA-256 is verified against a pinned digest *before any byte of it is parsed*,
+and a malformed digest is refused rather than compared — a truncated expected
+digest can never match, and a check that cannot match is a refusal by accident
+rather than by decision.
+
 **Why this is the core feature.** Upstream can only link a person when a
 scraper found a name. For amateur corpora there is no scraper, so the person
 is fragmented across hundreds of items with no thread. The cluster is that
