@@ -6,31 +6,23 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+# Only what Phase 0 uses. The layering test fails on a dependency the table
+# does not permit, so unused crates are not listed "just in case" -- they are
+# added when the phase that needs them lands.
 commons-core = { workspace = true }
 commons-store = { workspace = true }
-commons-scan = { workspace = true }
-commons-jobs = { workspace = true }
-commons-media = { workspace = true }
-commons-ml = { workspace = true }
-commons-identity = { workspace = true }
-commons-index = { workspace = true }
-commons-consent = { workspace = true }
-commons-federation = { workspace = true }
 commons-plugin = { workspace = true }
-commons-api = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-uuid = { workspace = true }
 thiserror = { workspace = true }
-anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
-camino = { workspace = true }
-chrono = { workspace = true }
-blake3 = { workspace = true }
-sha2 = { workspace = true }
-reqwest = { workspace = true }
-semver = { workspace = true }
+tower-http = { workspace = true }
+toml = { workspace = true }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+tower = { workspace = true, features = ["util"] }
+tempfile = { workspace = true }

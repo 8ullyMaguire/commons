@@ -761,33 +761,20 @@ dependencies = [
 name = "commons-server"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "axum 0.7.9",
- "blake3",
- "camino",
- "chrono",
- "commons-api",
- "commons-consent",
  "commons-core",
- "commons-federation",
- "commons-identity",
- "commons-index",
- "commons-jobs",
- "commons-media",
- "commons-ml",
  "commons-plugin",
- "commons-scan",
  "commons-store",
- "reqwest",
- "semver",
  "serde",
  "serde_json",
- "sha2",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "toml",
+ "tower",
+ "tower-http",
  "tracing",
  "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
