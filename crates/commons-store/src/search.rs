@@ -81,6 +81,17 @@ pub enum Field {
     Subtitle,
     /// An external id, so searching `abc123` finds the object it belongs to.
     ExternalId,
+    /// §9.3's alias: whatever the user calls this thing.
+    ///
+    /// A distinct field rather than a reuse of `Performer` or `Title`, and the
+    /// reason is scope. A performer's alias *is* a name and shares `Performer`'s
+    /// weight -- `performer_alias` (§7.2) is a claim about a performer's history,
+    /// and a stage name should rank as a name. An alias here is a search aid on
+    /// an arbitrary object, so a file nicknamed "the good one" must not outrank
+    /// a genuine title. It sits between `Performer` and `Tag`: a name the user
+    /// chose for this object is a stronger signal than a tag anyone applied, and
+    /// weaker than the object's own name.
+    Alias,
 }
 
 impl Field {
@@ -92,11 +103,12 @@ impl Field {
     /// a caller iterating `ALL` visits the strongest field first, and it means
     /// the order a new field appears in cannot be `weight()` and something else
     /// at once. `field_weights_are_the_documented_table` pins it.
-    pub const ALL: [Field; 10] = [
+    pub const ALL: [Field; 11] = [
         Field::Title,
         Field::Marker,
         Field::Performer,
         Field::Cluster,
+        Field::Alias,
         Field::Tag,
         Field::Studio,
         Field::Group,
@@ -112,6 +124,7 @@ impl Field {
             Field::Description => "description",
             Field::Performer => "performer",
             Field::Cluster => "cluster",
+            Field::Alias => "alias",
             Field::Tag => "tag",
             Field::Studio => "studio",
             Field::Group => "group",
@@ -120,7 +133,12 @@ impl Field {
         }
     }
 
-    fn parse(s: &str) -> Option<Self> {
+    /// Parse a stored field name.
+    ///
+    /// `pub` because the fuzzy index stores the same names and reads them
+    /// back, and a private parser would have the fuzzy module reach into the
+    /// enum's innards to do it.
+    pub fn parse_str(s: &str) -> Option<Self> {
         Field::ALL.into_iter().find(|f| f.as_str() == s)
     }
 
@@ -143,6 +161,13 @@ impl Field {
             Field::Marker => 60,
             Field::Performer => 50,
             Field::Cluster => 45,
+            // Above a cluster and a tag: a name the user chose for this object
+            // is a signal about *this* object, where a tag is often inherited
+            // from a performer or a series. 48 rather than 40, because a tie
+            // with `Tag` makes the ordering between two different fields
+            // arbitrary and the two engines would then have to break it the
+            // same way by accident.
+            Field::Alias => 48,
             Field::Tag => 40,
             Field::Studio => 35,
             Field::Group => 30,
@@ -299,9 +324,22 @@ pub struct Synonym {
 /// `match` arms rather than two SQL statements -- which is the distinction that
 /// matters for "one behaviour".
 async fn ranked(store: &Store, sql: &str, terms: &[String]) -> Result<Vec<Ranked>, SearchError> {
+    // The binds are the `IN` terms, then the group-`CASE` terms, in that order
+    // -- which is the order the `?` marks appear in the SQL. Bound twice over
+    // the same list because the query references it twice, and a caller cannot
+    // pass a list that disagrees with the `CASE` arms it built: both come from
+    // the same `groups`.
+    //
+    // A version of this took a `group_count` as well, on the theory that the
+    // signature should stop a caller from disagreeing with itself. The SQL
+    // already interpolates that count from the same `groups`, so it could not
+    // disagree; the parameter was a `let _ =` and an extra thing to keep right.
     match store {
         Store::Sqlite(p) => {
             let mut q = sqlx::query_as::<_, Ranked>(sql);
+            for t in terms {
+                q = q.bind(t.clone());
+            }
             for t in terms {
                 q = q.bind(t.clone());
             }
@@ -316,6 +354,9 @@ async fn ranked(store: &Store, sql: &str, terms: &[String]) -> Result<Vec<Ranked
             for t in terms {
                 q = q.bind(t.clone());
             }
+            for t in terms {
+                q = q.bind(t.clone());
+            }
             Ok(q.fetch_all(p).await.map_err(StoreError::Query)?)
         }
     }
@@ -327,11 +368,29 @@ async fn ranked(store: &Store, sql: &str, terms: &[String]) -> Result<Vec<Ranked
 /// replacement that drops the original makes a search for a word that happens
 /// to have a synonym stop finding the word itself, which is a bug that looks
 /// like a synonym table being helpful.
+/// Expand a query's terms into **groups**, one per query term.
+///
+/// The shape matters and the first version got it wrong. A flat expansion
+/// turns every synonym into an extra *required* term, so a query for `arse`
+/// against a vocabulary mapping `arse -> arse ass hole` demands an object
+/// carrying all three — and no object ever does, so §9.3's own "ass finds both
+/// meanings" finds nothing. The test caught it, and the fix is the shape every
+/// search engine with synonym expansion uses:
+///
+/// - **within** a group, the terms are alternatives (OR) — `arse` means the
+///   same as `ass`, so an object carrying either answers the query;
+/// - **between** groups, the terms are requirements (AND) — a two-word query
+///   still needs both words' meanings present.
+///
+/// The group is returned rather than a flattened list precisely so the caller
+/// can AND across groups and OR within one. Returning a flat `Vec<String>`
+/// loses exactly the information needed to build the query, which is how the
+/// bug got in.
 pub async fn expand(
     store: &Store,
     vocabulary: &str,
     terms: &[String],
-) -> Result<Vec<String>, StoreError> {
+) -> Result<Vec<Vec<String>>, StoreError> {
     let rows: Vec<(String, String)> = match store {
         Store::Sqlite(p) => sqlx::query_as::<_, (String, String)>(
             "SELECT term, expands_to FROM search_synonym WHERE vocabulary = ?",
@@ -365,20 +424,25 @@ pub async fn expand(
             (term, list)
         })
         .collect();
-    let mut out: Vec<String> = Vec::with_capacity(terms.len());
-    for t in terms {
-        if !out.contains(t) {
-            out.push(t.clone());
-        }
-        if let Some(extra) = table.get(t) {
-            for e in extra {
-                if !out.contains(e) {
-                    out.push(e.clone());
+
+    Ok(terms
+        .iter()
+        .map(|t| {
+            // A term with no entry is its own group of one. A term WITH an
+            // entry expands to its synonyms, and the original is *kept* — a
+            // replacement that drops the original makes a search for a word
+            // that happens to have a synonym stop finding the word itself.
+            let mut group = vec![t.clone()];
+            if let Some(extra) = table.get(t) {
+                for e in extra {
+                    if !group.contains(e) {
+                        group.push(e.clone());
+                    }
                 }
             }
-        }
-    }
-    Ok(out)
+            group
+        })
+        .collect())
 }
 
 /// One row of the term index.
@@ -415,6 +479,19 @@ pub enum SearchError {
 
 /// The largest page a search will return.
 pub const MAX_RESULTS: usize = 500;
+
+impl SearchError {
+    /// True when the query had no searchable terms, and so a fuzzy pass has
+    /// nothing to work from either.
+    ///
+    /// A predicate rather than `Clone` on the error: `search_fuzzy` runs the
+    /// exact search first and needs to know *which kind* of failure it was, and
+    /// making the whole error cloneable to carry that one bit out is a large
+    /// requirement (`StoreError` wraps an `io::Error`) for a boolean.
+    pub fn is_empty_query(&self) -> bool {
+        matches!(self, SearchError::EmptyQuery(_))
+    }
+}
 
 impl Store {
     /// Index one object's terms.
@@ -469,6 +546,20 @@ impl Store {
             .await?;
             n += 1;
         }
+
+        // The fuzzy keys, written here rather than left to a caller to
+        // remember. `index_terms` is public and `index_object` is what every
+        // other write path goes through, so a caller that indexed an object's
+        // terms and forgot the fuzzy pass got an object that was findable
+        // exactly and not findable with a typo -- which is the failure the
+        // alias path hit, and which nothing but this call would have caught.
+        //
+        // Ordering: the exact rows first, so a search that lands between the
+        // two writes finds the object rather than missing it. The reverse order
+        // would surface a fuzzy-only hit for an object whose exact terms were
+        // not yet written, which ranks the object on a field the caller has not
+        // finished describing.
+        crate::fuzzy::index_terms(self, object_id, terms).await?;
         Ok(n)
     }
 
@@ -543,53 +634,105 @@ impl Store {
         if terms.is_empty() {
             return Err(SearchError::EmptyQuery(text.to_string()));
         }
-        let terms = match vocabulary {
+        // Groups, whether or not a vocabulary was named: a query term with no
+        // synonym entry is a group of one, so the query below is written once
+        // and the "no vocabulary" case falls out of the general shape rather
+        // than being a second code path.
+        let groups: Vec<Vec<String>> = match vocabulary {
             Some(v) => expand(self, v, &terms).await?,
-            None => terms,
+            None => terms.into_iter().map(|t| vec![t]).collect(),
         };
 
         // Rank by the sum of the field weights for the matched terms, and
-        // require *every* term to match somewhere. An OR-only search for two
-        // words returns everything matching either, which for a common word is
-        // most of the library — and a result list nobody scrolls is a result
-        // list that has failed.
+        // require every *group* to be satisfied.
         //
-        // The `GROUP BY ... HAVING COUNT(DISTINCT term) = ?` is the AND. Written
-        // this way rather than as a chain of self-joins because a chain of
-        // self-joins is a different query in every engine's planner and this
-        // one is not.
-        // The `CASE` arms are generated from [`Field::weight`], never typed
-        // out. A hand-written CASE beside the enum is two weightings, and they
-        // drift: the first person to change what a title is worth changes the
-        // enum, sees the tests still pass, and ships a search that ranks by a
-        // number no function agrees with. Generating it means there is one
-        // table and it is the one the test asserts.
+        // The `WHERE ... OR (...) AND (WHERE ... OR ...)` shape is OR within a
+        // synonym group and AND between groups. Written as one flat
+        // `term IN (...)` with `HAVING COUNT(DISTINCT term) = n`, which is what
+        // the first version did, that is only correct when every group has one
+        // member -- and a synonym group with three members then demands an
+        // object carrying all three, which no object does, so §9.3's "ass
+        // finds both meanings" found nothing.
         //
-        // The arm values are integer literals from a `const fn` over a
-        // closed enum, so this is not a bind parameter and not an injection
-        // surface -- but the *order* is the enum's, so the SQL is stable and
-        // the query plan does not change between runs.
+        // `HAVING COUNT(DISTINCT grp) = n` is the AND between groups, where
+        // `grp` is the group index. That is portable: `COUNT(DISTINCT x)` is in
+        // the §15.2 subset, and it avoids a chain of self-joins, which is a
+        // different query in every engine's planner.
+        //
+        // The group index is *interpolated*, not bound. It is a loop counter
+        // over `groups`, an integer this function produced, and it cannot
+        // disagree with the `IN` lists below it because both come from the same
+        // loop. Binding it would mean a heterogeneous parameter list, which in
+        // sqlx means implementing `Encode` and `Type` for a private enum to
+        // carry a number already known to be an integer.
         let case = Field::ALL
             .iter()
             .map(|f| format!("WHEN '{}' THEN {}", f.as_str(), f.weight()))
             .collect::<Vec<_>>()
             .join("\n                          ");
 
-        // The `IN` list is built from the *bound* terms, never from the text:
-        // the text has already been through the tokenizer, so nothing
-        // user-supplied reaches the SQL string. A term is always a run of
-        // alphanumerics and stems, so a quote in the input cannot reach here
-        // as a quote -- and the mark count comes from the bound values, so it
-        // cannot disagree with them either.
-        let marks = vec!["?"; terms.len()].join(", ");
-        // `n` is interpolated rather than bound, and it is the only number in
-        // the statement that is. It is `terms.len()` -- the same `terms` whose
-        // length produced the mark list above -- so it cannot be attacker-
-        // controlled and cannot disagree with the list it counts: the compiler
-        // fixes both to one variable. Binding it instead would need a
-        // heterogeneous parameter list (strings and an integer), which in
-        // sqlx means implementing `Encode` and `Type` for a private enum to
-        // carry a count that is already known to be an integer.
+        // One `IN (...) OR (...)` per group, and the matching binds in order.
+        let mut where_parts: Vec<String> = Vec::with_capacity(groups.len());
+        let mut bind_terms: Vec<String> = Vec::new();
+        for group in &groups {
+            let marks = vec!["?"; group.len()].join(", ");
+            where_parts.push(format!("(s.term IN ({marks}))"));
+            bind_terms.extend(group.iter().cloned());
+        }
+        let where_clause = where_parts.join(" OR ");
+
+        // Every row carries the index of the group its term came from, so the
+        // `HAVING` can count distinct groups. The `CASE` maps a bound term back
+        // to its group: a term in two groups (a word that is its own synonym
+        // and also an expansion of another) satisfies both, and the first
+        // matching arm wins -- which is why the arms are `WHEN ... THEN n` over
+        // a bound term rather than a join against a temporary table.
+        // The `CASE` maps a matched term back to its group index, so the
+        // `COUNT(DISTINCT ...)` counts *groups* matched rather than terms, and
+        // two terms in the same group count once.
+        //
+        // It is written in the **subject form** -- `CASE <expr> WHEN <value>
+        // THEN <result>` -- not the searched form, and not with a bound
+        // parameter in either. Both alternatives fail on Postgres while
+        // working on SQLite, which is the whole hazard this module exists to
+        // avoid:
+        //
+        //   `CASE WHEN ? THEN 1`      -> 42804, "argument of CASE/WHEN must be
+        //                                  type boolean": a bare parameter used
+        //                                  only as a condition has nothing to
+        //                                  infer its type from, so `PREPARE`
+        //                                  rejects the query before it runs.
+        //   `CASE WHEN 'ass' THEN 1`  -> 22P02, "invalid input syntax for type
+        //                                  boolean "ass"": with the value
+        //                                  spelled out, Postgres reads a
+        //                                  searched `CASE` whose arms are
+        //                                  boolean conditions, and tries to
+        //                                  coerce the term to one.
+        //
+        // The subject form gives the arms a type -- the type of `s.term` --
+        // and compares as text on both engines. That is the only spelling of
+        // the three that means the same thing in both.
+        //
+        // Interpolating a term into SQL is normally what never to do, and it is
+        // safe here for reasons that are checkable rather than assumed: a term
+        // comes from `tokenize`, which yields only alphanumeric runs, so there
+        // is no quote to escape; and the string still goes out through the same
+        // `bind_sql` path as every other Postgres literal. It is also bounded:
+        // the arms are one per query term, so the query grows with the query,
+        // not with the corpus.
+        let mut group_arms: Vec<String> = Vec::new();
+        for (gi, group) in groups.iter().enumerate() {
+            // 1-based, because `ELSE 0` is what the `COUNT(DISTINCT ...)` reads
+            // as "matched no group" and a 0-based index would collide with it.
+            for t in group {
+                group_arms.push(format!("WHEN '{t}' THEN {}", gi + 1));
+            }
+        }
+        // The `ELSE` is inside the `CASE`, not an `END` of its own: the
+        // searched form's `ELSE 0` is what a term that matches no arm falls to,
+        // and `COUNT(DISTINCT ...)` must not count it.
+        let group_case = format!("CASE s.term {} ELSE 0 END", group_arms.join(" "));
+
         let sql = format!(
             "SELECT s.object_id,
                     SUM(CASE s.field
@@ -597,15 +740,16 @@ impl Store {
                           ELSE 0
                         END) AS score
                FROM search_term s
-              WHERE s.term IN ({marks})
+              WHERE {where_clause}
               GROUP BY s.object_id
-             HAVING COUNT(DISTINCT s.term) = {n}",
+             HAVING COUNT(DISTINCT {group_case}) = {n}",
             case = case,
-            marks = marks,
-            n = terms.len(),
+            where_clause = where_clause,
+            group_case = group_case,
+            n = groups.len(),
         );
 
-        let rows = ranked(self, &sql, &terms).await?;
+        let rows = ranked(self, &sql, &bind_terms).await?;
 
         let mut out: Vec<SearchHit> = rows
             .into_iter()
@@ -641,7 +785,7 @@ impl Store {
         let ids: Vec<String> = out.iter().map(|h| h.object_id.clone()).collect();
         if !ids.is_empty() {
             let id_marks = vec!["?"; ids.len()].join(", ");
-            let term_marks = vec!["?"; terms.len()].join(", ");
+            let term_marks = vec!["?"; bind_terms.len()].join(", ");
             // Two mark lists, counted separately. The first version reused one
             // `marks` for both the `IN` lists and bound `ids.len()` of them for
             // the first, which is a query that returns whatever the engine feels
@@ -661,7 +805,7 @@ impl Store {
                     for id in &ids {
                         fb = fb.bind(id.clone());
                     }
-                    for t in &terms {
+                    for t in &bind_terms {
                         fb = fb.bind(t.clone());
                     }
                     Ok::<_, StoreError>(fb.fetch_all(p).await.map_err(StoreError::Query)?)
@@ -672,7 +816,7 @@ impl Store {
                     for id in &ids {
                         fb = fb.bind(id.clone());
                     }
-                    for t in &terms {
+                    for t in &bind_terms {
                         fb = fb.bind(t.clone());
                     }
                     Ok::<_, StoreError>(fb.fetch_all(p).await.map_err(StoreError::Query)?)
@@ -680,7 +824,7 @@ impl Store {
             }?;
             let mut by_object: BTreeMap<String, Vec<Field>> = BTreeMap::new();
             for (oid, field) in frows {
-                if let Some(f) = Field::parse(&field) {
+                if let Some(f) = Field::parse_str(&field) {
                     by_object.entry(oid).or_default().push(f);
                 }
             }

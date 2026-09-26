@@ -18,6 +18,7 @@
 
 pub mod db;
 pub mod filter_ast;
+pub mod fuzzy;
 pub mod index;
 pub mod locator;
 pub mod query;

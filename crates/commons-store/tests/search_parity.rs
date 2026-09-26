@@ -477,6 +477,7 @@ fn field_weights_are_the_documented_table() {
         ("marker", 60),
         ("performer", 50),
         ("cluster", 45),
+        ("alias", 48),
         ("tag", 40),
         ("studio", 35),
         ("group", 30),
@@ -575,32 +576,56 @@ async fn synonyms_are_per_vocabulary() {
     )
     .await;
 
-    // Within its vocabulary, a synonym expands.
-    let tags = store.search("cunt", Some("tags"), 10).await.unwrap();
-    let expanded = search::expand(&store, "tags", &["cunt".to_string()])
+    // Within its vocabulary, a synonym expands. The result is *groups* -- one
+    // per query term, each holding that term's alternatives -- because a
+    // synonym means the same thing as its neighbours, not "and also". A flat
+    // list is only correct when every group has one member.
+    let groups = search::expand(&store, "tags", &["cunt".to_string()])
         .await
         .unwrap();
+    assert_eq!(groups.len(), 1, "one query term, one group: {groups:?}");
     assert!(
-        expanded.contains(&"pussy".to_string()),
-        "§9.3's per-vocabulary expansion: {expanded:?}"
+        groups[0].contains(&"pussy".to_string()),
+        "§9.3's per-vocabulary expansion: {groups:?}"
     );
     assert!(
-        expanded.contains(&"cunt".to_string()),
+        groups[0].contains(&"cunt".to_string()),
         "a term expands to itself *plus* its synonyms, or a word with a \
-         synonym stops finding itself: {expanded:?}"
+         synonym stops finding itself: {groups:?}"
     );
 
-    // And the wrong vocabulary does not expand it.
-    let anatomy = store.search("cunt", Some("anatomy"), 10).await.unwrap();
+    // And the wrong vocabulary does not expand it: a term with no entry there
+    // is a group of one.
     let wrong = search::expand(&store, "anatomy", &["cunt".to_string()])
         .await
         .unwrap();
     assert_eq!(
         wrong,
-        vec!["cunt".to_string()],
+        vec![vec!["cunt".to_string()]],
         "a term with no entry in the named vocabulary is unchanged"
     );
-    let _ = (tags, anatomy);
+}
+
+/// Two query terms are two groups, and the two are AND'd together.
+///
+/// The shape that makes a multi-word query mean what it says: each word's
+/// meanings are alternatives, and the words themselves are both required.
+#[tokio::test]
+async fn two_query_terms_make_two_groups() {
+    let store = sqlite_store().await;
+    let groups = search::expand(
+        &store,
+        "anatomy",
+        &["arse".to_string(), "mountain".to_string()],
+    )
+    .await
+    .unwrap();
+    assert_eq!(groups.len(), 2, "one group per query term: {groups:?}");
+    assert_eq!(
+        groups[1],
+        vec!["mountain".to_string()],
+        "no entry, so a group of one"
+    );
 }
 
 /// A synonym that maps two ways — §9.3's "ass" case.
@@ -614,18 +639,21 @@ async fn a_term_can_expand_to_several_meanings() {
         &[],
     )
     .await;
-    let expanded = search::expand(&store, "anatomy", &["ass".to_string()])
+    let groups = search::expand(&store, "anatomy", &["ass".to_string()])
         .await
         .unwrap();
     assert_eq!(
-        expanded,
-        vec!["ass".to_string(), "arse".to_string(), "hole".to_string()],
-        "§9.3: 'ass' finds both meanings"
+        groups,
+        vec![vec![
+            "ass".to_string(),
+            "arse".to_string(),
+            "hole".to_string(),
+        ]],
+        "§9.3: 'ass' finds both meanings -- one group, three alternatives"
     );
 }
 
 // --------------------------------------------------------------------- index
-
 /// Re-indexing replaces rather than accumulating.
 #[tokio::test]
 async fn reindexing_replaces_rather_than_doubling() {

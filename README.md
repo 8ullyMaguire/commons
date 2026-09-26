@@ -147,7 +147,7 @@ that is still alive and would recover.
 
 ## Testing
 
-1063 tests across the workspace. The ones that matter most are the ones that
+1088 tests across the workspace. The ones that matter most are the ones that
 were verified by breaking the code on purpose:
 
 - **Zip-Slip** (`commons-media`, `archive.rs`) — a comic archive is the most
@@ -181,6 +181,19 @@ were verified by breaking the code on purpose:
   contention. It was rewritten to hold reservations across a barrier, and now
   removing the ceiling check fails it. A test that cannot fail is worse than no
   test, and this one was found by trying to break it.
+- **Cross-engine search** (`commons-store`, `search.rs` / `fuzzy.rs`) — §9.2 and
+  §9.3 must mean the same thing on SQLite and on Postgres, so the tests run
+  against a real local Postgres and compare the results rather than asserting
+  that they would agree. Three bugs lived in the gap between the two dialects
+  and none of them was visible in SQLite alone: a synonym expansion that was
+  flat rather than grouped, so a query for one meaning demanded an object
+  carrying every meaning; a `CASE` that Postgres rejects at `PREPARE` and
+  SQLite runs; and an edit distance that returned "no match" for a string
+  against itself, which reads identically to a string that is not there. The
+  tokenizer, the fuzzy keys and the phonetic codes are computed in Rust and
+  stored as ordinary rows for the same reason — SQLite's `unicode61` and
+  Postgres's `to_tsvector` disagree about stemming, and two native
+  implementations are two tokenizers, not one.
 
 Fixture content is deterministic. Re-running the generator produces
 content-equivalent archives; zip entry timestamps are pinned precisely so a

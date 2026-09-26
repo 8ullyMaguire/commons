@@ -2318,9 +2318,15 @@ OR, stop words becoming searchable, the stemmer disabled, a synonym replacing
 its term rather than adding to it, re-indexing accumulating, and `deindex_object`
 made a no-op.
 
-### T-P5-002 — Fuzzy, phonetic, synonyms
+### T-P5-002 — Fuzzy, phonetic, synonyms (DONE)
+
+§9.3's typo tolerance, phonetic keys, per-vocabulary synonyms, and
+alias/nickname awareness, one behaviour across both engines.
 
 **Spec:** §9.3
+**Files:** `crates/commons-store/src/fuzzy.rs`,
+`crates/commons-store/tests/fuzzy.rs`,
+`crates/commons-store/migrations/{sqlite,postgres}/0015_fuzzy.sql`
 
 Fuzzy + phonetic matching, alias and nickname awareness, per-vocabulary
 synonyms. Same tokenizer and same synonym table in both engines; the synonym
@@ -2329,6 +2335,55 @@ table is data (a table), not code.
 **Accept:** a typo-tolerance test (`reciever` finds `receiver`) and a synonym
 test, both run against both engines with identical results.
 **Done when:** both engines agree.
+
+**What it is.** Keys are computed in Rust — a term, one deletion key per
+character, a transposition key, and a Soundex code — and stored as ordinary rows
+in `search_fuzzy`, for the same reason the tokenizer is ours (T-P5-001): with
+native FTS, "same behaviour on both engines" is unimplementable, and with
+`pg_trgm` it is unimplementable on SQLite. A search for a typo is an equality
+lookup on a precomputed key.
+
+`search_fuzzy` is the exact search plus candidates that share a key, and the
+budget is one edit. A fuzzy hit scores one below the same field's exact hit and
+the ordering is total (`score`, then `object_id`), so the two engines cannot
+differ on a tie.
+
+Synonym expansion is **OR within a group, AND between groups** — the shape every
+engine with synonym expansion uses. A term with no entry is a group of one.
+
+An alias is a name for *this* object (`object_alias`), distinct from
+`performer_alias` (§7.2), which is a claim about a performer's history. It is
+indexed under `Field::Alias`, so the exact search, the fuzzy search and the
+synonym expansion all find it without knowing aliases exist.
+
+**What the tests caught.** Each of these was a live bug, not a hypothetical:
+- the search `CASE` had no form that meant the same thing in both engines
+  (`CASE WHEN ?` is rejected at `PREPARE` on Postgres; `CASE WHEN 'x'` coerces
+  the term to boolean), so the `HAVING` that counts matched groups is written
+  in the subject form `CASE s.term WHEN ... THEN n`;
+- `levenshtein` returned `None` for a string against itself — the two-row
+  rotation advanced `prev2` to the row about to be discarded, and the early
+  exit rejected the initial row `[0,1,2,...]` for any string three characters
+  long, so *every* comparison failed;
+- the `dress`/`class` stemmer bug from T-P5-001 was a symptom of the rule, not
+  the list;
+- synonym expansion was flat, so a query for `arse` demanded an object carrying
+  `arse` *and* `ass` *and* `hole` — §9.3's own "ass finds both meanings" found
+  nothing;
+- `search_fuzzy` returned `Ok([])` for an empty query, making "you typed
+  nothing" indistinguishable from "there is nothing here";
+- `index_object` never wrote the fuzzy keys, so the two indexes could drift —
+  an alias was findable exactly and not findable with a typo. `index_object`
+  now writes both, so the drift is not expressible;
+- an un-tokenized alias was one term, and no single-word query could match it;
+- `remove_alias` blanked the whole alias field, so removing one of three
+  aliases made the other two unfindable;
+- `Field::Alias` at 40 tied with `Field::Tag`, leaving the ordering between two
+  different fields to be broken arbitrarily; it is 48.
+
+**Verification:** 23 tests in `tests/fuzzy.rs`, the accept criteria against both
+engines; seven mutations of the fuzzy and expansion logic killed, plus four of
+the alias paths.
 
 ### T-P5-003 — Tag system
 

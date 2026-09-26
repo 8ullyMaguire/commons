@@ -10,21 +10,23 @@ instruction that cannot be satisfied without someone adding a remote.
 
 ## Where it is
 
-Phases 0, 1, 2 and 3 are complete. Phase 3's eight tickets are T-P3-000 the
-scan pipeline, T-P3-001 face detection, T-P3-002 clustering, T-P3-003 the §7.4
-composite score, T-P3-004 merge/split/alias/disambiguate, T-P3-005 §7.5's
-self-service performer claim, T-P3-006 the performer field model. All Phases 4
-through 8 are not started. Nothing built is a stub.
+Phases 0, 1, 2, 3 and 4 are complete, and Phase 5 has opened with
+T-P5-001 (search) and T-P5-002 (fuzzy, phonetic, synonyms, aliases). Phase 3's
+eight tickets are T-P3-000 the scan pipeline, T-P3-001 face detection,
+T-P3-002 clustering, T-P3-003 the §7.4 composite score, T-P3-004
+merge/split/alias/disambiguate, T-P3-005 §7.5's self-service performer claim,
+T-P3-006 the performer field model. Everything from T-P5-003 onwards is not
+started. Nothing built is a stub.
 
 `python3 scripts/plan-status.py` is the authority on that sentence, not this
-file and not the plan. It counts 41 of 84 tickets closed and 41 genuinely
+file and not the plan. It counts 41 of 84 tickets closed and 37 genuinely
 unstarted, and it exits non-zero if any ticket is *marked* done while the file
 it names is absent -- the failure mode that reads as progress and builds as
 nothing. `scripts/verify.sh` runs it, so the claim cannot rot.
 
 | | State |
 |---|---|
-| Rust workspace | 1063 tests, 0 failures |
+| Rust workspace | 1088 tests, 0 failures |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | `cargo fmt --all --check` | clean |
 | UI unit tests | 43 pass (`node ./tests/run-tests.mjs`) |
@@ -35,7 +37,8 @@ nothing. `scripts/verify.sh` runs it, so the claim cannot rot.
 **Tags:** `phase-1-scan-core`, `phase-1-content-types`, `phase-1-complete`,
 `phase-2-scan`, `phase-2-jobs`, `phase-2-complete`, `phase-4-candidates`,
 `phase-4-history`, `phase-4-moderation`, `phase-4-points`,
-`phase-4-consent-filter`, `phase-4-takedown`, `phase-5-search`.
+`phase-4-consent-filter`, `phase-4-takedown`, `phase-5-search`,
+`phase-5-fuzzy`.
 
 `scripts/verify.sh` is the single command that does all of this, and it uses
 `--no-fail-fast`. A target earlier in the list masks later ones: two failures
@@ -45,6 +48,73 @@ reported green. See section 9 below.
 `crates/commons-api` is still an empty placeholder crate. There is no GraphQL
 server, so the UI is verified against a stubbed network. That is Phase 4+ work
 and is not a Phase 2 blocker.
+
+## Phase 5 so far
+
+Two tickets, both about one behaviour: §9.2 and §9.3 must mean the same thing
+on SQLite and on Postgres, and the tests run against a real local Postgres to
+prove it rather than asserting that they would.
+
+| Ticket | Spec | What the rule is | Mutations killed |
+|---|---|---|---|
+| T-P5-001 | §9.2, §9.3, §3.5 | one tokenizer, one synonym table, one ranking | 6 |
+| T-P5-002 | §9.3 | typo tolerance, phonetics, synonyms, aliases | 11 |
+
+**The decision both tickets rest on.** With native FTS, "the same tokenizer in
+both engines" is unimplementable: SQLite's `unicode61` and Postgres's
+`to_tsvector('english',…)` disagree about stemming, stop words and
+hyphenation, and two native implementations are two tokenizers. So `tokenize`
+produces the terms in Rust and `search_term` / `search_fuzzy` are ordinary
+tables neither engine has an opinion about. Cost: a scan per term. A hosted
+index can be added *alongside* these rows later — faster, never different.
+
+**§9.3's "ass finds both meanings" did not work, and the fix was structural.**
+Synonym expansion was flat, so a query for `arse` demanded an object carrying
+`arse` *and* `ass` *and* `hole`. Expansion is now **OR within a synonym group,
+AND between groups** — the shape every engine with synonym expansion uses —
+and `expand` returns groups rather than a flat list precisely so that shape is
+expressible. A flat `Vec<String>` loses the information needed to build the
+query, which is how the bug got in.
+
+**`CASE` has no spelling that means the same thing in both engines.** The
+`HAVING` that counts matched *groups* needs `CASE term -> group index`.
+`CASE WHEN ? THEN 1` is rejected at `PREPARE` on Postgres ("argument of
+CASE/WHEN must be type boolean"), and `CASE WHEN 'ass' THEN 1` then fails with
+"invalid input syntax for type boolean". Only the subject form —
+`CASE s.term WHEN 'ass' THEN 1 ... ELSE 0 END` — means the same in both. The
+terms are interpolated rather than bound; that is forced by the planner, and is
+safe because `tokenize` yields only alphanumeric runs.
+
+**Two bugs were the same bug.** `levenshtein` returned `None` for a string
+against itself: the two-row rotation advanced `prev2` to the row about to be
+discarded, *and* the early exit rejected the initial row `[0,1,2,…]` for any
+string three characters long, so every comparison failed. And
+`index_object` never wrote the fuzzy keys, so the two indexes could drift — an
+alias was findable exactly and not findable with a typo. `index_object` now
+writes both, so the drift is not expressible rather than merely untested.
+
+**A test that cannot see the cascade is not a test.** `remove_alias` re-indexes
+from the aliases that remain, because blanking the field made removing one of
+three aliases make the other two unfindable — and a single-alias test cannot
+tell "removed the alias" from "removed every alias", so the test now has three.
+
+## The Postgres migration tree has never been applied
+
+`_sqlx_migrations` in the local Postgres is **empty**. T-P5-001's parity test is
+what found this, and two defects stop the tree running end to end:
+
+1. `0001` declares a foreign key to `producer` five statements before creating
+   it. SQLite does not check a foreign key until a write; Postgres does.
+2. `0002` creates two indexes under names `0001` already used. SQLite's `0002`
+   rebuilds the table instead, so there is no collision there.
+
+Both are worked around **in the test harness, not in the migrations** — the
+files are applied and immutable, and a fix is a new migration rather than a
+reorder. With the two worked around the tree applies cleanly: 75 tables.
+
+**Owed:** nothing in the suite would notice those two defects being
+reintroduced, which is the part that matters. The parity test proves the tree
+applies; it does not prove it applies *for the right reasons*.
 
 ## Phase 4 so far
 
