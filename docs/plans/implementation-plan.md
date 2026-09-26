@@ -2227,20 +2227,96 @@ needs a guard of its own — worth a follow-up ticket.
 
 **Exit:** the 174-image-issue and 93-tag-issue clusters closed; C46–C63.
 
-### T-P5-001 — Search index, both engines
+### T-P5-001 — Search index, both engines — DONE
 
-**Spec:** §9.2, §9.3
-**Files:** `commons-store/migrations/*/0002_search.sql`, `commons-store/src/search.rs`
+**Spec:** §9.2, §9.3, §3.5
+**Files:** `crates/commons-store/src/search.rs`, migration 0014, `crates/commons-store/tests/search_parity.rs`
 
 Search across titles (all languages), descriptions, tags, performer names and
-aliases, clusters, studios, groups, markers, **transcripts and captions**
-(stash#4985), and external IDs. Includes performers and tags in keyword search
-(stash#2976) and alias-aware search (stash#3266, stash-box#804, #742).
+aliases, clusters, studios, groups, markers, transcripts/captions and external
+ids, with alias-aware synonym expansion.
 
-**Accept:** a shared fixture corpus with known expected hits, run against both
-engines, asserting **identical result id sets**. That equality test is what
-keeps rule 2 honest for search.
-**Done when:** the cross-engine equality test passes.
+**Accept — the cross-engine equality test passes.** It does, and it runs: a
+local Postgres is reachable, so these are real two-engine tests and not a
+comment about one. `scripts/verify.sh` now exports `DATABASE_URL` for the
+reason that a parity test which skips when the database is absent is a parity
+test that never runs.
+
+### The design decision: the tokenizer is ours
+
+§9.3 asks for "the same tokenizer and the same synonym table" in both engines.
+With each engine's native FTS that is unimplementable: SQLite FTS5's
+`unicode61` and Postgres's `to_tsvector('english', ...)` disagree about
+stemming, stop words and hyphenation, and two native implementations have two
+tokenizers rather than one. So `search::tokenize` produces the terms in Rust and
+`search_term (object_id, field, term)` is an ordinary table neither engine has
+an opinion about. The cost is a scan per term, which is the right trade for a
+personal library, and a hosted index can add a native index *alongside* these
+rows keyed on the same terms — faster, never different.
+
+`Field::weight` generates the ranking query's `CASE` arms. A hand-written CASE
+beside the enum is two weightings, and they drift: whoever changes what a title
+is worth changes the enum, sees the tests pass, and ships a search ranking by a
+number no function agrees with.
+
+`GROUP_CONCAT` and `ORDER BY field` were both removed from the ranking query.
+The first is spelled `string_agg` on Postgres; the second is alphabetical on
+one engine and collation-dependent on the other. The matching fields are a
+second flat query, ordered in Rust from the enum's own `Ord`, because the fields
+belong to the response and not to the ranking. That is the whole portable layer:
+one SQL string, and the only dialect branch is `?` becoming `$n`.
+
+### The Postgres migration tree has never been applied
+
+Writing the parity test is what found this. `_sqlx_migrations` in the local
+database is **empty**: the index engine has never been migrated from scratch, and
+two defects stop it:
+
+1. `0001_core.sql` creates `performer_alias` with a foreign key to `producer`
+   and creates `producer` five statements later. SQLite does not check foreign
+   keys until a write, so the SQLite tree has always applied cleanly; Postgres
+   checks at `CREATE TABLE`.
+2. `0002_appearance_nullable_cluster.sql` creates `appearance_cluster_idx` and
+   `appearance_ambiguous_idx` under names `0001` already used. The SQLite mirror
+   rebuilds the table instead, so SQLite never collides.
+
+Both are worked around in the test harness, not in the migrations: both files
+are applied and immutable, and the rule is that a fix is a new migration rather
+than a reorder. **Follow-up owed:** a migration that makes the Postgres tree
+buildable from nothing, and a test that asserts exactly that. Right now nothing
+in the suite would notice those two defects being reintroduced, which is the
+part that matters.
+
+### Three bugs the tests found
+
+- **`search_term` had no UNIQUE constraint.** `index_object` relies on
+  `ON CONFLICT DO NOTHING`, which failed at runtime on one engine while the
+  other worked. The migration's comment described the constraint and the DDL did
+  not have it.
+- **The stemmer destroyed `dress` and `class`.** `ss` was listed as a strippable
+  suffix, reasoning that it had to go before `s` could reach it; that turns
+  `dress` into `dre`. Porter's rule is that `ss` maps to *itself* — a word ending
+  in `ss` has already had its suffix removed. Removing the entry is not enough on
+  its own, because the plain `s` rule then reaches the same `ss`; both halves of
+  the exception are needed. The stemmer is now Porter step 1 written out in
+  order, with the `y` rule last, because the order is the algorithm.
+- **`Store::deindex_object` claimed it was "called when the object is deleted"
+  and was not.** `ON DELETE CASCADE` removes the terms regardless, so a no-op
+  implementation passed the entire suite. The function's real use is an object
+  that must stop being findable without being deleted — which is what a
+  §14.1 consent change needs — and there is now a test for that case, which
+  cannot see the cascade.
+
+A fourth was a test being wrong about the API: `every_field_in_the_spec_is_
+searchable` indexed ten fields in a loop and expected them to accumulate, while
+`index_object` replaces. Re-indexing per field is what the API does, and the
+test now says so.
+
+Verification: `1063 tests, 0 failures`; fmt clean; `clippy --workspace
+--all-targets -- -D warnings` clean. Six mutations killed: the AND becoming an
+OR, stop words becoming searchable, the stemmer disabled, a synonym replacing
+its term rather than adding to it, re-indexing accumulating, and `deindex_object`
+made a no-op.
 
 ### T-P5-002 — Fuzzy, phonetic, synonyms
 

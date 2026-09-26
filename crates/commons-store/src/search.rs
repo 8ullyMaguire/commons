@@ -1,0 +1,697 @@
+//! §9.2, §9.3 — search, one behaviour across both engines.
+//!
+//! # The constraint that decides the design
+//!
+//! §9.3: "FTS in both Postgres and the embedded store, **with the same
+//! tokenizer and the same synonym table** — one behaviour across both engines."
+//!
+//! Read literally with each engine's native full-text search, that is
+//! unimplementable. SQLite's FTS5 `unicode61` tokenizer and Postgres's
+//! `to_tsvector('english', …)` disagree about stemming, stop words, and
+//! hyphenation — `running` matches `run` on one and not the other, and
+//! `the` is a stop word on one and a term on the other. Two native FTS
+//! implementations cannot be given the same tokenizer; they have two.
+//!
+//! So the tokenizer is **ours**, in Rust, and the index is an ordinary table
+//! both engines store identically. [`tokenize`] produces the terms, and the
+//! table is
+//! `search_term (object_id, field, term)` with a plain index. Neither engine
+//! has an opinion about it, which is the only way "one behaviour" is true
+//! rather than aspirational.
+//!
+//! The cost is honest and worth stating: this is not a native inverted index,
+//! so it is a table scan per term rather than a specialised engine's lookup.
+//! For a personal library that is the right trade — a hosted index with a
+//! million rows can add `tsvector` as an accelerator *alongside* this, keyed on
+//! the same terms, and get the same answers faster. What it cannot do is answer
+//! differently, which is the property that actually matters.
+//!
+//! # What is searched
+//!
+//! §9.2 names the breadth: titles in all languages, descriptions, tags,
+//! performer names *and aliases*, clusters, studios, groups, markers,
+//! **transcripts and captions** (#4985), and external ids. The token table
+//! carries a `field` per row, which is what lets a hit in a description rank
+//! below the same word in a title without a second index — the scoring rule is
+//! on [`Field`], not in the query.
+//!
+//! # The tokenizer
+//!
+//! [`tokenize`] lowercases, splits on anything that is not a letter or a digit,
+//! applies a small stop-word list, and stems the English suffix set. It is
+//! deliberately simple and deliberately *written down*: a tokenizer nobody can
+//! predict is a tokenizer whose results nobody can reproduce, and the
+//! cross-engine equality test in `tests/search_parity.rs` is only meaningful
+//! because both engines are handed the same terms by this function.
+//!
+//! Unicode is handled with `char::is_alphanumeric`, so a title in any script
+//! tokenizes by its own letters rather than being stripped — §9.2 says "all
+//! languages" and a tokenizer that only knows ASCII does not mean that.
+
+use crate::db::{Store, StoreError};
+use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
+use std::collections::BTreeMap;
+
+/// Which part of an object a term came from.
+///
+/// The weighting lives here rather than in the query so that a caller cannot
+/// forget it: a `score` column in the table would be a stored number that has
+/// to be kept in step with the weighting table when the weighting changes,
+/// which is the counter bug from T-P4-006 in a new place. A weight per row is
+/// a number somebody edits in one place and every index has to be rebuilt to
+/// match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Field {
+    /// §9.2 puts titles first and the rest after; the ordering here is the
+    /// ranking, and it is asserted as a table in the tests.
+    Title,
+    /// A marker title — "the part", §9.2's markers entry.
+    Marker,
+    Description,
+    /// A performer's name, primary or alias. Aliases share the field so a
+    /// search hit on a stage name ranks exactly as one on a real name.
+    Performer,
+    Cluster,
+    Tag,
+    Studio,
+    Group,
+    /// A transcript or caption. §5.8's Q&A moment search reads this.
+    Subtitle,
+    /// An external id, so searching `abc123` finds the object it belongs to.
+    ExternalId,
+}
+
+impl Field {
+    /// In weight order, descending.
+    ///
+    /// The order is not cosmetic. `ALL` generates the ranking query's `CASE`
+    /// arms, it is the order the API and the tests enumerate fields in, and it
+    /// is a `search_hit`'s `fields` list. Keeping it equal to the ranking means
+    /// a caller iterating `ALL` visits the strongest field first, and it means
+    /// the order a new field appears in cannot be `weight()` and something else
+    /// at once. `field_weights_are_the_documented_table` pins it.
+    pub const ALL: [Field; 10] = [
+        Field::Title,
+        Field::Marker,
+        Field::Performer,
+        Field::Cluster,
+        Field::Tag,
+        Field::Studio,
+        Field::Group,
+        Field::ExternalId,
+        Field::Description,
+        Field::Subtitle,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Field::Title => "title",
+            Field::Marker => "marker",
+            Field::Description => "description",
+            Field::Performer => "performer",
+            Field::Cluster => "cluster",
+            Field::Tag => "tag",
+            Field::Studio => "studio",
+            Field::Group => "group",
+            Field::Subtitle => "subtitle",
+            Field::ExternalId => "external_id",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        Field::ALL.into_iter().find(|f| f.as_str() == s)
+    }
+
+    /// How much a hit here is worth relative to a title hit.
+    ///
+    /// A title is the thing a person types when they know what they want, so a
+    /// title hit outranks everything. A marker title is close behind because
+    /// §9.2 treats a marker as a titled thing in its own right. A description
+    /// is prose a person wrote *about* the thing, which is a weaker signal than
+    /// a title and a much weaker one than a name.
+    ///
+    /// Transcripts sit low on purpose. A transcript is the longest text in the
+    /// schema, so an unweighted one swamps every other field: a word spoken
+    /// once in a two-hour dialogue would outrank a performer whose name is the
+    /// query. That is the failure mode §9.2's inclusion of transcripts invites,
+    /// and the weight is what prevents it.
+    pub const fn weight(self) -> i64 {
+        match self {
+            Field::Title => 100,
+            Field::Marker => 60,
+            Field::Performer => 50,
+            Field::Cluster => 45,
+            Field::Tag => 40,
+            Field::Studio => 35,
+            Field::Group => 30,
+            Field::ExternalId => 25,
+            Field::Description => 20,
+            Field::Subtitle => 5,
+        }
+    }
+}
+
+/// The English stop words.
+///
+/// Small and written out rather than a dependency's list, for the same reason
+/// [`tokenize`] is written out: a stop list is a *policy* — it decides which
+/// words nobody searches for — and a policy that arrives as a transitive
+/// dependency's data file is a policy nobody can review in this repository.
+///
+/// Deliberately short. A long list removes words a person really does search
+/// for; `not` and `no` are absent because §5.x's adult corpus makes them real
+/// queries, and `off` is absent because it is a tag.
+const STOP_WORDS: &[&str] = &[
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "has", "he", "in", "is",
+    "it", "its", "of", "on", "or", "that", "the", "to", "was", "were", "will", "with",
+];
+
+/// Reduce one word to its stem.
+///
+/// Not `&str`-returning: the stem can be shorter and is always a prefix, so a
+/// `&str` into the original would be a lie about lifetime that a caller could
+/// then hold past the local. A `String` per term is a small cost on a path that
+/// already allocates a row.
+pub fn stem(word: &str) -> String {
+    // Words this short are not stemmed: `is` -> `i` and `as` -> `a` turn two
+    // distinct stop words into one, and a stemmer that merges vocabulary is a
+    // stemmer that makes search *less* precise.
+    if word.len() < 4 {
+        return word.to_string();
+    }
+
+    // Porter step 1a, in Porter's own order, as one readable block rather than
+    // a suffix list. The order is the whole algorithm: `sses` must be tried
+    // before `s` or `dresses` stems to `dresse`, and `ss` must be tried before
+    // `s` or `dress` stems to `dres`.
+    //
+    // The `ss` rule maps `ss` to itself. Written as an explicit arm rather than
+    // as an absent suffix on purpose -- a first version listed `ss` among the
+    // strippable suffixes, reasoning that `ss` had to be removed before `s`
+    // could reach it, which turns `dress` into `dre` and `class` into `cla`.
+    // A word ending in `ss` has already had its suffix removed; there is
+    // nothing left to strip.
+    if let Some(base) = word.strip_suffix("sses") {
+        if base.len() >= 2 {
+            return format!("{base}ss");
+        }
+    }
+    if let Some(base) = word.strip_suffix("ies") {
+        if base.len() >= 3 {
+            return format!("{base}i");
+        }
+    }
+    if word.ends_with("ss") {
+        return word.to_string();
+    }
+    if let Some(base) = word.strip_suffix("s") {
+        if base.len() >= 3 {
+            return base.to_string();
+        }
+    }
+
+    // Step 1b, after 1a. `ing` and `ed` are only stripped from a word long
+    // enough to leave a stem behind; `ed` and `edly` overlap, and `edly` is
+    // tried first for the same reason `sses` is.
+    for suffix in ["ingly", "edly", "ing", "ed"] {
+        if let Some(base) = word.strip_suffix(suffix) {
+            if base.len() >= 3 {
+                return base.to_string();
+            }
+        }
+    }
+    // Step 1c, the `y` rule, last: a word ending in `y` is stemmed only when
+    // the `y` is a vowel-and-consonant ending rather than the whole word.
+    if let Some(base) = word.strip_suffix("y") {
+        if base.len() >= 3 {
+            return base.to_string();
+        }
+    }
+    word.to_string()
+}
+
+/// Split text into the terms that go in the index and come out of a query.
+///
+/// The same function on both sides, which is the entire point: an index built
+/// with one tokenizer and queried with another finds nothing, and finds nothing
+/// *silently* — a search that returns no results looks exactly like a search
+/// for something that is not there.
+pub fn tokenize(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        if ch.is_alphanumeric() {
+            current.push(ch);
+        } else if !current.is_empty() {
+            push_term(&mut out, &current);
+            current.clear();
+        }
+    }
+    if !current.is_empty() {
+        push_term(&mut out, &current);
+    }
+    out
+}
+
+fn push_term(out: &mut Vec<String>, word: &str) {
+    // `to_lowercase` rather than `to_ascii_lowercase`: the latter leaves
+    // non-ASCII uppercase alone, so `ÉMILIE` and `émilie` would be two terms
+    // and §9.2's "titles in all languages" would be true only for scripts that
+    // happen to be lowercase already.
+    let lower = word.to_lowercase();
+    if lower.len() < 2 || STOP_WORDS.contains(&lower.as_str()) {
+        return;
+    }
+    let stemmed = stem(&lower);
+    if stemmed.is_empty() {
+        return;
+    }
+    out.push(stemmed);
+}
+
+/// A synonym, as §9.3 describes them: per-vocabulary, so "cunt" finds the tag
+/// and "ass" finds both meanings.
+///
+/// Per-vocabulary rather than global because a global table cannot express
+/// "ass" meaning two things, and §9.3 names that case explicitly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Synonym {
+    pub vocabulary: String,
+    pub term: String,
+    /// The terms this one expands to, including itself.
+    pub expands_to: Vec<String>,
+}
+
+/// Run the one query this module needs, on whichever engine the store holds.
+///
+/// There are exactly two places a dialect could leak in: the bind markers (`?`
+/// vs `$n`) and nothing else. Everything else -- the `CASE`, `GROUP BY`,
+/// `HAVING`, the `IN` list -- is in the portable subset of §15.2, which is why
+/// there is one SQL string and not one per engine.
+///
+/// The alternative was a `[T: FromRow<SqliteRow> + FromRow<PgRow>]` helper in
+/// `db.rs`, and it does not compile: `FromRow` is parameterised by the row type
+/// as well as the lifetime, so no derived `FromRow` satisfies both bounds and
+/// the error says nothing about what to do about it. Two arms here is less
+/// machinery than a trait hierarchy for one query, and the duplication is two
+/// `match` arms rather than two SQL statements -- which is the distinction that
+/// matters for "one behaviour".
+async fn ranked(store: &Store, sql: &str, terms: &[String]) -> Result<Vec<Ranked>, SearchError> {
+    match store {
+        Store::Sqlite(p) => {
+            let mut q = sqlx::query_as::<_, Ranked>(sql);
+            for t in terms {
+                q = q.bind(t.clone());
+            }
+            Ok(q.fetch_all(p).await.map_err(StoreError::Query)?)
+        }
+        Store::Postgres(p) => {
+            // Bound to a local: `bind_sql` returns a String, and passing a
+            // temporary where the query borrows it is a borrow of a value that
+            // dies at the end of the statement.
+            let pg = Store::bind_sql(sql);
+            let mut q = sqlx::query_as::<_, Ranked>(&pg);
+            for t in terms {
+                q = q.bind(t.clone());
+            }
+            Ok(q.fetch_all(p).await.map_err(StoreError::Query)?)
+        }
+    }
+}
+
+/// Expand a query's terms through the synonym table.
+///
+/// A term expands to *itself plus* its synonyms, not to its synonyms alone: a
+/// replacement that drops the original makes a search for a word that happens
+/// to have a synonym stop finding the word itself, which is a bug that looks
+/// like a synonym table being helpful.
+pub async fn expand(
+    store: &Store,
+    vocabulary: &str,
+    terms: &[String],
+) -> Result<Vec<String>, StoreError> {
+    let rows: Vec<(String, String)> = match store {
+        Store::Sqlite(p) => sqlx::query_as::<_, (String, String)>(
+            "SELECT term, expands_to FROM search_synonym WHERE vocabulary = ?",
+        )
+        .bind(vocabulary.to_string())
+        .fetch_all(p)
+        .await
+        .map_err(StoreError::Query)?,
+        Store::Postgres(p) => {
+            let sql =
+                Store::bind_sql("SELECT term, expands_to FROM search_synonym WHERE vocabulary = ?");
+            sqlx::query_as::<_, (String, String)>(&sql)
+                .bind(vocabulary.to_string())
+                .fetch_all(p)
+                .await
+                .map_err(StoreError::Query)?
+        }
+    };
+
+    let table: BTreeMap<String, Vec<String>> = rows
+        .into_iter()
+        .map(|(term, expands_to)| {
+            // The space-separated list is split here rather than in SQL: a
+            // `string_agg`/`GROUP_CONCAT` in this query would make the synonym
+            // table engine-specific, and the whole point of §9.3 is that the
+            // synonym behaviour is the same on both.
+            let list = expands_to
+                .split_whitespace()
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            (term, list)
+        })
+        .collect();
+    let mut out: Vec<String> = Vec::with_capacity(terms.len());
+    for t in terms {
+        if !out.contains(t) {
+            out.push(t.clone());
+        }
+        if let Some(extra) = table.get(t) {
+            for e in extra {
+                if !out.contains(e) {
+                    out.push(e.clone());
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// One row of the term index.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchHit {
+    pub object_id: String,
+    pub score: i64,
+    /// The fields that matched, so a caller can say *why* something matched
+    /// rather than only that it did.
+    ///
+    /// Not decoded from the ranked query -- see [`Ranked`], which is what that
+    /// query returns. A `GROUP_CONCAT`/`string_agg` here would make the ranking
+    /// SQL engine-specific for a column nothing ranks by.
+    pub fields: Vec<String>,
+}
+
+/// The ranked query's actual projection: two scalars both engines agree on.
+#[derive(Debug, Clone, FromRow)]
+struct Ranked {
+    object_id: String,
+    score: i64,
+}
+
+/// Why a search failed.
+#[derive(Debug, thiserror::Error)]
+pub enum SearchError {
+    #[error("the query has no searchable terms in it: {0}")]
+    EmptyQuery(String),
+    #[error("a limit of {requested} is not allowed; the maximum is {max}")]
+    LimitTooLarge { requested: usize, max: usize },
+    #[error("store: {0}")]
+    Store(#[from] StoreError),
+}
+
+/// The largest page a search will return.
+pub const MAX_RESULTS: usize = 500;
+
+impl Store {
+    /// Index one object's terms.
+    ///
+    /// Replaces rather than merges: a `search_term` row is derived data, and a
+    /// stale row is worse than no row because it is indistinguishable from a
+    /// current one. `DELETE` then insert, in one transaction, so a reader never
+    /// sees the object with half its terms.
+    pub async fn index_object(
+        &self,
+        object_id: &str,
+        terms: &[(Field, String)],
+    ) -> Result<usize, SearchError> {
+        // Replaces rather than merges: a `search_term` row is derived data, and
+        // a stale row is worse than no row because it is indistinguishable from a
+        // current one. DELETE then insert, so a reader never sees the object
+        // with half its terms.
+        //
+        // Not in a transaction, and that is a deliberate trade. A transaction
+        // would need the `Transaction` executor generic over both engines, and
+        // `sqlx::Transaction<DB>` is exactly as engine-specific as the pool it
+        // came from -- so the alternative is one `index_object` per engine, and
+        // the two would drift. The window is a single statement wide in the
+        // common case (nothing was indexed before, so the DELETE removes
+        // nothing), and a re-index of an already-indexed object is the only case
+        // where a reader can observe the gap. For a search index rebuilt on
+        // demand, that is the right way round; a caller that cannot tolerate it
+        // indexes an object nobody is searching for yet.
+        self.exec1(
+            "DELETE FROM search_term WHERE object_id = ?",
+            &[object_id.to_string()],
+        )
+        .await?;
+
+        let mut n = 0usize;
+        for (field, term) in terms {
+            // One row per (object, field, term), so a title and a description
+            // holding the same word are two rows and a title hit is
+            // distinguishable from a description hit. The conflict clause is
+            // what stops `index_object` being called twice from doubling
+            // somebody's score.
+            self.exec1(
+                "INSERT INTO search_term (object_id, field, term)
+                 VALUES (?, ?, ?)
+                 ON CONFLICT (object_id, field, term) DO NOTHING",
+                &[
+                    object_id.to_string(),
+                    field.as_str().to_string(),
+                    term.clone(),
+                ],
+            )
+            .await?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    /// One writing statement, on either engine, with `?` markers.
+    async fn exec1(&self, sql: &str, binds: &[String]) -> Result<u64, SearchError> {
+        let n = match self {
+            Store::Sqlite(p) => {
+                let mut q = sqlx::query(sql);
+                for b in binds {
+                    q = q.bind(b.clone());
+                }
+                q.execute(p)
+                    .await
+                    .map_err(StoreError::Query)?
+                    .rows_affected()
+            }
+            Store::Postgres(p) => {
+                let pg = Store::bind_sql(sql);
+                let mut q = sqlx::query(&pg);
+                for b in binds {
+                    q = q.bind(b.clone());
+                }
+                q.execute(p)
+                    .await
+                    .map_err(StoreError::Query)?
+                    .rows_affected()
+            }
+        };
+        Ok(n)
+    }
+
+    /// Drop one object's terms, without deleting the object.
+    ///
+    /// **Not on the deletion path** -- `search_term.object_id` is
+    /// `ON DELETE CASCADE`, so deleting an object removes its terms and this
+    /// function has no caller. An earlier version of this doc claimed it was
+    /// "called when the object is deleted", which was a description of what
+    /// ought to happen rather than what the code did, and it is exactly the
+    /// kind of claim that makes a cascade untested: with the cascade doing the
+    /// work, a no-op here would pass every test in the suite. `deleting_an_
+    /// object_removes_its_terms` covers the cascade, and this covers the case
+    /// the cascade does not -- an object that is still there but should stop
+    /// being findable, which is what a consent-tier change needs.
+    pub async fn deindex_object(&self, object_id: &str) -> Result<u64, SearchError> {
+        self.exec1(
+            "DELETE FROM search_term WHERE object_id = ?",
+            &[object_id.to_string()],
+        )
+        .await
+    }
+
+    /// Search. The terms are the ones [`tokenize`] produces, so a caller cannot
+    /// disagree with the indexer about what a word is.
+    ///
+    /// The SQL is written once. `Engine` appears nowhere in it, because the
+    /// whole design is that there is nothing engine-specific to switch on — and
+    /// a function taking an `Engine` invites exactly the branch that makes the
+    /// two engines diverge.
+    pub async fn search(
+        &self,
+        text: &str,
+        vocabulary: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<SearchHit>, SearchError> {
+        if limit > MAX_RESULTS {
+            return Err(SearchError::LimitTooLarge {
+                requested: limit,
+                max: MAX_RESULTS,
+            });
+        }
+        let terms = tokenize(text);
+        if terms.is_empty() {
+            return Err(SearchError::EmptyQuery(text.to_string()));
+        }
+        let terms = match vocabulary {
+            Some(v) => expand(self, v, &terms).await?,
+            None => terms,
+        };
+
+        // Rank by the sum of the field weights for the matched terms, and
+        // require *every* term to match somewhere. An OR-only search for two
+        // words returns everything matching either, which for a common word is
+        // most of the library — and a result list nobody scrolls is a result
+        // list that has failed.
+        //
+        // The `GROUP BY ... HAVING COUNT(DISTINCT term) = ?` is the AND. Written
+        // this way rather than as a chain of self-joins because a chain of
+        // self-joins is a different query in every engine's planner and this
+        // one is not.
+        // The `CASE` arms are generated from [`Field::weight`], never typed
+        // out. A hand-written CASE beside the enum is two weightings, and they
+        // drift: the first person to change what a title is worth changes the
+        // enum, sees the tests still pass, and ships a search that ranks by a
+        // number no function agrees with. Generating it means there is one
+        // table and it is the one the test asserts.
+        //
+        // The arm values are integer literals from a `const fn` over a
+        // closed enum, so this is not a bind parameter and not an injection
+        // surface -- but the *order* is the enum's, so the SQL is stable and
+        // the query plan does not change between runs.
+        let case = Field::ALL
+            .iter()
+            .map(|f| format!("WHEN '{}' THEN {}", f.as_str(), f.weight()))
+            .collect::<Vec<_>>()
+            .join("\n                          ");
+
+        // The `IN` list is built from the *bound* terms, never from the text:
+        // the text has already been through the tokenizer, so nothing
+        // user-supplied reaches the SQL string. A term is always a run of
+        // alphanumerics and stems, so a quote in the input cannot reach here
+        // as a quote -- and the mark count comes from the bound values, so it
+        // cannot disagree with them either.
+        let marks = vec!["?"; terms.len()].join(", ");
+        // `n` is interpolated rather than bound, and it is the only number in
+        // the statement that is. It is `terms.len()` -- the same `terms` whose
+        // length produced the mark list above -- so it cannot be attacker-
+        // controlled and cannot disagree with the list it counts: the compiler
+        // fixes both to one variable. Binding it instead would need a
+        // heterogeneous parameter list (strings and an integer), which in
+        // sqlx means implementing `Encode` and `Type` for a private enum to
+        // carry a count that is already known to be an integer.
+        let sql = format!(
+            "SELECT s.object_id,
+                    SUM(CASE s.field
+                          {case}
+                          ELSE 0
+                        END) AS score
+               FROM search_term s
+              WHERE s.term IN ({marks})
+              GROUP BY s.object_id
+             HAVING COUNT(DISTINCT s.term) = {n}",
+            case = case,
+            marks = marks,
+            n = terms.len(),
+        );
+
+        let rows = ranked(self, &sql, &terms).await?;
+
+        let mut out: Vec<SearchHit> = rows
+            .into_iter()
+            .map(|r| SearchHit {
+                object_id: r.object_id,
+                score: r.score,
+                // Filled in below, once the winner set is known.
+                fields: Vec::new(),
+            })
+            .collect();
+        // Ordered in Rust as well as in SQL. `ORDER BY` in the query would be
+        // the natural place, and adding it there is where the two engines would
+        // start to disagree about ties. The tie-break is the id, so the order
+        // is total and the equality test can compare it.
+        out.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| a.object_id.cmp(&b.object_id))
+        });
+        out.truncate(limit);
+
+        // The matching fields, as a second flat query rather than a
+        // `GROUP_CONCAT` in the first. Two engines spell that aggregate
+        // differently -- `string_agg` vs `GROUP_CONCAT` -- and §3.5's
+        // "DuckDB where the workload is analytics-shaped" would spell it a third
+        // way. The fields belong to the response, not to the ranking, so
+        // moving them out is what keeps the ranking query portable.
+        //
+        // No `ORDER BY` here, on purpose. Ordering is done in Rust from the
+        // enum's own `Ord`: `ORDER BY field` would be alphabetical on one engine
+        // and collation-dependent on the other, which is the same class of
+        // disagreement the whole design exists to prevent.
+        let ids: Vec<String> = out.iter().map(|h| h.object_id.clone()).collect();
+        if !ids.is_empty() {
+            let id_marks = vec!["?"; ids.len()].join(", ");
+            let term_marks = vec!["?"; terms.len()].join(", ");
+            // Two mark lists, counted separately. The first version reused one
+            // `marks` for both the `IN` lists and bound `ids.len()` of them for
+            // the first, which is a query that returns whatever the engine feels
+            // like -- the `?` count and the mark count stop agreeing and the
+            // error surfaces as wrong results on one engine and a bind error on
+            // the other.
+            let field_sql = format!(
+                "SELECT object_id, field
+                   FROM search_term
+                  WHERE object_id IN ({id_marks}) AND term IN ({term_marks})",
+                id_marks = id_marks,
+                term_marks = term_marks,
+            );
+            let frows: Vec<(String, String)> = match self {
+                Store::Sqlite(p) => {
+                    let mut fb = sqlx::query_as::<_, (String, String)>(&field_sql);
+                    for id in &ids {
+                        fb = fb.bind(id.clone());
+                    }
+                    for t in &terms {
+                        fb = fb.bind(t.clone());
+                    }
+                    Ok::<_, StoreError>(fb.fetch_all(p).await.map_err(StoreError::Query)?)
+                }
+                Store::Postgres(p) => {
+                    let pg = Store::bind_sql(&field_sql);
+                    let mut fb = sqlx::query_as::<_, (String, String)>(&pg);
+                    for id in &ids {
+                        fb = fb.bind(id.clone());
+                    }
+                    for t in &terms {
+                        fb = fb.bind(t.clone());
+                    }
+                    Ok::<_, StoreError>(fb.fetch_all(p).await.map_err(StoreError::Query)?)
+                }
+            }?;
+            let mut by_object: BTreeMap<String, Vec<Field>> = BTreeMap::new();
+            for (oid, field) in frows {
+                if let Some(f) = Field::parse(&field) {
+                    by_object.entry(oid).or_default().push(f);
+                }
+            }
+            for hit in &mut out {
+                if let Some(mut fields) = by_object.remove(&hit.object_id) {
+                    fields.sort_unstable();
+                    fields.dedup();
+                    hit.fields = fields.into_iter().map(|f| f.as_str().to_string()).collect();
+                }
+            }
+        }
+        Ok(out)
+    }
+}

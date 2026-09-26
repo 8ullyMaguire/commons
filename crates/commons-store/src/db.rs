@@ -143,6 +143,38 @@ impl Store {
         Ok(store)
     }
 
+    /// Open the index engine at an explicit URL **without** migrating.
+    ///
+    /// For a caller that has already applied the migrations -- the search
+    /// parity test, which applies them itself because the tree cannot yet build
+    /// a Postgres schema from nothing. Calling [`Store::open_index_url`] on an
+    /// already-migrated schema fails with "relation already exists", which is
+    /// the migrator's checksum table saying it does not know about a schema it
+    /// did not create.
+    pub async fn connect_index_url(url: &str) -> Result<Self> {
+        let pool = PgPool::connect(url)
+            .await
+            .map_err(StoreError::ConnectIndex)?;
+        Ok(Store::Postgres(pool))
+    }
+
+    /// Open the index engine at an explicit URL, migrating it.
+    ///
+    /// Exists for the search parity test, which needs a *private schema* per
+    /// test. `search_path` is a connection setting, so a `SET` on one pooled
+    /// connection does not reach the next -- it has to be in the URL, which
+    /// means the store has to be opened again rather than configured. Testing
+    /// two engines against one schema would make each test's results depend on
+    /// whichever test ran before it.
+    pub async fn open_index_url(url: &str) -> Result<Self> {
+        let pool = PgPool::connect(url)
+            .await
+            .map_err(StoreError::ConnectIndex)?;
+        let store = Store::Postgres(pool);
+        store.migrate().await?;
+        Ok(store)
+    }
+
     /// Open a throwaway in-memory SQLite, for tests. Migrations still run, so a
     /// test that passes here is testing the real schema.
     pub async fn open_memory() -> Result<Self> {

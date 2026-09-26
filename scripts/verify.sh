@@ -10,6 +10,15 @@ REPO="${REPO:-/home/alvaro/code-local/rust/commons}"
 export COMMONS_FFMPEG="${COMMONS_FFMPEG:-$HOME/.hermes/tools/ffmpeg-9.0.1-linux-x64/bin/ffmpeg}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cargo-target/commons}"
 
+# The two-engine tests (T-P5-001's search parity) need a reachable Postgres.
+# Set here rather than left to the caller's environment because a parity test
+# that runs against one engine is not a parity test: §3.5 makes the second
+# engine a property of the product, not a deployment choice. Overridable, and
+# the value below is the local development server -- no credential belongs in
+# this file for a machine other than this one, so a deployment that differs
+# exports its own.
+export DATABASE_URL="${DATABASE_URL:-postgres://postgres:smoke_pw@127.0.0.1/postgres}"
+
 cd "$REPO" || exit 1
 
 fail=0
