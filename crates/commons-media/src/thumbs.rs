@@ -40,6 +40,7 @@
 //! here -- a file that is *nominally* WebP can still have a composited black
 //! background.
 
+use super::hwaccel_plan::AccelPlan;
 use crate::probe::{MediaInfo, ProbeError};
 use parking_lot::Mutex;
 use std::collections::VecDeque;
@@ -396,6 +397,13 @@ pub struct Generator {
     ffmpeg: PathBuf,
     ffprobe: PathBuf,
     budget: Arc<MemoryBudget>,
+    /// How to ask ffmpeg for acceleration, and whether to ask at all.
+    ///
+    /// Defaults to [`AccelPlan::Software`], which is byte-for-byte the flag
+    /// set the pipeline used before acceleration existed. A caller that never
+    /// touches this gets no behaviour change, which is what makes adding the
+    /// field safe.
+    plan: AccelPlan,
     /// Frames are sampled at the midpoint of each equal slice, not at the slice
     /// boundary. A boundary sample lands on the exact frame a chapter or a
     /// marker starts, which is the frame most likely to be a black fade or a
@@ -410,6 +418,7 @@ impl Generator {
             ffmpeg: PathBuf::from("ffmpeg"),
             ffprobe: PathBuf::from("ffprobe"),
             budget,
+            plan: super::hwaccel_plan::AccelPlan::Software,
             sample_midpoint: true,
         }
     }
@@ -423,6 +432,37 @@ impl Generator {
 
     pub fn budget(&self) -> &Arc<MemoryBudget> {
         &self.budget
+    }
+
+    /// Use `plan` for subsequent generations.
+    ///
+    /// Takes the plan as a value rather than a planner: the decision is the
+    /// caller's, and a generator that probed for itself would probe on every
+    /// call.
+    pub fn with_plan(mut self, plan: AccelPlan) -> Self {
+        self.plan = plan;
+        self
+    }
+
+    /// The plan in force.
+    ///
+    /// By reference: `AccelPlan` is no longer `Copy` because a hardware plan
+    /// names a device path, and cloning a path to read a field would be silly.
+    pub fn plan(&self) -> &AccelPlan {
+        &self.plan
+    }
+
+    /// A hardware filter chain's value with the download-back step appended.
+    ///
+    /// `scale_vaapi` returns a hardware frame. The encoder is software, so
+    /// without this the run ends with `Nothing was written into output file,
+    /// because at least one of its streams received no packets` -- an error
+    /// naming the encoder when the fault is one filter earlier in the chain.
+    fn with_suffix(&self, filter: String) -> String {
+        if self.plan.filter_suffix().is_empty() {
+            return filter;
+        }
+        format!("{filter},{}", self.plan.filter_suffix())
     }
 
     /// Generate `kind` from `source` into `out`.
@@ -449,10 +489,22 @@ impl Generator {
             return Generated::Deferred(Deferred);
         };
 
+        // A still has no decode step to move to a GPU. If the caller planned
+        // for a video, that is their error, and emitting the flags anyway
+        // makes ffmpeg fail on a JPEG instead of quietly doing the right
+        // thing.
+        let this = if media.duration_ms == 0 {
+            let mut g = self.clone();
+            g.plan = AccelPlan::Software;
+            g
+        } else {
+            self.clone()
+        };
+        let this = &this;
         match kind {
-            Kind::Thumbnail { width } => self.thumbnail(source, out, width),
-            Kind::Marker { width, at_ms } => self.still_at(source, out, width, at_ms),
-            Kind::Sprite { width, frames } => self.sprite(source, out, width, frames, media),
+            Kind::Thumbnail { width } => this.thumbnail(source, out, width),
+            Kind::Marker { width, at_ms } => this.still_at(source, out, width, at_ms),
+            Kind::Sprite { width, frames } => this.sprite(source, out, width, frames, media),
         }
     }
 
@@ -461,30 +513,43 @@ impl Generator {
         // `-frames:v 1` and an explicit seek to the start. A thumbnail of a
         // video whose first frame is black is a common upstream complaint
         // (#2227 is about covers, and the same instinct applies here).
-        let args = vec![
+        // Global options come first, before even `-hide_banner`. ffmpeg
+        // reports a misplaced one as `Error parsing global options: Invalid
+        // argument`, which names neither the option nor the position, and the
+        // only way to get it right is to never move them.
+        let mut args = self.plan.global_args();
+        args.extend([
             "-hide_banner".to_string(),
             "-loglevel".to_string(),
             "error".to_string(),
             "-y".to_string(),
             "-ss".to_string(),
             "0".to_string(),
+        ]);
+        // Then the per-input hardware options, immediately before `-i`. After
+        // `-i` they are silently ignored, leaving a machine that believes it
+        // is decoding on the GPU while it decodes on the CPU.
+        args.extend(self.plan.input_args());
+        args.extend([
             "-i".to_string(),
             source.display().to_string(),
             "-frames:v".to_string(),
             "1".to_string(),
             "-vf".to_string(),
-            format!("scale={width}:-2:flags=lanczos"),
+            self.with_suffix(self.plan.scale_filter(width, "-2")),
             // WebP with alpha. `-pix_fmt` on the encoder is what preserves the
             // alpha channel; without it ffmpeg writes yuvj and the transparency
-            // is composited to black. This flag is the whole alpha guarantee.
+            // is composited to black. This flag is the whole alpha guarantee,
+            // and it survives acceleration because the encoder never changes:
+            // there is no hardware WebP encoder to switch to.
             "-c:v".to_string(),
-            "libwebp".to_string(),
+            self.plan.encoder().to_string(),
             "-pix_fmt".to_string(),
             "yuva420p".to_string(),
             "-quality".to_string(),
             "82".to_string(),
             out.display().to_string(),
-        ];
+        ]);
         self.run(source, out, &args)
     }
 
@@ -496,13 +561,17 @@ impl Generator {
         // keyframe, which for a 10s GOP is up to 10s away -- and a marker
         // thumbnail showing a different scene is worse than no thumbnail.
         let at = format!("{:.3}", at_ms as f64 / 1000.0);
-        let args = vec![
+        let mut args = self.plan.global_args();
+        args.extend([
             "-hide_banner".to_string(),
             "-loglevel".to_string(),
             "error".to_string(),
             "-y".to_string(),
             "-ss".to_string(),
             at.clone(),
+        ]);
+        args.extend(self.plan.input_args());
+        args.extend([
             "-i".to_string(),
             source.display().to_string(),
             "-ss".to_string(),
@@ -510,13 +579,13 @@ impl Generator {
             "-frames:v".to_string(),
             "1".to_string(),
             "-vf".to_string(),
-            format!("scale={width}:-2:flags=lanczos"),
+            self.with_suffix(self.plan.scale_filter(width, "-2")),
             "-c:v".to_string(),
-            "libwebp".to_string(),
+            self.plan.encoder().to_string(),
             "-pix_fmt".to_string(),
             "yuva420p".to_string(),
             out.display().to_string(),
-        ];
+        ]);
         self.run(source, out, &args)
     }
 
@@ -545,25 +614,39 @@ impl Generator {
             ));
         }
         let fps = frames as f64 / duration_s;
-        let args = vec![
+        let mut args = self.plan.global_args();
+        args.extend([
             "-hide_banner".to_string(),
             "-loglevel".to_string(),
             "error".to_string(),
             "-y".to_string(),
+        ]);
+        // A sprite is the case where acceleration is worth the most: it decodes
+        // the whole file, so the decode is the bulk of the wall clock, and it
+        // is the artifact the scrubber reads while the user is waiting.
+        args.extend(self.plan.input_args());
+        args.extend([
             "-i".to_string(),
             source.display().to_string(),
             "-vf".to_string(),
-            format!("fps={fps:.8},scale={width}:-2:flags=lanczos,tile={frames}x1"),
+            // `filter_chain` owns the ordering, which is not optional: a
+            // hardware scaler followed by `tile` produces an empty file, and
+            // the empty file is what a scrubber shows while the user waits.
+            self.plan.filter_chain(
+                &Kind::Sprite { width, frames },
+                width,
+                &[&format!("fps={fps:.8}")],
+            ),
             // WebP, and q=80 rather than 82: a sheet is `frames` times the
             // pixels, so the quality knob matters more here than anywhere else.
             "-c:v".to_string(),
-            "libwebp".to_string(),
+            self.plan.encoder().to_string(),
             "-pix_fmt".to_string(),
             "yuva420p".to_string(),
             "-quality".to_string(),
             "80".to_string(),
             out.display().to_string(),
-        ];
+        ]);
         self.run(source, out, &args)
     }
 

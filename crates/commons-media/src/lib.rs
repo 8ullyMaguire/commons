@@ -8,11 +8,18 @@
 
 pub mod archive;
 pub mod archive_io;
+pub mod hwaccel;
+pub mod hwaccel_plan;
 pub mod probe;
 pub mod thumbs;
 
 pub use archive::{validate_member, Listing, Member, MemberKind, Rejection, Validated};
 pub use archive_io::{list_zip, ExtractionPlan, Format};
+pub use hwaccel::{
+    detect as detect_hwaccel, probe_all, Accel, FfmpegCaps, HwAccelConfig, HwAccelStatus,
+    ProbePaths, Unavailable, Verdict,
+};
+pub use hwaccel_plan::{AccelPlan, Planner, SourceKind};
 pub use probe::{probe, MediaInfo, ProbeError, Prober};
 pub use thumbs::{
     memory_budget_from_process, ArtifactError, Deferred, Generated, Generator, Kind, MemoryBudget,
