@@ -54,8 +54,13 @@ pub struct ClusterRow {
     pub id: String,
     pub handle: Option<String>,
     pub state: super::ClusterState,
-    /// The centroid, decoded, if the cluster has one.
+    /// The face centroid, decoded, if the cluster has one.
     pub centroid: Option<Vec<f32>>,
+    /// The body centroid, decoded. `None` until an appearance with body evidence
+    /// joins -- §7.4's composite compares against it, and a cluster without one
+    /// has no body evidence to weigh, which is not the same as a body distance
+    /// of zero.
+    pub body_centroid: Option<Vec<f32>>,
     pub appearance_count: i64,
 }
 
@@ -66,6 +71,7 @@ pub struct ClusterWithMembers {
     pub handle: Option<String>,
     pub state: super::ClusterState,
     pub centroid: Option<Vec<f32>>,
+    pub body_centroid: Option<Vec<f32>>,
     pub appearance_count: i64,
     /// The `appearance.id` of every member, ordered so the list is stable.
     pub member_ids: Vec<String>,
@@ -105,7 +111,7 @@ pub struct HandleCandidate {
 /// Fetch one cluster.
 pub async fn get(store: &Store, id: &str) -> Result<Option<ClusterRow>, StoreError> {
     let row = sqlx::query(
-        "SELECT id, handle, state, centroid_hex, appearance_count \
+        "SELECT id, handle, state, centroid_hex, body_centroid_hex, appearance_count \
          FROM person_cluster WHERE id = ?",
     )
     .bind(id)
@@ -113,6 +119,25 @@ pub async fn get(store: &Store, id: &str) -> Result<Option<ClusterRow>, StoreErr
     .await
     .map_err(StoreError::Query)?;
     row.map(row_to_cluster).transpose()
+}
+
+/// A nullable hex-encoded vector column, decoded.
+///
+/// `None` is preserved as `None` rather than becoming an empty vector: an empty
+/// vector has no direction, so every cosine against it is undefined and a zero
+/// distance would read as a perfect match. §7.4's composite depends on telling
+/// "no centroid yet" apart from "a centroid of nothing".
+fn decode_opt(
+    row: &sqlx::sqlite::SqliteRow,
+    column: &'static str,
+) -> Result<Option<Vec<f32>>, StoreError> {
+    let hex: Option<String> = col(row, column)?;
+    match hex {
+        Some(h) => Ok(Some(super::from_hex(&h).map_err(|e| {
+            StoreError::Query(sqlx::Error::Protocol(e.to_string()))
+        })?)),
+        None => Ok(None),
+    }
 }
 
 fn row_to_cluster(row: sqlx::sqlite::SqliteRow) -> Result<ClusterRow, StoreError> {
@@ -124,19 +149,12 @@ fn row_to_cluster(row: sqlx::sqlite::SqliteRow) -> Result<ClusterRow, StoreError
     // the user's name), so it degrades to the default and the raw string is
     // still available through `state` for a caller that cares.
     let state = super::ClusterState::parse(&state_str).unwrap_or(super::ClusterState::Anonymous);
-    let centroid_hex: Option<String> = col(&row, "centroid_hex")?;
-    let centroid = match centroid_hex {
-        Some(h) => Some(
-            super::from_hex(&h)
-                .map_err(|e| StoreError::Query(sqlx::Error::Protocol(e.to_string())))?,
-        ),
-        None => None,
-    };
     Ok(ClusterRow {
         id: col(&row, "id")?,
         handle: col(&row, "handle")?,
         state,
-        centroid,
+        centroid: decode_opt(&row, "centroid_hex")?,
+        body_centroid: decode_opt(&row, "body_centroid_hex")?,
         appearance_count: col(&row, "appearance_count")?,
     })
 }
@@ -144,7 +162,7 @@ fn row_to_cluster(row: sqlx::sqlite::SqliteRow) -> Result<ClusterRow, StoreError
 /// Every cluster with its members, in a stable order.
 pub async fn all_with_members(store: &Store) -> Result<Vec<ClusterWithMembers>, StoreError> {
     let rows = sqlx::query(
-        "SELECT id, handle, state, centroid_hex, appearance_count \
+        "SELECT id, handle, state, centroid_hex, body_centroid_hex, appearance_count \
          FROM person_cluster ORDER BY id",
     )
     .fetch_all(store.pool())
@@ -169,11 +187,29 @@ pub async fn all_with_members(store: &Store) -> Result<Vec<ClusterWithMembers>, 
             handle: base.handle,
             state: base.state,
             centroid: base.centroid,
+            body_centroid: base.body_centroid,
             appearance_count: base.appearance_count,
             member_ids,
         });
     }
     Ok(out)
+}
+
+/// Every appearance, in a stable order.
+///
+/// §7.4 needs this to be readable: "the UI shows *why* two items were linked" is
+/// a statement about what a caller can fetch, and a projection that exposes only
+/// `distance` cannot answer it. Ordered by id so a caller that takes the first
+/// row for an object gets the same one every run.
+pub async fn all_appearances(store: &Store) -> Result<Vec<AppearanceRecord>, StoreError> {
+    let rows = sqlx::query(
+        "SELECT id, object_id, cluster_id, distance, face_score, body_score, ambiguous \
+         FROM appearance ORDER BY created_at, id",
+    )
+    .fetch_all(store.pool())
+    .await
+    .map_err(StoreError::Query)?;
+    rows.into_iter().map(row_to_appearance).collect()
 }
 
 /// Fetch one appearance.
@@ -288,15 +324,23 @@ pub async fn insert_cluster(
     id: &str,
     state: super::ClusterState,
     centroid_hex: Option<&str>,
+    body_centroid_hex: Option<String>,
     now: &str,
 ) -> Result<(), StoreError> {
+    // Both centroids are seeded here rather than by a follow-up update, so a
+    // cluster is never briefly visible with a face centroid and no body
+    // centroid when it always had both. A reader in that window would score the
+    // next appearance against half the evidence and renormalise the face
+    // distance up to the full weight.
     sqlx::query(
-        "INSERT INTO person_cluster (id, handle, state, centroid_hex, appearance_count, created_at, updated_at) \
-         VALUES (?, NULL, ?, ?, 0, ?, ?)",
+        "INSERT INTO person_cluster \
+         (id, handle, state, centroid_hex, body_centroid_hex, appearance_count, created_at, updated_at) \
+         VALUES (?, NULL, ?, ?, ?, 0, ?, ?)",
     )
     .bind(id)
     .bind(state.as_str())
     .bind(centroid_hex)
+    .bind(body_centroid_hex)
     .bind(now)
     .bind(now)
     .execute(store.pool())
@@ -318,6 +362,32 @@ pub async fn set_centroid(
         .execute(store.pool())
         .await
         .map_err(StoreError::Query)?;
+    Ok(())
+}
+
+/// The body centroid, written only when the cluster does not have one yet.
+///
+/// Not "recomputed on every join": the first body embedding to reach a cluster
+/// describes the person, and later body embeddings are a different embedding
+/// space if the model changed. Recomputing would need a body-model version on
+/// the row, which is T-P3-003's follow-up rather than a silent average over
+/// vectors that may not be commensurable.
+pub async fn set_body_centroid(
+    store: &Store,
+    id: &str,
+    centroid_hex: &str,
+    now: &str,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "UPDATE person_cluster SET body_centroid_hex = ?, updated_at = ? \
+         WHERE id = ? AND body_centroid_hex IS NULL",
+    )
+    .bind(centroid_hex)
+    .bind(now)
+    .bind(id)
+    .execute(store.pool())
+    .await
+    .map_err(StoreError::Query)?;
     Ok(())
 }
 

@@ -45,10 +45,16 @@ MIGRATIONS = ROOT / "crates" / "commons-store" / "migrations"
 # against rewording.
 PG_HEADER = re.compile(r"\A(--[^\n]*\n)+", re.M)
 
-SQLITE_HEADER = """-- 0001_core.sql - Commons initial schema (SQLite).
+# Written per file, with the name interpolated. Hardcoding 0001's text here was
+# a real bug: every later mirror came out headed "0001_core.sql - Commons initial
+# schema", and sqlx identifies a migration by its version number, not its prose,
+# so the mirror of 0003 was applied with 0001's identity and the new column did
+# not exist. The symptom was a query error naming a column that the migration
+# plainly added.
+SQLITE_HEADER = """-- {name} - SQLite mirror (Postgres: {name}).
 --
 -- GENERATED from the Postgres file by scripts/sync-migrations.py. Do not
--- hand-edit: edit migrations/postgres/0001_core.sql and re-run that script.
+-- hand-edit: edit migrations/postgres/{name} and re-run that script.
 -- T-P0-007's parity test fails if the two files' table sets ever diverge.
 --
 -- Portable-SQL rules in force (plan section 0.4):
@@ -95,7 +101,10 @@ def sync() -> int:
     for pg_file in sorted(pg_dir.glob("*.sql")):
         target = lite_dir / pg_file.name
         text = pg_file.read_text()
-        body = PG_HEADER.sub(SQLITE_HEADER.rstrip("\n"), text, count=1)
+        header = SQLITE_HEADER.format(name=pg_file.name).rstrip("\n")
+        # A lambda, not a replacement string: `re.sub` would otherwise read the
+        # backslashes in the header as escapes and mangle them.
+        body = PG_HEADER.sub(lambda _m: header, text, count=1)
         if body == text:
             print(
                 f"  warn: no header block matched in {pg_file.name}",

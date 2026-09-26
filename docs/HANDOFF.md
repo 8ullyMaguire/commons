@@ -10,20 +10,20 @@ instruction that cannot be satisfied without someone adding a remote.
 
 ## Where it is
 
-Phases 0, 1 and 2 are complete. Phase 3 has three of eight tickets done
-(T-P3-000 the scan pipeline, T-P3-001 face detection, T-P3-002 clustering);
-the rest of Phase 3 and all of Phases 4 through 8 are not started. Nothing
-built is a stub.
+Phases 0, 1 and 2 are complete. Phase 3 has four of eight tickets done
+(T-P3-000 the scan pipeline, T-P3-001 face detection, T-P3-002 clustering,
+T-P3-003 the §7.4 composite score); T-P3-004 through T-P3-006 and all of
+Phases 4 through 8 are not started. Nothing built is a stub.
 
 `python3 scripts/plan-status.py` is the authority on that sentence, not this
-file and not the plan. It counts 27 of 84 tickets closed and 50 genuinely
+file and not the plan. It counts 28 of 84 tickets closed and 48 genuinely
 unstarted, and it exits non-zero if any ticket is *marked* done while the file
 it names is absent -- the failure mode that reads as progress and builds as
 nothing. `scripts/verify.sh` runs it, so the claim cannot rot.
 
 | | State |
 |---|---|
-| Rust workspace | 765 tests, 0 failures |
+| Rust workspace | 775 tests, 0 failures |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | `cargo fmt --all --check` | clean |
 | UI unit tests | 43 pass (`node ./tests/run-tests.mjs`) |

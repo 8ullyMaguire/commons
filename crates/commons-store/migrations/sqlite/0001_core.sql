@@ -1,4 +1,4 @@
--- 0001_core.sql - Commons initial schema (SQLite).
+-- 0001_core.sql - SQLite mirror (Postgres: 0001_core.sql).
 --
 -- GENERATED from the Postgres file by scripts/sync-migrations.py. Do not
 -- hand-edit: edit migrations/postgres/0001_core.sql and re-run that script.

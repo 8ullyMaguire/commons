@@ -1,7 +1,7 @@
--- 0001_core.sql - Commons initial schema (SQLite).
+-- 0002_appearance_nullable_cluster.sql - SQLite mirror (Postgres: 0002_appearance_nullable_cluster.sql).
 --
 -- GENERATED from the Postgres file by scripts/sync-migrations.py. Do not
--- hand-edit: edit migrations/postgres/0001_core.sql and re-run that script.
+-- hand-edit: edit migrations/postgres/0002_appearance_nullable_cluster.sql and re-run that script.
 -- T-P0-007's parity test fails if the two files' table sets ever diverge.
 --
 -- Portable-SQL rules in force (plan section 0.4):

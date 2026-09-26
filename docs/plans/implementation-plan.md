@@ -1118,8 +1118,10 @@ an explanation.
 
 ## Phase 3 — Identity engine
 
-**Progress:** 1 of 8 (T-P3-000, the scan pipeline). **Status:** the library is
-populatable; identity is not started.
+**Progress:** 4 of 8. **Status:** the library is populatable, and the identity
+engine clusters, scores and consolidates. T-P3-004 (merge/split/alias
+operations) is next. `python3 scripts/plan-status.py` is the authority on the
+counts across all phases.
 
 **Exit:** a person with no name is linked across every appearance in a test
 corpus; C21–C32 closed. **This is the phase that makes the project what it is
@@ -1256,7 +1258,8 @@ than merged. Test (3) is the one that matters.
 ### T-P3-003 — Body/appearance embedding and composite scoring
 
 **Spec:** §7.4
-**Files:** `crates/commons-identity/src/composite.rs`
+**Files:** `crates/commons-identity/src/cluster.rs` (the composite arithmetic
+lives beside the decision that uses it), `crates/commons-identity/tests/composite.rs`
 
 Face alone splits one person into three clusters across a weight change, which
 is worse than not clustering. So identity uses a composite score:
@@ -1274,6 +1277,65 @@ same person at visibly different weights, and the test asserts they cluster
 together **and** that the stored score has both components populated.
 **Done when:** the score-components assertion exists — a single float would
 make the feature unexplainable in the UI.
+
+**Done**. `ScoreComponents::combined`, `ScoreWeights` on
+`EngineConfig`, migration 0003 for the per-cluster body centroid, and ten
+acceptance tests in `tests/composite.rs`.
+
+The ticket's real content turned out to be a decision the spec does not make:
+what to do when one of the two sources is missing. `w_face * d_face + w_body *
+d_body` with an absent term read as 0.0 scores a close-up at 0.7x its real face
+distance, so a face at 0.70 reads as 0.49 and joins a cluster it should have
+missed. The composite would then cause the over-merging it was added to
+prevent, and only for the images with the least evidence. Weights are
+therefore renormalised over the evidence that exists.
+
+Three further decisions, all recorded in the code:
+
+1. **The engine computes the components rather than being handed them.** The
+   earlier `assign(object, vector, &ScoreComponents)` was two sources of truth
+   for one number: a caller could pass a 0.1 alongside a 0.9-distance vector
+   and get the decision it asked for, with the row recording what it supplied.
+   §7.4's promise is that the stored components *explain* the stored distance,
+   which is only true with one computation.
+2. **A face is never compared against a body centroid.** They are unrelated
+   embedding spaces; the cosine between them means nothing. A term is present
+   only when both sides have it, and a cluster lacking a body centroid
+   contributes no body term rather than a fabricated one.
+3. **Zero weight disables a source; all-zero applicable weight is an error.**
+   A `NaN` distance fails every comparison, so the candidate would be silently
+   unrankable rather than loudly wrong. Refused in `assign` before anything is
+   written -- the first version created a cluster for an appearance it could
+   not score, producing a row with a cluster and no evidence.
+
+Two defects the mutation pass found, both invisible to a green suite:
+
+- **`set_body_centroid` was never called.** A cluster created by a close-up had
+  no body centroid, so it stayed uncomparable on the body however many
+  full-body shots later joined it. The "written once" test passed *because* of
+  the dead code: the centroid was only ever set at creation.
+- **The body centroid was specified to be written once, and the face centroid
+  to be a mean of members.** Deliberate and asymmetric -- a centroid that is a
+  mean can be recomputed; a first observation cannot be averaged across a
+  possible model change. The model version belongs on the row and is the
+  recorded follow-up.
+
+Fixture traps, written down because each cost real time and would cost it
+again:
+
+- `Frame::at`'s per-component noise is worth about 0.36 of cosine *distance*
+  over 512 dimensions, which is larger than any threshold a test is likely to
+  pick. A fixture that reads as "0.70 away" arrives as 0.45. `Frame::exactly`
+  and `Frame::from_pair` exist because of this.
+- **Cosine distance does not add along an arc.** Two vectors at 0.05 and 0.70
+  from one origin are 0.417 apart, not 0.65. T-P3-002's own comment says so;
+  the fixture here assumed otherwise anyway.
+- One test returned a `Store` whose `TempDir` had already been dropped, and
+  the failure surfaced two hundred lines later as "unable to open database
+  file". The directory now travels with the store.
+
+All ten mutations caught, including the two that needed both zero-weight
+guards removed to reach.
 
 ### T-P3-004 — Merge, split, alias, disambiguation
 

@@ -69,8 +69,8 @@ use commons_store::Store;
 
 pub mod store;
 pub use store::{
-    all_with_members, ambiguous_candidates, appearance, get, handle_candidates, propose_handle,
-    AppearanceRecord, CandidateDistance, ClusterRow, HandleCandidate,
+    all_appearances, all_with_members, ambiguous_candidates, appearance, get, handle_candidates,
+    propose_handle, AppearanceRecord, CandidateDistance, ClusterRow, HandleCandidate,
 };
 
 /// What the engine decided about a face.
@@ -160,6 +160,75 @@ impl ScoreComponents {
             body: Some(body),
         }
     }
+
+    /// The §7.4 composite distance for one candidate.
+    ///
+    /// `w_face * d_face + w_body * d_body`, with two decisions that the spec
+    /// does not spell out and that a real library runs into on its first
+    /// full-body shot:
+    ///
+    /// **A missing component is renormalised away, not counted as zero.** The
+    /// weight budget is spread across the evidence that exists. Counting an
+    /// absent body as 0.0 would score a face-only appearance at `w_face *
+    /// d_face` — a 0.7 weight applied to a number that is already the whole
+    /// distance, so a face at 0.70 reads as 0.49 and joins a cluster it should
+    /// have missed. That is the exact failure the composite was introduced to
+    /// prevent, reintroduced through the back door: a close-up has no
+    /// silhouette, and treating that as evidence *for* the match is not a
+    /// subtle error, it is the wrong sign.
+    ///
+    /// **No evidence at all is an error, not a zero.** A zero would be
+    /// indistinguishable from a perfect match.
+    pub fn combined(&self, weights: ScoreWeights) -> Result<f32, ClusterError> {
+        let (present, weighted) = match (self.face, self.body) {
+            (Some(f), Some(b)) => (
+                weights.face + weights.body,
+                weights.face * f + weights.body * b,
+            ),
+            (Some(f), None) => (weights.face, weights.face * f),
+            (None, Some(b)) => (weights.body, weights.body * b),
+            (None, None) => {
+                return Err(ClusterError::NoEvidence);
+            }
+        };
+        if present <= 0.0 {
+            // Every weight that could apply is zero, so there is no distance to
+            // compute even though evidence exists. Reporting 0.0 here would
+            // read as a perfect match.
+            return Err(ClusterError::ZeroWeight);
+        }
+        Ok(weighted / present)
+    }
+}
+
+/// How much each evidence source counts, relative to the others.
+///
+/// Relative, not absolute: the pair is renormalised over the sources actually
+/// present (see [`ScoreComponents::combined`]), so `(1.0, 1.0)` and `(0.7,
+/// 0.3)` express the same ratio and only the ratio matters. A weight of 0 for a
+/// present source is meaningful — it disables that source — and is how the
+/// "body only, or face only" modes are expressed without a second code path.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScoreWeights {
+    pub face: f32,
+    pub body: f32,
+}
+
+impl Default for ScoreWeights {
+    /// Face-led, because the face is the better embedding: it is computed at
+    /// higher effective resolution and is not affected by a change of clothes.
+    /// The body term is there to *rescue* cases the face gets wrong — weight
+    /// change, a mask, heavy compression — not to outvote it.
+    ///
+    /// **Uncalibrated**, for the same reason `EngineConfig::threshold` is: no
+    /// body model is linked, so no library has been measured against this
+    /// ratio. T-P3-003 records it as the first number to revisit with a model.
+    fn default() -> Self {
+        ScoreWeights {
+            face: 0.7,
+            body: 0.3,
+        }
+    }
 }
 
 /// How the engine is configured.
@@ -200,12 +269,15 @@ pub struct EngineConfig {
     /// stated rather than hidden: a face whose true cluster is not in the
     /// nearest `candidate_limit` becomes a new cluster rather than a join.
     pub candidate_limit: usize,
+    /// How much the face and the body each count toward a decision (§7.4).
+    pub score_weights: ScoreWeights,
 }
 
 impl Default for EngineConfig {
     fn default() -> Self {
         EngineConfig {
             threshold: 0.55,
+            score_weights: ScoreWeights::default(),
             ambiguity_margin: 0.05,
             candidate_limit: 64,
         }
@@ -248,7 +320,14 @@ impl AssignmentOutcome {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Candidate {
     pub cluster_id: String,
+    /// The composite distance, renormalised over the sources that exist on both
+    /// sides. This is the number every decision reads -- the threshold, the
+    /// ordering, and the ambiguity margin.
     pub distance: f32,
+    /// The per-source distances this was built from, so the UI can say *why*
+    /// (§7.4) and so a caller can tell a 0.30 from two agreeing sources apart
+    /// from a 0.30 from one of them disagreeing.
+    pub components: ScoreComponents,
 }
 
 /// The clustering engine.
@@ -292,18 +371,53 @@ impl Engine {
         Ok(rows.get(index).and_then(|c| c.centroid.clone()))
     }
 
-    /// The ranked candidates for a vector, nearest first.
-    pub async fn candidates(&self, vector: &[f32]) -> Result<Vec<Candidate>, ClusterError> {
-        check_width(vector)?;
+    /// The ranked candidates for one appearance, nearest by composite distance.
+    ///
+    /// §7.4: the score is composite, and each term is a distance to that
+    /// cluster's centroid *for the same source*. A face is never compared
+    /// against a body centroid -- they are unrelated embedding spaces, and the
+    /// cosine between them is a number without meaning.
+    ///
+    /// A term is present only when **both** sides exist: the appearance has a
+    /// body embedding *and* the cluster has a body centroid to compare it to.
+    /// A cluster whose only member was a close-up has no body centroid, so an
+    /// incoming body vector contributes nothing there rather than being
+    /// compared against nothing. The weights are renormalised over the terms
+    /// that survive, so an appearance with more evidence is not penalised for
+    /// the evidence a particular cluster happens to lack.
+    pub async fn candidates(
+        &self,
+        face: &[f32],
+        body: Option<&[f32]>,
+    ) -> Result<Vec<Candidate>, ClusterError> {
+        check_width(face)?;
+        if let Some(b) = body {
+            check_width(b)?;
+        }
         let rows = all_with_members(&self.store).await?;
+        let weights = self.config.score_weights;
         let mut out: Vec<Candidate> = rows
             .iter()
             .filter_map(|c| {
                 let centroid = c.centroid.as_deref()?;
-                Some(Candidate {
-                    cluster_id: c.id.clone(),
-                    distance: cosine_distance(vector, centroid),
-                })
+                let components = ScoreComponents {
+                    face: Some(cosine_distance(face, centroid)),
+                    body: body
+                        .zip(c.body_centroid.as_deref())
+                        .map(|(b, cb)| cosine_distance(b, cb)),
+                };
+                match components.combined(weights) {
+                    Ok(distance) => Some(Candidate {
+                        cluster_id: c.id.clone(),
+                        distance,
+                        components,
+                    }),
+                    // A cluster this appearance has no comparable evidence for
+                    // is not a candidate. Skipping it is the abstention §7.1
+                    // wants, taken one cluster earlier: there is no ranking in
+                    // which it could be the best match.
+                    Err(_) => None,
+                }
             })
             .collect();
         // Ties broken by cluster id, so the ranking is deterministic. An
@@ -318,15 +432,43 @@ impl Engine {
         Ok(out)
     }
 
-    /// Assign one face embedding to a cluster.
+    /// Assign one appearance to a cluster, on its face and body evidence.
+    ///
+    /// The engine *computes* the score components rather than taking them, and
+    /// that is deliberate. An earlier shape took both the embeddings and a
+    /// `ScoreComponents`, which is two sources of truth for one number: a caller
+    /// that passed a face distance of 0.1 alongside a 0.9-distance vector got
+    /// the decision it asked for, and the row recorded the number it supplied
+    /// rather than the one the ranking used. §7.4's promise is that the stored
+    /// components explain the stored distance, and that is only true if there is
+    /// one computation.
+    ///
+    /// `body` is `None` for an appearance with no silhouette -- a close-up. That
+    /// is not an error and not a zero.
     pub async fn assign(
         &self,
         object_id: &str,
-        vector: &[f32],
-        scores: &ScoreComponents,
+        face: &[f32],
+        body: Option<&[f32]>,
     ) -> Result<AssignmentOutcome, ClusterError> {
-        check_width(vector)?;
-        let candidates = self.candidates(vector).await?;
+        check_width(face)?;
+        // The weights are checked before anything is written, because the
+        // alternative is worse than a wrong answer. With every weight that
+        // applies to this appearance at zero there are no comparable candidates,
+        // the engine "creates" a cluster for an appearance it could not score,
+        // and the row it writes has a cluster and no evidence. That is a corrupt
+        // cluster, not a refused assignment, and it comes from a configuration
+        // mistake that would otherwise be silent.
+        //
+        // Zero *applicable* weight, which is not the same as both weights being
+        // zero: a face-only appearance with `face: 0.0` is unusable whatever the
+        // body weight is, because the body weight has nothing to apply to.
+        let weights = self.config.score_weights;
+        let applicable = weights.face + body.map(|_| weights.body).unwrap_or(0.0);
+        if applicable <= 0.0 {
+            return Err(ClusterError::ZeroWeight);
+        }
+        let candidates = self.candidates(face, body).await?;
         let best = candidates.first();
 
         // The decision, in the order the spec's three states appear.
@@ -353,6 +495,21 @@ impl Engine {
             ),
         };
 
+        // The components of *this* decision, not of some other candidate. A
+        // Created outcome has no candidate, so its components are the ones that
+        // would have applied: the distance to the nearest cluster above the
+        // threshold, with the source that produced it. Storing an empty pair
+        // here would make every new cluster look like it had no evidence, and
+        // §7.4 needs the UI to be able to say "nothing was close" as precisely
+        // as "these two were close".
+        let recorded = match best {
+            Some(b) => b.components,
+            None => ScoreComponents {
+                face: Some(distance.unwrap_or(0.0)),
+                body: None,
+            },
+        };
+
         let now = now();
         let cluster_id = match &target {
             Some(id) => id.clone(),
@@ -366,7 +523,8 @@ impl Engine {
                     &self.store,
                     &id,
                     ClusterState::Anonymous,
-                    Some(&hex(vector)),
+                    Some(&hex(face)),
+                    body.map(hex),
                     &now,
                 )
                 .await?;
@@ -388,7 +546,7 @@ impl Engine {
             object_id,
             &store::NewAppearance {
                 cluster_id: (!ambiguous).then_some(cluster_id.as_str()),
-                scores,
+                scores: &recorded,
                 distance,
                 ambiguous,
                 now: &now,
@@ -401,8 +559,20 @@ impl Engine {
             // what the cluster actually contains. It goes on the cluster, not
             // on the appearance, because it is the cluster's membership that
             // the centroid means.
-            store::insert_member_vector(&self.store, &cluster_id, vector).await?;
+            store::insert_member_vector(&self.store, &cluster_id, face).await?;
             self.refresh_centroid(&cluster_id).await?;
+
+            // The body centroid is seeded the same way -- once, if the cluster
+            // has never had body evidence. Without this a cluster created by a
+            // close-up stays uncomparable on the body for ever, however many
+            // full-body shots later join it, and every one of those falls back
+            // to the face term alone. The asymmetry with `refresh_centroid` is
+            // deliberate and is documented on `set_body_centroid`: a centroid
+            // that is a mean can be recomputed, one that is a first observation
+            // cannot be averaged across a possible model change.
+            if let Some(b) = body {
+                store::set_body_centroid(&self.store, &cluster_id, &hex(b), &now).await?;
+            }
         } else {
             // The candidates that made this ambiguous, recorded now. §7.1: both
             // candidates are shown, and a review state the UI cannot populate
@@ -681,6 +851,12 @@ pub enum ClusterError {
 
     #[error("appearance {0} is not ambiguous, so there is nothing to resolve")]
     NotAmbiguous(String),
+
+    #[error("an appearance with no face and no body evidence has no distance to compare")]
+    NoEvidence,
+
+    #[error("every weight that applies to the evidence present is zero")]
+    ZeroWeight,
 
     #[error(transparent)]
     Store(#[from] commons_store::StoreError),

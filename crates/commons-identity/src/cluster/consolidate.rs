@@ -307,7 +307,19 @@ pub async fn resolve_ambiguous(
 pub async fn split(store: &Store, cluster_id: &str, keep: &[String]) -> Result<u64, ClusterError> {
     let new_id = uuid::Uuid::new_v4().to_string();
     let now = super::now();
-    store::insert_cluster(store, &new_id, super::ClusterState::Anonymous, None, &now).await?;
+    // No centroid, of either kind. `split` moves appearances to a new cluster
+    // and the caller must recompute; seeding a centroid here from a single
+    // appearance would make the split's second half depend on which appearance
+    // happened to arrive first.
+    store::insert_cluster(
+        store,
+        &new_id,
+        super::ClusterState::Anonymous,
+        None,
+        None,
+        &now,
+    )
+    .await?;
     let moved = store::move_appearances(store, cluster_id, &new_id, keep).await?;
     if moved > 0 {
         // Both halves get a fresh centroid from their own members, and the

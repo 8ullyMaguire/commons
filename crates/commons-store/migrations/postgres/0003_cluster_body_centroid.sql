@@ -1,0 +1,25 @@
+-- A cluster carries a face centroid and, once a body model is linked, a body
+-- centroid.
+--
+-- §7.4's composite score compares an incoming appearance against *both*, so a
+-- cluster that has only ever seen one source has nothing to compare the other
+-- against. Without a per-source centroid the only alternatives are worse:
+-- comparing a body vector against a face centroid is a comparison of two
+-- unrelated embedding spaces, and a caller that has to keep face and body
+-- centroids outside the database loses them the moment the process exits.
+--
+-- Nullable, and that is the whole point. A cluster is created by the first
+-- appearance that reaches it, which may be face-only (a close-up has no
+-- silhouette) or body-only (a distant shot has no usable face). NULL means "no
+-- evidence of this kind yet", which is different from a zero vector and must not
+-- be stored as one: a zero-length vector has no direction, so every cosine
+-- against it is undefined, and a zero distance would read as a perfect match.
+--
+-- The stored body centroid is hex-encoded like the face one, for the same
+-- reason: SQLITE has no vector type and TEXT is what the sidecar hands us.
+--
+-- No index. The engine loads every cluster to rank candidates (the candidate
+-- limit bounds the *result*, not the scan), so an index on these columns would
+-- not be used by the query that matters.
+
+ALTER TABLE person_cluster ADD COLUMN body_centroid_hex TEXT;
