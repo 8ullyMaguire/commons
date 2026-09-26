@@ -2434,10 +2434,11 @@ boolean `AND`, so the sort silently stopped sorting. The second is why the
 guard is a `CASE` now, and why a third test exists for a row with no
 timestamp — a guard with no test for the case it guards is not a guard.
 
-### T-P5-004 — Duplicate and similar detection
+### T-P5-004 — Duplicate and similar detection (DONE)
 
 **Spec:** §9.7
-**Files:** `commons-scan/src/dedup.rs`
+**Files:** `crates/commons-scan/src/dedup.rs`,
+`crates/commons-store/src/relations.rs`
 
 `same_scene_as` / `re_encode_of` relations, phash ANN nearest-neighbour search
 (stash#1220), perceptual near-duplicate detection, and content-hash identity
@@ -2456,6 +2457,55 @@ false positive; assert each is classified correctly and that auto-merge is off
 by default and reversible when on.
 **Done when:** the false-positive case is asserted — a dedup feature that
 cannot be wrong is not trustworthy.
+
+**DONE.** `commons-scan/src/dedup.rs` classifies a pair into
+`Identical | ReEncode | Similar | Distinct` in that precedence, and
+`commons-store/src/relations.rs` holds the relations, the union-find, and the
+opt-in auto-merge. `tests/dedup_e2e.rs` is the plan's own corpus — one
+byte-identical pair, one re-encode, one false positive — joined from classifier
+to stored relation, plus the auto-merge default and its reversal.
+
+Four things the implementer got wrong first, kept here because each is a
+property of the design and not a slip:
+
+1. **The false positive is not `Distinct`, it is `Similar`.** Two different
+   scenes photographed from nearby seats are the *same picture of different
+   things*; §9.7 asks for that to be `same_scene_as`, not for it to be dropped.
+   A dedup that erases a false positive has traded one bug for a worse one.
+2. **An unhashed file with a comparable phash is not `Distinct` either.** It is
+   evidence of sameness with no identity behind it — `Similar`, never
+   `Identical`, because identity is the one claim that must be exact.
+3. **A foreign-algorithm hash is dropped, not ranked last.** `candidates.rs`
+   returns `Option` so a phash from a different algorithm is absent from the
+   ranking instead of appearing with a distance that means nothing. The first
+   version ranked it, which is a way of saying "not similar" while looking like
+   a measurement.
+4. **The consent clause has to be visible in the statement's own text.**
+   `tests/consent_filter.rs` proves a filter is present by looking for the
+   literal text of a tier predicate. Interpolating the clause behind a
+   `{consent}` variable hides it, and building the tier list by hand — counting
+   the parameters and emitting `?n` — is a derived count that drifts: when the
+   tier set changed, Postgres reported `could not determine data type of
+   parameter $6`. The clause is now used as its own predicate text, so there is
+   nothing to keep in step.
+
+`scripts/mutate-dedup.py` is the evidence the tests bite: 12 behaviour-changing
+mutations in the classifier and the relation store, each required to turn a
+named test red. It verifies each replacement actually changed the file before
+believing the result, because a `replace` that matched one of two arms reports
+a survivor that means nothing.
+
+**12 applied, 11 killed, 1 exempt, 0 survived.** The exemption is the
+`len() > 1` filter in `same_scene_groups`: a group's two ends are distinct by
+construction, so the filter is unreachable — a guard against a future row type,
+not a rule with a behaviour. Deleting it to make the number read 12/12 would
+trade a cheap guard for a number.
+
+The mutations also found the bug this ticket's own accept criterion would not
+have: `relation_between` ordered by `created_at LIMIT 1` across both relation
+types, so a classifier proposal written *before* a user's "not a duplicate"
+outranked it — and since `auto_merge` consults `is_ruled_out` before every
+merge, the next pass re-merged the pair the user had just split.
 
 ### T-P5-005 — Lightbox, image organization, per-image metadata
 

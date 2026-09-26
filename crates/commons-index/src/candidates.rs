@@ -738,7 +738,17 @@ async fn phash_match(
 
     let mut out = Vec::new();
     for (object_id, their_hash) in rows {
-        if hamming(&my_hash, &their_hash) > ctx.phash_distance {
+        // `hamming` now returns `Option`, and `None` -- two hashes that are
+        // not comparable at all, which means different lengths or one of them
+        // is not hex -- is a *skip*, not "infinitely far". Under the old
+        // `u32::MAX` contract such a pair sorted to the bottom of the
+        // candidates and was still proposed, which is how a phash stored by a
+        // different implementation became a match against a distance threshold
+        // it never satisfied.
+        let Some(distance) = hamming(&my_hash, &their_hash) else {
+            continue;
+        };
+        if distance > ctx.phash_distance {
             continue;
         }
         if object_id == ctx.object_id.to_string() {
@@ -780,9 +790,8 @@ async fn phash_match(
             value: serde_json::json!(title),
             source: ProposalSource::PhashMatch,
             justification: format!(
-                "title from a described item with the same {my_algo} perceptual hash 
-                 (distance {} within a threshold of {})",
-                hamming(&my_hash, &their_hash),
+                "title from a described item with the same {my_algo} perceptual hash \
+                 (distance {distance} within a threshold of {})",
                 ctx.phash_distance
             ),
             confidence: None,
@@ -798,16 +807,16 @@ async fn phash_match(
 /// Returns `u32::MAX` for hashes of different lengths, which is "infinitely far"
 /// and makes the comparison above total: a length mismatch is not a match and
 /// must not be allowed to look like one.
-fn hamming(a: &str, b: &str) -> u32 {
-    if a.len() != b.len() {
-        return u32::MAX;
-    }
-    let mut n = 0u32;
-    for (x, y) in a.bytes().zip(b.bytes()) {
-        n += (x ^ y).count_ones();
-    }
-    n
-}
+/// Hamming distance, in bits, between two hex phashes.
+///
+/// Replaced by `commons_scan::dedup::hamming`, which is the one definition
+/// (T-P5-004). The copy here returned `u32::MAX` for a length mismatch, which
+/// reads as "infinitely far" and is right for ranking but wrong for a query:
+/// a phash stored under a different algorithm is not a distant neighbour, it
+/// is not a neighbour at all, and ranking it last still leaves it in the
+/// candidate set. Two definitions of a threshold comparison is one of them
+/// wrong.
+use commons_scan::dedup::hamming;
 
 // ---- 4. transcript (local ASR; stash #8) -----------------------------------
 
@@ -1316,14 +1325,12 @@ mod tests {
         assert!(split_date("Some Title (2021-13)").is_none());
     }
 
-    #[test]
-    fn hamming_counts_differing_bits() {
-        assert_eq!(hamming("ffff0000ffff0000", "ffff0000ffff0000"), 0);
-        assert_eq!(hamming("0000ffff0000ffff", "ffff0000ffff0000"), 64);
-        // A length mismatch is infinitely far, not zero: two hashes of different
-        // widths are not a match, and must never be allowed to look like one.
-        assert_eq!(hamming("ffff", "ffff0000ffff0000"), u32::MAX);
-    }
+    // `hamming` itself is tested where it now lives,
+    // `commons_scan::dedup::tests::hamming_*`. The assertion that lived here
+    // for the old `u32::MAX` contract -- "a length mismatch is infinitely far,
+    // not zero" -- is the behaviour that was *wrong*, so it does not survive
+    // the move. Under `Option` a mismatched pair is `None`, which the caller
+    // skips rather than ranks last.
 
     #[test]
     fn a_container_tag_maps_only_to_a_field_it_can_store() {

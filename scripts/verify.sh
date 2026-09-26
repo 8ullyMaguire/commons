@@ -54,6 +54,24 @@ if [ "$tot_f" -ne 0 ]; then
   fail=1
 fi
 
+# The dedup mutation pass, opt-in. Twelve behaviour-changing mutations in the
+# classifier and the relation store, each required to turn a named test red. It
+# rebuilds the workspace once per mutation, so it is a flag rather than part of
+# the default gate -- but a number in the README that nobody ever recomputes is
+# a number that rots, and the two mutations it found were both in code the
+# ordinary suite called green.
+if [ "${COMMONS_MUTATE:-0}" = "1" ]; then
+  echo "== mutation pass (T-P5-004)"
+  if python3 "$REPO/scripts/mutate-dedup.py" > /tmp/commons-mutate.txt 2>&1; then
+    tail -3 /tmp/commons-mutate.txt | sed 's/^/   /'
+  else
+    sed -n '/SURVIVED:/,$p' /tmp/commons-mutate.txt | sed 's/^/   /'
+    echo "   FAILED: a mutation survived, so a test is not testing what it claims"
+    fail=1
+  fi
+  echo
+fi
+
 # The plan's own bookkeeping. A ticket marked done whose file is not there is
 # the expensive failure -- it reads as progress and builds as nothing -- so that
 # is a gate. An unwritten future ticket is normal and only reported.

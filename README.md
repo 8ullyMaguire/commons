@@ -147,7 +147,7 @@ that is still alive and would recover.
 
 ## Testing
 
-1108 tests across the workspace. The ones that matter most are the ones that
+1155 tests across the workspace. The ones that matter most are the ones that
 were verified by breaking the code on purpose:
 
 - **Zip-Slip** (`commons-media`, `archive.rs`) — a comic archive is the most
@@ -194,6 +194,20 @@ were verified by breaking the code on purpose:
   stored as ordinary rows for the same reason — SQLite's `unicode61` and
   Postgres's `to_tsvector` disagree about stemming, and two native
   implementations are two tokenizers, not one.
+
+- **Duplicate classification** (`commons-scan/dedup.rs`,
+  `commons-store/relations.rs`) — the classifier's four verdicts are
+  `Identical`, `ReEncode`, `Similar`, `Distinct`, in that precedence, and the
+  two middle ones are where a dedup feature goes wrong. Two things the first
+  version got wrong are now the interesting cases: a file with no `blake3` but
+  a comparable phash is *not* `Distinct` (it is evidence of sameness with no
+  identity behind it, so it can be `Similar` but never `Identical`), and a
+  phash computed under a different algorithm is **dropped** from the
+  candidate ranking rather than ranked last, because a distance between two
+  incompatible hashes is not a measurement. `scripts/mutate-dedup.py` is the
+  evidence: 12 behaviour-changing mutations, each required to turn a named
+  test red, with a check that the replacement actually landed — a `replace`
+  that matched one of two arms otherwise reports a survivor that means nothing.
 
 Fixture content is deterministic. Re-running the generator produces
 content-equivalent archives; zip entry timestamps are pinned precisely so a
