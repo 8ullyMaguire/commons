@@ -719,10 +719,12 @@ noted in the handoff.
 **Exit:** a 100k-item library scans and browses within budget; C15–C20 closed;
 locator hashes computed.
 
+**Progress:** 1 of 8 tickets done (T-P2-001).
+
 ### T-P2-001 — Filesystem watcher and scan checkpoints
 
 **Spec:** §6.1, §6.2
-**Files:** `crates/commons-scan/src/walker.rs`, `progress.rs`
+**Files:** `crates/commons-scan/src/walker.rs`, `progress.rs`, `watch.rs`
 **Depends:** T-P0-004, T-P1-001
 
 1. `notify` v6 recursive watcher per library root, debounced 2 s.
@@ -739,6 +741,12 @@ assert 100; touch nothing, run again, assert 0 new; interrupt mid-scan, resume,
 assert total 100 and no duplicates.
 **Done when:** the resume-after-interrupt case is asserted, not just the
 idempotent case.
+
+**Status: DONE.** `walker.rs` (walk, skip rules, volume policy,
+checkpoint), `progress.rs` (honest progress with a confidence), `watch.rs`
+(debounced watcher, tri-state override, diffing poll loop). All four
+acceptance cases asserted, including resume-after-interrupt. 164 tests in
+`commons-scan`.
 
 ### T-P2-002 — Content hashing and move detection
 

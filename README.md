@@ -204,7 +204,7 @@ enforcing so the intent is not lost.
 |---|---|---|
 | 0 — Foundations | done | schema, migrations, filter language, plugin host, server, memory harness |
 | 1 — Content types | done | detection, probing, segments, archives, hashing, the five remaining content types, and the windowed grid |
-| 2 — Library and scale | next | watcher, checkpoints, 100k-item performance |
+| 2 — Library and scale | in progress | watcher and checkpoints done; 100k-item performance next |
 | 3–6 | planned | identity, federation, UI surfaces, review and automation |
 
 Closed so far, among others: #3530 (one file, many objects — 38 comments
@@ -218,6 +218,26 @@ client, a keyset-paginated store, and a fixed-row-height virtualized grid. Every
 list view lives entirely in the query string, so a filter is a bookmark. A
 5,000-item library renders 11 rows and 55 tiles; 43 unit tests and 11 browser
 tests cover it, and 0 type errors.
+
+## The scanner
+
+`commons-scan` walks a library root once and can stop and resume without
+redoing work. Three things there are less obvious than they look:
+
+- **A checkpoint is not a directory name.** The walk is depth-first with an
+  explicit stack, so "the walk was last in `d10`" says nothing about the
+  siblings still waiting. The checkpoint carries the pending stack, and
+  `files_in_dir`, because a batch flush lands mid-directory. Together they
+  make an interrupted scan and its resume an exact partition: no gap, no
+  duplicate file indexed twice.
+- **A watcher is never trusted across a network boundary.** Events are lost
+  across NFS, SMB, and rclone, and a lost `Create` is a file that silently
+  never appears in the library. Remote volumes get a poll loop that emits the
+  *difference*, not a rescan. A user can override in both directions.
+- **A progress bar that cannot estimate says so.** There is no honest
+  denominator for a filesystem walk, so `Progress` reports a fraction *and* a
+  `Confidence`. A running scan never claims 100%, and a tree of empty
+  directories reports no estimate at all rather than a confident wrong one.
 
 `PersonRef` is on all seven object kinds, not just scenes. That is what makes
 the owner-added interview type (§5.8) work: a person speaking in an interview
