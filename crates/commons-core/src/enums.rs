@@ -309,6 +309,22 @@ impl ProposalSource {
     pub const fn is_automatic(self) -> bool {
         !matches!(self, ProposalSource::User)
     }
+
+    /// Whether this source is *inference* rather than extraction.
+    ///
+    /// The two are both machines and they are not equivalent. A tagger or a
+    /// captioner looked at the content and produced a judgement, so its
+    /// confidence is an opinion and counts as one. A filename parser, an
+    /// embedded-tag reader and a sidecar reader only moved a string that was
+    /// already in the file somewhere — they found something, they did not decide
+    /// anything, so their output is a *candidate* and not support.
+    ///
+    /// §8.2.1 makes the distinction by promising that ML tags are proposals
+    /// "tagged with their confidence"; nothing in §8.2 makes a filename
+    /// confident about anything.
+    pub const fn is_inference(self) -> bool {
+        matches!(self, ProposalSource::MlTagger | ProposalSource::MlCaptioner)
+    }
 }
 
 /// Who may author a proposal. Kept separate from `ProposalSource` because a
@@ -760,6 +776,26 @@ impl Role {
         matches!(self, Role::Contributor | Role::Steward | Role::Admin)
     }
 
+    /// Whether this role may cast a vote (§8.1).
+    ///
+    /// `Public` is the one role that cannot, and that is the whole point of
+    /// keeping it: stash #2792 asked for anonymous read-only browsing, and a
+    /// role that cannot vote is what makes "read-only" mean something rather
+    /// than being a UI convention. Enforced in the vote path, not in the view,
+    /// because the anonymous viewer is precisely the case where a UI-only check
+    /// leaks.
+    pub const fn may_vote(self) -> bool {
+        !matches!(self, Role::Public)
+    }
+
+    /// Whether this role may lock or unlock a field (§8.1, stash-box#213).
+    ///
+    /// A lock is the one thing that overrides the evidence, so it is narrower
+    /// than curating: curating adds to the evidence, locking discards it.
+    pub const fn may_lock(self) -> bool {
+        matches!(self, Role::Steward | Role::Admin)
+    }
+
     /// Whether this role may resolve moderation items.
     pub const fn may_moderate(self) -> bool {
         matches!(self, Role::Steward | Role::Admin)
@@ -787,6 +823,30 @@ pub mod ts {
     /// ISO-8601 UTC with second precision, e.g. `2026-09-26T11:02:00Z`.
     pub fn now() -> String {
         Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
+    }
+
+    /// Shift a timestamp by whole days, in the same format `now` produces.
+    ///
+    /// The point of doing it in Rust is format stability: SQLite's `datetime()`
+    /// would return `2026-09-26 17:15:11` where `now` returns
+    /// `2026-09-26T17:15:11Z`, and every reader that parses the schema's format
+    /// would then treat the shifted value as unparseable.
+    pub fn shift_days(ts: &str, days: i64) -> Option<String> {
+        let t = chrono::DateTime::parse_from_rfc3339(ts).ok()?;
+        Some((t + chrono::Duration::days(days)).to_rfc3339_opts(SecondsFormat::Secs, true))
+    }
+
+    /// Whole days between two RFC 3339 timestamps, or `None` if either is not
+    /// one.
+    ///
+    /// `None` rather than 0 for an unparseable input, so a caller has to decide
+    /// what an unknown age means instead of being handed a silent zero. A vote
+    /// that does not decay because its date is unreadable is a decision; one
+    /// that decays because the parser gave up is a bug.
+    pub fn age_days(then: &str, now: &str) -> Option<i64> {
+        let t = chrono::DateTime::parse_from_rfc3339(then).ok()?;
+        let n = chrono::DateTime::parse_from_rfc3339(now).ok()?;
+        Some((n - t).num_days())
     }
 
     pub fn from_unix(secs: i64) -> String {

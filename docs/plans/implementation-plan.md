@@ -1575,30 +1575,127 @@ cannot fail.
 **Exit:** an amateur corpus with no upstream source is fully curated by
 proposal and vote; C33–C45 closed.
 
-### T-P4-001 — FieldProposal resolution
+### T-P4-001 — FieldProposal resolution — **DONE**
 
 **Spec:** §8.1
-**Files:** `crates/commons-index/src/resolve.rs`
-**Depends:** T-P0-003, T-P0-005
+**Files:** `crates/commons-index/src/resolve.rs`,
+`crates/commons-store/src/index.rs`,
+`crates/commons-store/migrations/{postgres,sqlite}/0007_proposal_justification.sql`,
+`crates/commons-index/tests/resolve.rs`, `tests/common/mod.rs`
 
-The heart of the design. `resolve(subject, field) -> ResolvedValue`:
-
-1. Weight each proposal: `user_weight × recency_decay`, where `user_weight`
-   comes from reputation (T-P4-003) and `recency_decay` is configurable.
-2. Winner by weight. The result is **computed and cached**, invalidated when a
-   vote or proposal changes — so a settled value *can* change when better
-   evidence arrives, which is correct for a living index.
-3. `locked` fields (stash-box#213) return the pinned value and refuse
+1. `resolve(subject, field) -> ResolvedValue`: weight each proposal by
+   `user_weight × recency_decay`, winner by weight, computed and cached.
+2. `locked` fields (stash-box#213) return the pinned value and refuse
    proposals until a steward unlocks.
-4. Auto-proposals (`MlTagger`, `MlCaptioner`, `PhashMatch`) participate with
-   their `confidence` as weight, so a machine proposal is just another voter —
-   never an override.
+3. Auto-proposals (`MlTagger`, `MlCaptioner`) participate with their confidence
+   as weight — a voter, never an override.
+4. The role table's `public` refusal lives in the vote path, not the view.
 
-**Accept:** tests: a 3-proposal field with weights 5/3/1 resolves to the
-weight-5 value; adding a weight-6 proposal flips it; a locked field ignores a
-weight-100 proposal; a stale cache invalidates on new vote. The cache test is
-the one that catches the classic bug.
-**Done when:** all four are named tests.
+**Accept:** the ticket's four named tests, plus tie reporting, retraction,
+machine-proposal bounding, per-field isolation, and cache-invalidation.
+**Done when:** all four are named tests. **Met** — 23 tests in
+`tests/resolve.rs`.
+
+**Implementation notes.**
+
+**The cache is keyed on the evidence, and the configuration with it.** The key
+is `(subject, field, fingerprint)`, where the fingerprint is FNV-1a over the
+*contents* of every proposal and every live vote. Nothing has to remember to
+invalidate anything: a new proposal or a new vote is a different key, so a
+stale entry cannot be *looked up*, not merely needs to be invalidated. This is
+the only shape that is safe in a system still growing write paths.
+
+*The configuration is in the key too*, and a test found that the hard way. A
+key of `(subject, field, fingerprint)` alone silently ignores `half_life_days`:
+the evidence is identical, so the second configuration is served the first one's
+answer. `two_different_half_lives_give_two_different_answers` passes by accident
+until the key includes the config — the two settings gave byte-identical
+weights. Every knob is hashed from its bits rather than its `Debug` output, so
+a field added to `ResolveConfig` cannot be forgotten here.
+
+**Extraction is not inference.** `ProposalSource::is_inference` separates
+`ml:tagger`/`ml:captioner` — which looked at the content and *decided* — from
+`filename`/`embedded`/`caption`, which only moved a string that was already
+there. Only an inference's confidence counts as support. Without the
+distinction, a 0.99-confidence filename parse and a 0.99-confidence tagger are
+the same claim, and every title in a freshly-scanned library settles on whatever
+the first parser guessed with no human in the loop. A proposal nobody has voted
+on and no model has *judged* weighs zero; the test that pins this gives the
+extraction a real 0.99 confidence, because without one the arithmetic zeroes it
+for the wrong reason and the assertion passes for free.
+
+**A weight floor applies per voter, never to a proposal's score.** The first
+version clamped the total into `[min, max]`, which gave every *unvoted*
+proposal the same positive weight and made one beat a heavily-backed value —
+the voting system inverted. The floor exists so a repudiated account can still
+vote (§8.3's newcomer problem), and a weight of zero would be indistinguishable
+from being silenced, which must be a moderator's decision. Both belong on one
+account's contribution.
+
+**The ceiling is a bound on one account, not on the scale.** Clamping the total
+to 5.0 made reputation 5 and reputation 6 indistinguishable, so §8.1's "better
+evidence moves the value" quietly stopped holding at exactly the top of the
+scale. It is 25.0.
+
+**Per-field reputation is applied once, at the ballot.** `cast_vote` writes the
+account's `field_reputation` into `vote.weight`; resolve decays that number and
+does not restate it. Multiplying by the per-field map as well squares it, which
+runs every account into the ceiling — the same bug as above, reached by a
+different road.
+
+**Sybil damping is absolute, not relative to the field's largest bloc.** The
+relative version looks like fairness and is not: the biggest bloc divides by
+itself, so it is never damped, and a field with eight accounts against one damps
+nothing. `1/sqrt(n)` with a floor of 0.2 says what §8.3 means — a bloc is
+discounted however large it is, so its *marginal* backer is worth less and
+less — and the floor stops a bloc of two being worth nothing next to a bloc of
+one.
+
+**Ties are reported, and the fallback is deterministic.** Weight descending,
+then value ascending. Without the value tiebreak the same evidence gives
+different answers on two machines, and `a_tie_is_reported_as_a_tie_not_broken_by_row_order`
+would not be able to say which. A tie is a distinct state from "contested but
+decided" because a tie needs a human and the other does not.
+
+**`age_vote` does the date arithmetic in Rust, not in SQL.** SQLite's
+`datetime()` rewrites a timestamp into its own format, and the schema's format
+is RFC 3339 — so an SQL-side shift produced `2025-09-26 17:15:11`, which
+`ts::age_days` cannot parse, and every aged vote decayed as if brand new. The
+two decay tests passed *for the wrong reason* until this was found: they were
+agreeing with the no-decay answer. `ts::shift_days` and `ts::age_days` now live
+in commons-core so the format is one function's business.
+
+**`commons-core` gained `Role::may_vote` and `Role::may_lock`, and
+`Account` is read as a tuple.** `may_curate` existed; `may_vote` did not, and
+`public` refusing to vote is the whole of what makes stash #2792's anonymous
+read-only case mean anything. Deriving `FromRow` on `Account` would have been
+the obvious way to read it and is forbidden: T-P0-007 makes commons-core the
+bottom of the graph, and a `FromRow` derive drags sqlx in under everything.
+
+**Migration 0007 adds `field_proposal.justification`.** §8.2 requires every
+proposal to record *why* it exists, and 0001 had nowhere to put it — so the only
+way to satisfy the requirement was to synthesise the wording from the source at
+read time, which is a guess about a parser's output presented as a fact. It is
+nullable: a fixture or a silent peer has no justification, and inventing one is
+worse than admitting there is none.
+
+**Mutations: eighteen.** Four survived the first pass and all four were real
+findings, not test noise:
+
+* the cache key omitted the configuration (above);
+* the endorsed rule was a no-op for any proposal whose weight was already
+  zero, so `is_inference` was untested until the extraction was given a
+  confidence;
+* damping computed but unused, and then relative rather than absolute;
+* the unendorsed-proposal rule, which the arithmetic was masking.
+
+One mutation survived a second pass and turned out to be genuinely redundant: a
+fingerprint built from the live vote set cannot distinguish "retracted" from
+"never cast", so an earlier version read *all* rows including retracted ones.
+The extra read changed no outcome — the retracted row is invisible to the
+arithmetic either way, and it is the absence of the live row that moves the key
+— so it was removed rather than kept as insurance, and the reasoning is in the
+code where the next person will look.
 
 ### T-P4-002 — Candidate generation from local signals
 

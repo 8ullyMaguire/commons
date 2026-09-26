@@ -1,0 +1,14 @@
+-- Migration: 0007 proposal_justification
+--
+-- §8.2 requires every proposal to record *why* it exists, so the UI can show
+-- "title proposed from filename" beside "title proposed by 4 users". 0001's
+-- `field_proposal` had the value and the source but nowhere to put the reason,
+-- so the only way to satisfy the requirement was to synthesise the wording from
+-- the source at read time — which is a guess about a parser's output, presented
+-- to the user as a fact.
+--
+-- The column is nullable: a proposal written by a test fixture or by a peer that
+-- sends no explanation has no justification, and inventing one would be worse
+-- than admitting there is none. Resolve returns `None` and the UI shows the
+-- source alone.
+ALTER TABLE field_proposal ADD COLUMN justification TEXT;

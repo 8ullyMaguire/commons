@@ -53,6 +53,13 @@ pub enum StoreError {
     },
     #[error("data directory {0} is not a directory")]
     NotADirectory(PathBuf),
+    /// A value the database would have accepted but the domain refuses.
+    ///
+    /// Its own variant rather than a `Query` with a synthetic message, because
+    /// the two need different fixes and a caller retrying a `Query` would be
+    /// retrying something that cannot succeed.
+    #[error("invalid {what}: {why}")]
+    Invalid { what: &'static str, why: String },
     #[error("the index database needs DATABASE_URL to be set")]
     NoDatabaseUrl,
 }
