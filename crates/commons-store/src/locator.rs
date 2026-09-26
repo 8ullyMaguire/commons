@@ -439,6 +439,13 @@ fn is_foreign_key(e: &dyn sqlx::error::DatabaseError) -> bool {
 /// consent has already been consulted, at which point the caller has been told
 /// the wrong thing.
 async fn object_exists(store: &Store, object_id: &str) -> Result<bool> {
+    // The one object read in this crate that carries no consent clause, and the
+    // one that is allowed to: it reads a *boolean about existence*, never a
+    // field, so a caller learns that an object is present and nothing else. It
+    // cannot become a disclosure later without someone changing what it
+    // selects, and the workspace scan in `commons-consent/tests/policy.rs` fails
+    // on exactly that change -- which is the point of naming it here rather than
+    // quietly listing it in the allowlist.
     let row = sqlx::query("SELECT 1 FROM object WHERE id = ?")
         .bind(object_id)
         .fetch_optional(store.pool())

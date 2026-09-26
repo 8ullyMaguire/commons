@@ -2059,31 +2059,92 @@ Verification: `1013 tests, 0 failures`; fmt clean; `clippy --workspace
 re-introducing the withdraw bug, `User` → `MlTagger` in the human-only check,
 `>=` → `>` on a badge threshold, and dropping the leaderboard's disabled filter.
 
-### T-P4-007 — Consent tiers as a store-layer filter
+### T-P4-007 — Consent tiers as a store-layer filter — DONE
 
-**Spec:** §14.1, §8.12
-**Files:** `commons-consent/src/lib.rs`, `commons-store/src/consent_filter.rs`
-**Depends:** T-P0-005
+**Spec:** §14.1
+**Files:** `crates/commons-store/src/query.rs`, `crates/commons-store/tests/consent_filter.rs`
 
-**Rule 3 lives here.** `Store::query(filter, caller)` ALWAYS ANDs in
-`ConsentVisible { caller }` (§14.1's tier table plus the caller's content
-filter). There is no API that returns objects without it.
+§14.1: "Rules, all enforced in the data layer, not the UI."
 
-1. Tiers: `Unverified, SelfPublished, PerformerClaimed, ThirdPartyPermitted,
-   Quarantined, Denied`.
-2. A caller's content filter (stash-box#643, #733, #1005, #986) is enforced at
-   the query layer so a hidden category cannot leak through search,
-   recommendation, export, or DLNA.
-3. `Quarantined` and `Denied` are invisible to everyone but stewards.
-4. Revocation propagates as a tombstone and is **never outvoted** (§13.2).
+The clause already existed — `Filter::consent_clause`, since T-P0-005, with unit
+tests. What did not exist was anything making it *unavoidable*: it was a `pub
+fn` called by nothing outside its own test module, and it emitted
+`o.consent_tier` on a column that **does not exist** (the tier is on
+`consent_record.tier`). So the guarantee was not missing, it was unreachable —
+and a clause that produces `SQLITE_ERROR` fails closed in a way that reads as
+"the filter is strict".
 
-**Accept:** the central test of the project: for every query path in the
-codebase (list, search, recommendation, export, sitemap, DLNA, GraphQL
-resolver), assert that a `Denied` object never appears. Implement it as a
-shared test helper applied to every path, so a new query path that forgets
-the filter fails by default.
-**Done when:** that shared helper exists and is applied to all paths. This is
-the difference between a consent model and a consent *claim*.
+The work was the sealing, not the clause. `Store::query` is the only sanctioned
+object read, it takes a `CallerId` with no overload without one, and
+`no_object_query_bypasses_the_consent_clause` scans the workspace for a
+`SELECT ... FROM object` that is not consent-filtered.
+
+**Four bypasses, three of them in code written before this ticket.**
+
+*A steward saw every `denied` row.* `may_see_restricted()` is `Steward |
+Admin` and the clause it guarded returned `1 = 1`. The exemption exists because
+moderation must see contested material; `1 = 1` grants that by also granting
+`denied` — a takedown accepted, which §14.1 calls "permanently blocked by hash
+across all peers". Replaced by `ConsentTiers::MODERATION`.
+
+*The same bug, in the helper.* `CallerId::steward` set `tier_allowlist` to
+`ConsentTiers::ALL`, so it handed out `denied` regardless of the clause. Fixing
+the clause alone left the bug live — the shape of a defect that survives a fix
+applied to one of two places.
+
+*The owner could not see their own licensed files.* `OWNER` omitted
+`third_party_permitted`. §14.1 is explicit that a licensed item is one "the
+user may watch and keep"; an operator holding one could not find it. The
+constant was written to answer "may the owner see their own unverified scans?"
+and silently answered a second, larger question.
+
+*The phash route walked around a takedown.* `candidates.rs` read
+`SELECT title FROM object` to seed a proposal, so a match against a `denied`
+object turned the takedown's content into a **proposal** — proposed, weighed and
+voted on by people who cannot see the object it came from. The takedown blocked
+the row and the match route went around it. Found by the guard, on the run that
+added it.
+
+A `LEFT JOIN` with a `COALESCE` would reach the same answer as the `INNER JOIN`
+for a missing record, but by *defaulting* — and a default is a value somebody
+can change in one place and have every record-less object follow. The inner join
+has no default to change.
+
+**The guard took three attempts, and each was found by a mutation surviving it.**
+
+* Keyed on the **file**: everything later added to an allowed file inherited the
+  exemption, so widening `SELECT 1 FROM object` to `SELECT title, kind FROM
+  object` left all 17 tests green.
+* Keyed on the file plus a **count** of reads against allowlisted statements:
+  the widened query still begins with `SELECT` and contains `FROM object`, so
+  the count matched and the file was skipped again.
+* Keyed on a **24-line window** containing the word `consent_record` — and
+  `locator.rs` has a comment explaining why its existence probe needs no filter,
+  which mentions `consent_record`, so every statement near it passed.
+
+What works keys on the *statement*, strips comments first, and requires a
+**predicate on the joined column** rather than the join's mere presence: a join
+narrows nothing, and a mutation that dropped the phash query's `WHERE` while
+keeping the `INNER JOIN` returned every object with any consent record at any
+tier.
+
+Two mutations still survive the scan — widening `c.tier IN (?, ?, ?)` to
+include `denied`, and removing the predicate. Both die to the behaviour tests in
+`candidates.rs`, which put a `denied` object in the database and assert nothing
+comes out. A text scan can prove a filter is *present*; only a test against real
+rows can prove it names the *right* tiers. The layers are kept because each has
+survived something the other kills.
+
+`a_tier_filter_cannot_be_used_to_reach_a_hidden_tier` covers §5.16's
+shareable URLs, which are attacker-controllable: asking for `denied` by name in
+a filter returns nothing, because the consent clause is ANDed rather than
+overridden. `has_more` is pinned at `rows`, `rows-1` and `rows/3` — an always-
+false `has_more` is indistinguishable from a correct one at any small page.
+
+Verification: `1035 tests, 0 failures`; fmt clean; `clippy --workspace
+--all-targets -- -D warnings` clean. Ten mutations: eight killed, two killed
+only by the behaviour layer, and the guard itself rebuilt twice after surviving
+one each.
 
 ### T-P4-008 — Takedown pipeline
 

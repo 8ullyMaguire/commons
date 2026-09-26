@@ -219,6 +219,17 @@ impl CallerId {
     }
 
     /// A steward, for moderation and export tooling.
+    ///
+    /// The allowlist is [`ConsentTiers::MODERATION`], not
+    /// [`ConsentTiers::ALL`]. It used to be `ALL`, which meant this helper --
+    /// not the clause -- decided what a steward sees, and it decided to grant
+    /// `denied`: a takedown accepted, which §14.1 calls "permanently blocked by
+    /// hash across all peers". The consent clause was tightened and this kept
+    /// handing out the old grant, which is the shape of bug that survives a fix
+    /// applied to one of two places.
+    ///
+    /// Moderation needs `quarantined`; an export tool that needs the rest has to
+    /// say so, in a place a reviewer reads.
     pub fn steward(account_id: impl Into<String>) -> Self {
         Self {
             account_id: Some(account_id.into()),
@@ -226,7 +237,10 @@ impl CallerId {
             excluded_tag_ids: vec![],
             excluded_studio_ids: vec![],
             excluded_performer_ids: vec![],
-            tier_allowlist: ConsentTiers::ALL.iter().map(|s| s.to_string()).collect(),
+            tier_allowlist: ConsentTiers::MODERATION
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         }
     }
 }
@@ -246,10 +260,46 @@ impl ConsentTiers {
         "third_party_permitted",
     ];
 
-    /// Tiers visible to the library's own operator. `Unverified` is present
-    /// because a freshly scanned file is unverified and must still be visible
-    /// in the app holding it.
-    pub const OWNER: [&'static str; 3] = ["unverified", "self_published", "performer_claimed"];
+    /// Tiers visible to the library's own operator.
+    ///
+    /// A *superset* of [`Self::PUBLIC`], deliberately. §14.1 is explicit that a
+    /// licensed item is one "the user may watch and keep", so an operator
+    /// holding a `third_party_permitted` file must be able to find it in their
+    /// own library. This set was previously
+    /// `["unverified", "self_published", "performer_claimed"]`, which answered
+    /// the question "may the owner see their own unverified scans?" and silently
+    /// answered the larger one wrong. `unverified` is present because a freshly
+    /// scanned file is unverified and must be visible in the app holding it.
+    ///
+    /// Not a superset of the moderation tiers, also deliberately: a contested
+    /// item is hidden from its own uploader too. §14.1 says quarantined is
+    /// "hidden everywhere, pending review", and *everywhere* includes the
+    /// uploader.
+    pub const OWNER: [&'static str; 4] = [
+        "unverified",
+        "self_published",
+        "performer_claimed",
+        "third_party_permitted",
+    ];
+
+    /// Tiers a steward or admin may see: the moderation tiers plus the
+    /// publishable ones.
+    ///
+    /// Not [`Self::ALL`]. `may_see_restricted()` is `Steward | Admin`, and the
+    /// clause it used to guard returned `1 = 1` -- which granted not moderation
+    /// but *everything*, putting every `denied` row (a takedown accepted, §14.1
+    /// "permanently blocked by hash across all peers") into the ordinary browse
+    /// surface of a steward who had a takedown accepted against them.
+    ///
+    /// The publishable tiers are here for a specific reason: a quarantine is
+    /// raised against an otherwise ordinary row, so a moderator who cannot see
+    /// the ordinary tiers cannot see the object they are moderating.
+    pub const MODERATION: [&'static str; 4] = [
+        "self_published",
+        "performer_claimed",
+        "third_party_permitted",
+        "quarantined",
+    ];
 
     pub const ALL: [&'static str; 6] = [
         "unverified",
@@ -365,10 +415,18 @@ impl Filter {
         caller: &CallerId,
         params: &mut Vec<Value>,
     ) -> Result<String, FilterError> {
-        if caller.role.may_see_restricted() {
-            // Stewards see quarantined and denied rows in the moderation and
-            // export surfaces. Everything else still applies.
-            return Ok("1 = 1".to_string());
+        // A steward or admin is granted the *moderation* tiers, not everything.
+        // See `ConsentTiers::MODERATION`: `denied` is a takedown rather than a
+        // moderation state, and the previous `1 = 1` put it in every browse
+        // surface. Everything below still applies.
+        if caller.role.may_see_restricted() && caller.tier_allowlist.is_empty() {
+            for t in ConsentTiers::MODERATION {
+                params.push(Value::Str(t.to_string()));
+            }
+            return Ok(format!(
+                "c.tier IN ({})",
+                placeholders(ConsentTiers::MODERATION.len())
+            ));
         }
 
         let visible: Vec<&str> = if caller.account_id.is_some() && caller.tier_allowlist.is_empty()
@@ -385,10 +443,7 @@ impl Filter {
         for t in &visible {
             params.push(Value::Str((*t).to_string()));
         }
-        Ok(format!(
-            "o.consent_tier IN ({})",
-            placeholders(visible.len())
-        ))
+        Ok(format!("c.tier IN ({})", placeholders(visible.len())))
     }
 
     fn compile(
@@ -629,7 +684,7 @@ fn column_for(field: &FieldRef, kind: Option<ObjectKind>) -> Option<String> {
             BuiltinField::SizeBytes => "o.size_bytes",
             BuiltinField::Path => "o.paths",
             BuiltinField::State => "o.file_state",
-            BuiltinField::ConsentTier => "o.consent_tier",
+            BuiltinField::ConsentTier => "c.tier",
             BuiltinField::CreatedAt => "o.created_at",
             BuiltinField::UpdatedAt => "o.updated_at",
             BuiltinField::MarkerCount => "o.marker_count",
@@ -937,10 +992,20 @@ mod tests {
             let sql = Filter::consent_clause(&c, &mut params).unwrap();
             assert_ne!(sql, "1 = 1", "{role:?} must not bypass consent");
         }
+        // And a steward is *not* waved through either. This assertion used to be
+        // `assert_eq!(sql, "1 = 1")` -- it encoded the bug this ticket fixed.
+        // A steward is bound to the moderation tiers: the exemption exists
+        // because moderation must see contested material, and `1 = 1` granted
+        // that by also granting `denied`, which §14.1 calls "permanently
+        // blocked by hash across all peers".
         let mut params = Vec::new();
-        let sql = Filter::consent_clause(&CallerId::steward("acct-2"), &mut params).unwrap();
-        assert_eq!(sql, "1 = 1");
-        assert!(params.is_empty());
+        Filter::consent_clause(&CallerId::steward("acct-2"), &mut params).unwrap();
+        let tiers: Vec<&str> = params.iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(tiers, ConsentTiers::MODERATION);
+        assert!(
+            !tiers.contains(&"denied"),
+            "a takedown is not a moderation state"
+        );
     }
 
     #[test]

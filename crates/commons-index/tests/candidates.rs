@@ -937,6 +937,22 @@ async fn object(store: &Store, title: &str) -> Uuid {
     .execute(store.pool())
     .await
     .expect("insert object");
+    // A consent record, as every real object has one. The phash query now joins
+    // `consent_record` -- a match against a `quarantined` or `denied` object
+    // used to become a *proposal* carrying that object's title, which walked
+    // straight around a takedown -- and an object with no record is invisible
+    // to every caller, by design. The tier is `self_published` because that is
+    // what a described, listed item is.
+    sqlx::query(
+        "INSERT INTO consent_record (id, object_id, tier, redistribution_permitted, updated_at)
+         VALUES (?, ?, 'self_published', 0, ?)",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(id.to_string())
+    .bind(commons_core::ts::now())
+    .execute(store.pool())
+    .await
+    .expect("insert consent record");
     id
 }
 
@@ -1268,4 +1284,121 @@ async fn filename_proposes_nothing_from_a_multi_word_quality_tag() {
             "{name:?} is a release tag, not a title: {cands:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// T-P4-007: the consent filter on the phash route.
+//
+// This is a security test, not a coverage one. Before the filter, a phash match
+// against a `quarantined` or `denied` object became a *proposal* carrying that
+// object's title: proposed, weighed, and voted on by people who cannot see the
+// object it came from. The takedown blocked the row and this route walked
+// around it.
+// ---------------------------------------------------------------------------
+
+/// An object at a given consent tier, created directly so the tier is the
+/// variable under test rather than a side effect of a helper.
+async fn object_at_tier(store: &Store, title: &str, tier: &str) -> Uuid {
+    let id = object(store, title).await;
+    sqlx::query("UPDATE consent_record SET tier = ? WHERE object_id = ?")
+        .bind(tier)
+        .bind(id.to_string())
+        .execute(store.pool())
+        .await
+        .expect("set tier");
+    id
+}
+
+#[tokio::test]
+async fn a_phash_match_against_a_denied_object_proposes_nothing() {
+    let (_d, store) = store().await;
+    let mine = object(&store, "My Scene").await;
+    let mine_hash = "ffffffffffff0000";
+    put_object_phash(&store, mine, mine_hash).await;
+
+    let theirs = object_at_tier(&store, "The Denied Title", "denied").await;
+    put_object_phash(&store, theirs, mine_hash).await;
+
+    let ctx = ctx_for(&store, mine, "clip.mkv").await;
+    put_file_phash(&store, mine, mine_hash).await;
+    let out = one(
+        &all_candidates(&store, &ctx).await,
+        ProposalSource::PhashMatch,
+    );
+    assert!(
+        out.is_empty(),
+        "a denied object's title became a proposal: {out:?}. The takedown \
+         blocked the row and the phash route proposed it anyway."
+    );
+}
+
+#[tokio::test]
+async fn a_phash_match_against_a_quarantined_object_proposes_nothing() {
+    let (_d, store) = store().await;
+    let mine = object(&store, "My Scene").await;
+    let mine_hash = "0f0f0f0f0f0f0f0f";
+    put_object_phash(&store, mine, mine_hash).await;
+
+    let theirs = object_at_tier(&store, "The Contested Title", "quarantined").await;
+    put_object_phash(&store, theirs, mine_hash).await;
+
+    let ctx = ctx_for(&store, mine, "clip.mkv").await;
+    put_file_phash(&store, mine, mine_hash).await;
+    let out = one(
+        &all_candidates(&store, &ctx).await,
+        ProposalSource::PhashMatch,
+    );
+    assert!(
+        out.is_empty(),
+        "§14.1: quarantined is 'hidden everywhere, pending review' -- and \
+         'everywhere' includes the proposal graph: {out:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_phash_match_against_a_publishable_object_still_proposes() {
+    // The other half. A filter that always returns nothing passes every test
+    // above and leaves §8.2's phash route dead.
+    let (_d, store) = store().await;
+    let mine = object(&store, "My Scene").await;
+    let mine_hash = "abcdef123456abcd";
+    put_object_phash(&store, mine, mine_hash).await;
+
+    let theirs = object_at_tier(&store, "A Licensed Title", "third_party_permitted").await;
+    put_object_phash(&store, theirs, mine_hash).await;
+
+    let ctx = ctx_for(&store, mine, "clip.mkv").await;
+    put_file_phash(&store, mine, mine_hash).await;
+    let all = all_candidates(&store, &ctx).await;
+    let out = one(&all, ProposalSource::PhashMatch);
+    assert_eq!(out.len(), 1, "expected one phash candidate, got {all:?}");
+    assert_eq!(out[0].value, serde_json::json!("A Licensed Title"));
+    assert_eq!(out[0].value, serde_json::json!("A Licensed Title"));
+}
+
+#[tokio::test]
+async fn a_phash_match_against_an_unverified_object_proposes_nothing() {
+    // §14.1: unverified is "private by default. Not publishable." A title is
+    // publishable content, so an unverified object's title must not become a
+    // proposal -- which is a subtly different rule from the browse filter's,
+    // since the owner *can* see their own unverified rows.
+    let (_d, store) = store().await;
+    let mine = object(&store, "My Scene").await;
+    let mine_hash = "1111222233334444";
+    put_object_phash(&store, mine, mine_hash).await;
+
+    let theirs = object_at_tier(&store, "Someone's Unverified Scan", "unverified").await;
+    put_object_phash(&store, theirs, mine_hash).await;
+
+    let ctx = ctx_for(&store, mine, "clip.mkv").await;
+    put_file_phash(&store, mine, mine_hash).await;
+    let out = one(
+        &all_candidates(&store, &ctx).await,
+        ProposalSource::PhashMatch,
+    );
+    assert!(
+        out.is_empty(),
+        "an unverified item is private by default and not publishable, so its \
+         title must not reach the proposal graph: {out:?}"
+    );
 }

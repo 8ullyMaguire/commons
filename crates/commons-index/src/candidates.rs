@@ -748,11 +748,30 @@ async fn phash_match(
         // described item", and an object with no title has nothing to propose —
         // matching it would propose the empty string, which is the proposer's
         // version of a null pointer.
-        let title: Option<String> = sqlx::query_scalar("SELECT title FROM object WHERE id = ?")
-            .bind(&object_id)
-            .fetch_optional(store.pool())
-            .await
-            .map_err(StoreError::Query)?;
+        // The consent filter, on a query that had none. A phash match against a
+        // `quarantined` or `denied` object was becoming a *proposal* carrying
+        // that object's title -- so a takedown's content leaked back into the
+        // curation graph, where it is proposed, weighed, and voted on by people
+        // who cannot see the object it came from. The takedown blocked the row
+        // and the match route walked straight around it.
+        //
+        // Joined to `consent_record` and bound to the same tier set the browse
+        // query uses, so the two cannot disagree: a tier that is invisible in
+        // search is invisible here, which is §14.1's "enforced in the data
+        // layer, not the UI" meaning that a caller cannot opt out of it by
+        // coming at the data a different way.
+        let title: Option<String> = sqlx::query_scalar(
+            "SELECT o.title FROM object o
+               INNER JOIN consent_record c ON c.object_id = o.id
+              WHERE o.id = ? AND c.tier IN (?, ?, ?)",
+        )
+        .bind(&object_id)
+        .bind("self_published")
+        .bind("performer_claimed")
+        .bind("third_party_permitted")
+        .fetch_optional(store.pool())
+        .await
+        .map_err(StoreError::Query)?;
         let Some(title) = title.and_then(|t| usable(&t)) else {
             continue;
         };
