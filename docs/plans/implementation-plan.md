@@ -719,7 +719,7 @@ noted in the handoff.
 **Exit:** a 100k-item library scans and browses within budget; C15–C20 closed;
 locator hashes computed.
 
-**Progress:** 1 of 8 tickets done (T-P2-001).
+**Progress:** 2 of 8 tickets done (T-P2-001, T-P2-002).
 
 ### T-P2-001 — Filesystem watcher and scan checkpoints
 
@@ -770,6 +770,18 @@ same length, rescan, assert the hash changed and artifacts regenerated.
 **Done when:** the move case asserts artifact rows are *not* regenerated — that
 is the expensive-to-get-right part.
 
+**Status: DONE (1-4).** `hashing.rs` (one-pass xxh128 + BLAKE3 + deprecated
+oshash, with the reference implementation's own XXH3-128 vectors as
+golden values), `reconcile.rs` (plan/apply against the `file` table, move
+detection), and the file-row accessors in `commons-store`. Both
+acceptance cases asserted, including that a move leaves `artifact` rows
+untouched -- and a further test for the case that assertion alone did not
+cover (a file that moved *and* whose hint moved). Six mutations checked.
+
+**Not yet done:** the scanner pipeline that walks a tree, hashes it, and
+reconciles it in one pass. `hash_file`, `plan` and `apply` exist and are
+tested, but nothing calls them in sequence yet; that is T-P2-003
+territory and is called out there.
 ### T-P2-003 — File state machine and missing volumes
 
 **Spec:** §6.1, §6.2
