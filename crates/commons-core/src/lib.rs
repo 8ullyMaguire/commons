@@ -4,10 +4,12 @@
 //! dependency graph: everything else may depend on it, it depends on nothing
 //! local. `T-P0-007` enforces that with a layering test.
 
+pub mod audio;
 pub mod domain;
-pub mod enums;
+mod enums;
 mod hashing;
 
+pub use audio::*;
 pub use domain::*;
 pub use enums::*;
 pub use hashing::*;

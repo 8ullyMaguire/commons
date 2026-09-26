@@ -463,9 +463,16 @@ migrations on a fresh dir.
 
 **Exit:** all seven types scan, generate and browse (C01–C14).
 
-**Progress:** 5 of 8 tickets done (T-P1-001..005). Remaining: T-P1-006
-(thumbnails/sprites), T-P1-007 (the four remaining content types), T-P1-008
-(frontend shell + virtualized grid).
+**Progress:** 6 of 8 tickets done (T-P1-001..006). Remaining: T-P1-007
+(the four remaining content types) and T-P1-008 (frontend shell + virtualized
+grid).
+
+**Note on T-P1-006's acceptance criterion.** The plan's stated test ("set the
+ceiling to 1, run 4 concurrent generations, assert max in-flight == 1") passes
+with the ceiling check deleted, if written the obvious way. Four versions are
+recorded in the commit; the working one detects the violation from inside the
+critical section rather than from an observer thread. Worth reading before
+writing any other concurrency test here.
 
 ### T-P1-001 — Type detection by content, not extension
 
@@ -588,6 +595,7 @@ not.
 
 ### T-P1-006 — Thumbnail and sprite generation
 
+**Status:** DONE — `ca7cb70`. 
 **Spec:** §10.1, §6.4
 **Files:** `crates/commons-media/src/thumbs.rs`, `sprites.rs`
 **Depends:** T-P1-002, T-P1-005
