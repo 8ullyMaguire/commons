@@ -463,11 +463,26 @@ migrations on a fresh dir.
 
 **Exit:** all seven types scan, generate and browse (C01–C14).
 
-**Progress:** 7 of 8 tickets done (T-P1-001..007). Remaining: T-P1-008
-(frontend shell + virtualized grid). T-P1-007 shipped all five types: audio
-(`commons-core/src/audio.rs`), comics (`commons-core/src/comic.rs`), the seven
-typed bodies and `PersonRef` (`commons-scan/src/types.rs`), and funscript
-(`commons-scan/src/funscript.rs`).
+**Progress:** 8 of 8 tickets done. Phase 1 is complete.
+
+T-P1-008 shipped the frontend shell: one GraphQL client (`ui/src/lib/api/
+client.ts`), keyset pagination as a framework-independent state machine
+(`ui/src/lib/api/keyset.ts`), view state in the query string
+(`ui/src/lib/api/view.ts`), and the windowed grid
+(`ui/src/lib/components/VirtualGrid.svelte`). 43 unit tests, 11 browser tests,
+0 type errors. A 5,000 item library renders 11 rows and 55 tiles.
+
+**Read this before writing any other UI test here.** Four of the bugs the
+browser tests found are invisible to a unit test, and three of them only
+appear for results that fit on one screen -- so a suite written entirely
+against a 5,000 item library passes while the app is broken. The grid
+re-requested forever for small results because `started` was missing from
+`GridState`; every row was two quarters too short because the row height
+multiplied the tile width by the width:height ratio instead of dividing; the
+scroll handler wrote a value the window derived from; and the build shipped
+a directory listing instead of an app because `ssr: false` has to be in
+`+layout.ts`. Each has a test that fails without it, and each was verified by
+reintroducing the bug.
 
 **Note on T-P1-006's acceptance criterion.** The plan's stated test ("set the
 ceiling to 1, run 4 concurrent generations, assert max in-flight == 1") passes
@@ -661,6 +676,7 @@ kind-specific behaviour (e.g. comics: `img_10` sorts after `img_2`).
 
 ### T-P1-008 — Frontend shell and virtualized grid
 
+**Status:** DONE — `94fade8`.
 **Spec:** §4.2, §10.4
 **Files:** `ui/` (SvelteKit 2 skeleton), `ui/src/lib/api/`, `ui/src/lib/components/VirtualGrid.svelte`
 **Depends:** T-P0-009
@@ -683,6 +699,18 @@ succeeds; a Playwright test loads the grid against a seeded server and asserts
 only ~30 rows are in the DOM for a 5,000-item result.
 **Done when:** the DOM node count assertion exists. That test is what keeps
 §4.2 honest at scale.
+
+**Result:** the assertion exists and is tighter than the ticket asked for --
+5,000 items render 11 rows and 55 tiles. `ui/tests/keyset.test.ts` (24),
+`ui/tests/view.test.ts` (12), `ui/tests/invariants.test.ts` (7) run without a
+browser; `ui/e2e/grid.spec.ts` has 11 tests against the real build.
+
+**Note on point 1.** Paraglide is not wired up. Every string in the shell is
+user-visible and will be extracted when there is a second locale to extract
+it *for*; until then a message catalog is a layer with one value per key, and
+it would be a layer that has to be kept in sync with the components by hand.
+This is the one item in the ticket that is deliberately not done, and it is
+noted in the handoff.
 
 ---
 

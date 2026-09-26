@@ -9,7 +9,7 @@ Commons combines the ideas of [stash](https://github.com/stashapp/stash) and
 revocable act. It is a library manager first and a federation participant
 second — the local use case is complete and useful on its own.
 
-> **Status: early development.** Phase 0 is done and Phase 1's backend is done;
+> **Status: early development.** Phases 0 and 1 are done, backend and frontend;
 > see [Progress](#progress) below. Nothing here is a release yet, and the data
 > model will still move.
 
@@ -203,7 +203,7 @@ enforcing so the intent is not lost.
 | Phase | Status | What it delivers |
 |---|---|---|
 | 0 — Foundations | done | schema, migrations, filter language, plugin host, server, memory harness |
-| 1 — Content types | 7 of 8 | detection, probing, segments, archives, hashing, and the five remaining content types |
+| 1 — Content types | done | detection, probing, segments, archives, hashing, the five remaining content types, and the windowed grid |
 | 2 — Library and scale | next | watcher, checkpoints, 100k-item performance |
 | 3–6 | planned | identity, federation, UI surfaces, review and automation |
 
@@ -213,11 +213,20 @@ upstream), #2276 (multi-part scenes), #2511 (virtual compilations), #1258
 parsing), #6339 (multi-axis interactive), #5111 (GIF versus video), #7229
 (non-zero start offsets), #1115 (oshash deprecation).
 
+The frontend shell (`ui/`) is a SvelteKit 2 + TypeScript app with one GraphQL
+client, a keyset-paginated store, and a fixed-row-height virtualized grid. Every
+list view lives entirely in the query string, so a filter is a bookmark. A
+5,000-item library renders 11 rows and 55 tiles; 43 unit tests and 11 browser
+tests cover it, and 0 type errors.
+
 `PersonRef` is on all seven object kinds, not just scenes. That is what makes
 the owner-added interview type (§5.8) work: a person speaking in an interview
 is an `Appearance` resolved to the same identity cluster as their other
 appearances, so §7.1 clustering does not split them. A test walks all seven
 kinds and fails if a future one is added without people.
+
+See [`docs/HANDOFF.md`](docs/HANDOFF.md) for the current state, how to
+verify it, and what is deliberately not done.
 
 ## Licence
 
