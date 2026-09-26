@@ -2385,10 +2385,13 @@ synonym expansion all find it without knowing aliases exist.
 engines; seven mutations of the fuzzy and expansion logic killed, plus four of
 the alias paths.
 
-### T-P5-003 — Tag system
+### T-P5-003 — Tag system (DONE)
 
 **Spec:** §5.15, §9.4
-**Files:** `commons-store/src/tags.rs`
+**Files:** `crates/commons-store/src/tags.rs`,
+`crates/commons-store/tests/tags.rs`,
+`crates/commons-store/migrations/{sqlite,postgres}/0016_tag_attributes.sql`,
+`crates/commons-store/migrations/{sqlite,postgres}/0017_search_index_any_kind.sql`
 
 Tags with parent (tree), namespace, color, typed attributes, importance weight
 (stash#2973). Namespaces are the honesty mechanism for ML tagging: an ML tag is
@@ -2398,7 +2401,38 @@ tree view (stash#1732), create-from-anywhere (stash#2736), undo (stash#3221).
 **Accept:** test that an ML-proposed tag is stored with an `ml:` namespace and
 is visually distinguishable from a `canonical` tag; test breadcrumbs resolve
 for a 3-deep tree.
-**Done when:** both exist.
+**Done when:** both exist. Both do, on both engines: 20 tests in
+`tests/tags.rs`, every one run against SQLite and a real local Postgres.
+
+**Two decisions, and what they cost.**
+
+*A namespace is the honesty mechanism, so the API makes an unlabelled ML tag
+inexpressible.* `create_tag` does not take a namespace — it has two
+constructors, and one of them is `propose_ml_tag`, which cannot be called
+without a model name. There is no path that writes an `ml:` tag with nothing
+behind it, which is a stronger property than validating the value after the
+fact and cannot be bypassed by a new call site. The cost is that a
+`Namespace` parameter is unreachable: a caller who wants a third namespace must
+add a constructor, which is the point.
+
+*0017 dropped the foreign key from `search_term` and `search_fuzzy` to
+`object(id)`.* A tag has to be searchable the moment it is created, and it
+could not be, because a tag is not an object. The alternative — putting every
+tag into `object` — is worse: a tag is a name, and `object` is the row §8.1's
+proposals and §14's consent machinery hang off. The cost is that
+`ON DELETE CASCADE` went with it, so the store now owns orphan removal.
+`Store::delete_object` is that code, and three tests across T-P5-001, T-P5-002
+and this ticket had been relying on the cascade. They failed when it was
+removed, which is the correct outcome: they were reporting a real gap that a
+schema constraint had been covering rather than any code.
+
+**Eleven mutations applied, eleven killed.** The two that needed a new test
+rather than a fix: the `ORDER BY` in `object_tags` was on a per-engine UUID, so
+§3.5's cross-engine agreement could not hold by construction and passed by
+luck; and `tagger_queue`'s NULL guard was `0` for every row under SQLite's
+boolean `AND`, so the sort silently stopped sorting. The second is why the
+guard is a `CASE` now, and why a third test exists for a row with no
+timestamp — a guard with no test for the case it guards is not a guard.
 
 ### T-P5-004 — Duplicate and similar detection
 

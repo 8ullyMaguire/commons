@@ -147,7 +147,7 @@ that is still alive and would recover.
 
 ## Testing
 
-1088 tests across the workspace. The ones that matter most are the ones that
+1108 tests across the workspace. The ones that matter most are the ones that
 were verified by breaking the code on purpose:
 
 - **Zip-Slip** (`commons-media`, `archive.rs`) — a comic archive is the most

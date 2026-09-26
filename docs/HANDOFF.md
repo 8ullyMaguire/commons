@@ -11,22 +11,23 @@ instruction that cannot be satisfied without someone adding a remote.
 ## Where it is
 
 Phases 0, 1, 2, 3 and 4 are complete, and Phase 5 has opened with
-T-P5-001 (search) and T-P5-002 (fuzzy, phonetic, synonyms, aliases). Phase 3's
+T-P5-001 (search), T-P5-002 (fuzzy, phonetic, synonyms, aliases) and
+T-P5-003 (the tag system). Phase 3's
 eight tickets are T-P3-000 the scan pipeline, T-P3-001 face detection,
 T-P3-002 clustering, T-P3-003 the §7.4 composite score, T-P3-004
 merge/split/alias/disambiguate, T-P3-005 §7.5's self-service performer claim,
-T-P3-006 the performer field model. Everything from T-P5-003 onwards is not
+T-P3-006 the performer field model. Everything from T-P5-004 onwards is not
 started. Nothing built is a stub.
 
 `python3 scripts/plan-status.py` is the authority on that sentence, not this
-file and not the plan. It counts 41 of 84 tickets closed and 37 genuinely
+file and not the plan. It counts 42 of 84 tickets closed and 36 genuinely
 unstarted, and it exits non-zero if any ticket is *marked* done while the file
 it names is absent -- the failure mode that reads as progress and builds as
 nothing. `scripts/verify.sh` runs it, so the claim cannot rot.
 
 | | State |
 |---|---|
-| Rust workspace | 1088 tests, 0 failures |
+| Rust workspace | 1108 tests, 0 failures |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | `cargo fmt --all --check` | clean |
 | UI unit tests | 43 pass (`node ./tests/run-tests.mjs`) |
@@ -59,8 +60,9 @@ prove it rather than asserting that they would.
 |---|---|---|---|
 | T-P5-001 | §9.2, §9.3, §3.5 | one tokenizer, one synonym table, one ranking | 6 |
 | T-P5-002 | §9.3 | typo tolerance, phonetics, synonyms, aliases | 11 |
+| T-P5-003 | §5.15, §9.4 | namespaces, typed attributes, groups, confidence | 11 |
 
-**The decision both tickets rest on.** With native FTS, "the same tokenizer in
+**The decision these tickets rest on.** With native FTS, "the same tokenizer in
 both engines" is unimplementable: SQLite's `unicode61` and Postgres's
 `to_tsvector('english',…)` disagree about stemming, stop words and
 hyphenation, and two native implementations are two tokenizers. So `tokenize`
