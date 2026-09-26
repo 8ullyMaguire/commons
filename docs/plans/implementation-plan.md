@@ -1869,26 +1869,56 @@ One mutation survives and is equivalent rather than missed: making tier 0 take
 moment the comparison is to `tier_multiplier` rather than to `1.0`, and that is
 the test above.
 
-### T-P4-004 — Edit history with recomputed integrity
+### T-P4-004 — Edit history with recomputed integrity — DONE
 
 **Spec:** §8.6
-**Files:** `commons-index/src/history.rs`
+**Files:** `commons-index/src/history.rs`, migration 0010
 
-**Rule: scores are recomputed from the accepted-edit set, never maintained as
-a counter.** This is the fix for two real upstream bugs — merged entities losing
-edits (stash-box#943) and NULL-vs-unset confusion (stash-box#9).
+**The rule: scores are recomputed from the accepted-edit set, never maintained as
+a counter.** There is no score column anywhere and no second implementation of
+this number in the codebase; that absence is the enforcement.
 
-1. Per-field history with revert and blame.
-2. `null` and `unset` are **distinct states** and the UI must be able to show
-   the difference.
-3. Removal of one's own info from history plus a report button
-   (stash-box#656).
+Migration 0010 adds `field_edit` (the accepted set), `history_report` and
+`object_merge`. The four states of a row carry §8.6's distinctions: `retracted_at`
+marks a row out of the set without deleting it, `author = NULL` with `removed_at`
+set is an unlinked attribution, and a deliberate null is a row whose `value_json`
+is `null` while an unset field is no row — which is the whole of stash-box#9.
 
-**Accept:** test: create edits, merge two entities, assert the surviving
-entity's field history still contains every accepted edit and its score is
-recomputed identically to a fresh recomputation from the edit set. That last
-clause — recomputed identically — is the real assertion.
-**Done when:** the recompute-identical assertion exists.
+`FieldState` has three variants, not two. `the_three_states_are_pairwise_distinct`
+exists because two tests each comparing one state to `Unset` would pass if `Null`
+and `Set` were the same value.
+
+Four bugs the tests found:
+
+* **History order was random.** `ORDER BY accepted_at, id` ties on
+  `accepted_at` whenever two edits are written in the same millisecond — which is
+  most pairs of edits in a real scan — and the fallback was a uuid, so the tie
+  broke at random. `a_fields_history_is_the_accepted_edits_in_order` read back
+  `["Second", "First"]`. There is now a `seq` column, written from a sequence
+  table, in one transaction with the insert.
+* **A deliberate null was invisible.** `current_entry` ordered by `weight DESC` and
+  then `id`, so a field that had been set and then cleared — two ordinary edits,
+  both weight 1.0 — reported `Set` with the *old* value. Clearing a field is
+  something a user did, and a reader that cannot see it is stash-box#9 again. The
+  tiebreak is recency.
+* **A reverted field's value was wrong for the same reason**, and a revert
+  written before the fix was indistinguishable from an edit.
+* **A migration declared an index and a table with the same name.** SQLite
+  rejects it; Postgres does not, because a table and an index live in different
+  namespaces there. So it passed every Postgres test.
+
+Two things the tests were wrong about, and both are recorded in the code:
+
+* A test asserted `Chapter 12 (2021)` holds no date, which pinned the bare-year
+  bug from T-P4-002 rather than the intent.
+* `Iterator::max_by` returns the *last* of equal maxima, so a `.rev()` added to
+  make it pick the newest made it pick the oldest. Only visible because both
+  fixture edits weigh the same.
+
+Verification: `967 tests, 0 failures`; `cargo fmt --check` clean; `cargo clippy
+--workspace --all-targets -- -D warnings` clean. 11 mutations of the recompute
+rule were tried — including `MAX` → `SUM`, which is the counter bug in one
+character — and every one was killed.
 
 ### T-P4-005 — Moderation, locking, disputes
 

@@ -6,5 +6,6 @@
 //! proposals or reads what it settled.
 
 pub mod candidates;
+pub mod history;
 pub mod reputation;
 pub mod resolve;
