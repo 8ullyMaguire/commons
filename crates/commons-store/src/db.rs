@@ -483,14 +483,36 @@ pub async fn insert_object(store: &Store, id: &str, kind: &str) -> Result<()> {
     // something new, but overwriting would flip a typed object on the strength
     // of a sniffer that read a truncated head; the upgrade path for a wrong
     // kind is a deliberate re-type, not a scan.
-    sqlx::query(
-        "INSERT OR IGNORE INTO object (id, kind, created_at, updated_at) VALUES (?, ?, '', '')",
-    )
-    .bind(id)
-    .bind(kind)
-    .execute(store.pool())
-    .await
-    .map_err(StoreError::Query)?;
+    // Both engines. `INSERT OR IGNORE` on SQLite, `ON CONFLICT DO NOTHING` on
+    // Postgres -- the same idempotence, two spellings, and the reason `Store`
+    // has a `match` here rather than a shared string is that Postgres has no
+    // `OR IGNORE`. The same reasoning that made `set_consent_tier` dual-engine
+    // applies: an object row is the input to every visibility decision, so
+    // "works on one engine" is not a state worth being in.
+    match store {
+        Store::Sqlite(p) => {
+            sqlx::query(
+                "INSERT OR IGNORE INTO object (id, kind, created_at, updated_at) VALUES (?, ?, '', '')",
+            )
+            .bind(id)
+            .bind(kind)
+            .execute(p)
+            .await
+            .map_err(StoreError::Query)?;
+        }
+        Store::Postgres(p) => {
+            let sql = Store::bind_sql(
+                "INSERT INTO object (id, kind, created_at, updated_at) VALUES ($1, $2, '', '') \
+                 ON CONFLICT (id) DO NOTHING",
+            );
+            sqlx::query(&sql)
+                .bind(id)
+                .bind(kind)
+                .execute(p)
+                .await
+                .map_err(StoreError::Query)?;
+        }
+    }
     Ok(())
 }
 

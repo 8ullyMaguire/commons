@@ -82,7 +82,7 @@ prove it rather than asserting that they would.
 | T-P5-003 | §5.15, §9.4 | namespaces, typed attributes, groups, confidence | 11 |
 | T-P5-004 | §9.7, §5.18 | `Identical`/`ReEncode`/`Similar`/`Distinct`, relations, opt-in auto-merge | 12 |
 | T-P5-005 | §10.2, §9.6 | the lightbox: pan, flick, wheel, zoom, back on a dirty modal | 11 |
-| T-P5-006 (1-2 of 17) | §10.4, §10.6 | selection as a value; the list table that shows it | 17 |
+| T-P5-006 (1-3 of 17) | §10.4, §10.6, §10.7, §14.1 | selection as a value; the list table; the consent-checked bulk write and its modal | 17 |
 
 **T-P5-005 is the first UI ticket in this phase, and it is the first one whose
 tests could not all be written against the pure function.** The ticket's own
@@ -692,3 +692,65 @@ the final weight lower" passes; "is the weight lower than last round" does not.
 weight they set on an account was recomputed away by `cast_vote`. Any new test
 that sets up state by writing a cache rather than through the code that owns it
 is worth a second look.
+
+### T-P5-006 item 3 — what this cost, and why the shapes are what they are
+
+Five bugs, four of which no unit test could have found, and two of which were
+caught by a *different* test failing for an unrelated reason.
+
+**1. `Store::apply_tag` had no consent check, and now the bulk path does.**
+`apply_tag` still takes no `CallerId` -- it is unchanged, with ~15 test callers.
+That was survivable when a write named one object. It stops being survivable
+when a write names four thousand, so `bulk_apply_tag` takes a `CallerId` by
+reference with no default and no other constructor, exactly as `Store::query`
+does. A missing clause does not error there, it *silently over-reports*, so the
+tests that matter assert the negative: an unverified object is not written and
+`skipped_invisible` says so.
+
+**2. `set_consent_tier` and `insert_object` were SQLite-only.**
+Both called `store.pool()`, which panics on Postgres. Both are inputs to every
+visibility decision in the store. Invisible for as long as every caller was the
+SQLite scanner; the first Postgres test to set a consent tier found it. Now both
+`match` on the engine.
+
+**3. `redistribution_permitted` is `INTEGER`, not boolean.** On both engines. My
+first Postgres version bound `false` and Postgres refused to coerce it into the
+column. The schema is the authority; the fixture had guessed.
+
+**4. There is no `public` consent tier.** The public tiers are
+`self_published`, `performer_claimed`, `third_party_permitted`. My first fixture
+used `"public"`, which made every object invisible to every caller -- and the
+tests passed *vacuously* with `applied: 0`, because the assertion was `== 1` on a
+path that had already failed earlier. The fixture now names
+`ConsentTiers::PUBLIC[0]`, so a tier rename cannot silently re-break it.
+
+**5. `tests/invariants.test.ts` caught a REST API I invented.** The first
+version of the route used `fetch('/api/bulk/tag')`. Every functional test passed;
+the invariant failed, correctly, because no module outside the transport may
+name `fetch`. The write is now a GraphQL mutation (`bulkApplyTag`) on the same
+path as every other request, and the e2e stubs one route with a per-operation
+switch.
+
+**Svelte-specific, and both cost real time:**
+
+- A destructured prop is a plain local. `let { open } = $props()` then reading
+  `open` inside `$effect` registers no dependency, so the effect ran once at
+  mount and the dialog never opened -- no error, no warning, a modal wired
+  correctly to a prop that could not change. The component now keeps the props
+  *object* and reads `p.open` where a tracked read is needed.
+- `canApply` gated on the outcome, and the outcome is what pressing the button
+  produces. The gate is now the *scope*, which is known before any write, and the
+  outcome only gates a re-press.
+
+**A prop that was passed but never declared.** `error={bulkError}` reached the
+component and was silently dropped, because `Props` had no `error`. The first
+version had a local `let failure` instead -- write-only, so the branch rendered,
+the markup was tested, and no code could ever reach it. That is the shape a stub
+takes, and it is why the error is a prop: the request belongs to the parent.
+
+**Mutation results, both new scripts.** `mutate-bulk.py` 8/8, `mutate-bulk-ui.py`
+9/9. The two Rust survivors on the first run were both real gaps in the tests,
+not in the code: a provenance test that only ever *inserted* (so the
+`ON CONFLICT DO UPDATE` half was unproven) and a missing-tag test that asserted
+only `is_err` (which a foreign-key violation also satisfies). Both now take the
+same path twice.

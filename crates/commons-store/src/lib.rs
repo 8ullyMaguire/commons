@@ -16,6 +16,7 @@
 //! here rather than in the UI: [`Filter::consent_clause`] is derived from the
 //! caller and there is no way to compile an object query without it.
 
+pub mod bulk;
 pub mod db;
 pub mod filter_ast;
 pub mod fuzzy;

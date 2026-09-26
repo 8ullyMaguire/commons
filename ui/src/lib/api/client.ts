@@ -211,3 +211,94 @@ export function fetchObjects(
 ): Promise<ObjectsResult> {
   return query<ObjectsResult>(OBJECTS_QUERY, { input }, signal);
 }
+
+// ---------------------------------------------------------------------------
+// Bulk writes (T-P5-006 item 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * The bulk-tag mutation.
+ *
+ * A mutation and not a REST endpoint, and the reason is the invariant this file
+ * exists to hold: `tests/invariants.test.ts` asserts that no module outside the
+ * transport names `fetch`, because a second HTTP path is a second place for a
+ * base URL, a header, an auth token and an error shape to disagree. A route
+ * that grew its own `fetch('/api/bulk/tag')` passed every functional test and
+ * failed that one -- correctly.
+ *
+ * The `target` is a GraphQL input object rather than a loose pair of `ids` and
+ * `filter` arguments, so "neither was given" and "both were given" are states
+ * the server rejects by schema rather than states it has to notice at runtime.
+ */
+const BULK_APPLY_TAG = `
+  mutation BulkApplyTag($tagId: ID!, $target: BulkTarget!, $source: String) {
+    bulkApplyTag(tagId: $tagId, target: $target, source: $source) {
+      applied
+      skippedInvisible
+      requested
+    }
+  }
+`;
+
+/**
+ * The target, as the schema takes it.
+ *
+ * `kind` is required and named rather than inferred from which field is set,
+ * because `ids: []` and "no ids given" are different things and an
+ * inferred-from-presence schema cannot tell them apart. `ids: []` is the
+ * dangerous one: it is a request to tag nothing, and a server that treated it
+ * as an absent filter would tag the whole library.
+ */
+export type BulkTarget =
+  | { kind: 'IDS'; ids: readonly string[]; excluded?: readonly string[] }
+  | { kind: 'QUERY'; query: string; excluded?: readonly string[] };
+
+/** What the server did, mirroring Rust's `BulkOutcome`. */
+export interface BulkApplyTagResult {
+  readonly bulkApplyTag: {
+    readonly applied: number;
+    readonly skippedInvisible: number;
+    readonly requested: number;
+  };
+}
+
+/**
+ * Apply a tag to everything in `target` the caller can see.
+ *
+ * `query` is the serialized filter string, matching `PageInput.filter` -- the
+ * same serialization `view.ts` already produces and puts in the URL, so a
+ * select-all over the current view is a select-all over exactly the rows the
+ * user is looking at and no others.
+ */
+export function bulkApplyTag(
+  tagId: string,
+  target: BulkTarget,
+  source = 'bulk-edit'
+): Promise<BulkApplyTagResult> {
+  return query<BulkApplyTagResult>(BULK_APPLY_TAG, { tagId, target, source });
+}
+
+/** The tags a user may apply, for a bulk edit's target list. */
+const TAGS_QUERY = `
+  query BulkTags {
+    tags {
+      id
+      name
+    }
+  }
+`;
+
+export interface TagsResult {
+  readonly tags: readonly { id: string; name: string }[];
+}
+
+/**
+ * Every tag, for a bulk edit.
+ *
+ * Loaded with the page rather than when the modal opens: a modal that opens
+ * empty and fills in a moment later is a modal whose confirm button flickers
+ * from disabled to enabled while the user is reading the scope line above it.
+ */
+export function fetchTags(signal?: AbortSignal): Promise<TagsResult> {
+  return query<TagsResult>(TAGS_QUERY, {}, signal);
+}

@@ -392,6 +392,21 @@ pub enum Engine {
     Sqlite,
 }
 
+impl std::fmt::Display for Engine {
+    /// The engine's own name, lowercase.
+    ///
+    /// Present because every test in this repository runs the same assertion
+    /// twice and reports which engine failed, and `{:?}` on a two-variant enum
+    /// prints `Sqlite` where a test message wants `sqlite`. The name is written
+    /// down once, here, rather than spelled at each call site.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Engine::Postgres => "postgres",
+            Engine::Sqlite => "sqlite",
+        })
+    }
+}
+
 impl Filter {
     /// Compile to SQL and bound parameters.
     ///
@@ -645,7 +660,14 @@ impl Filter {
 }
 
 /// `n` comma-separated placeholders.
-fn placeholders(n: usize) -> String {
+/// `n` bind placeholders, for an `IN (…)` list.
+///
+/// `pub(crate)` and not `pub`: it produces SQL text, so a downstream caller
+/// holding one is holding a fragment of a query it did not compile. Within the
+/// crate it is a shared primitive — `bulk.rs` needs it for the same reason
+/// `to_sql` does, and a second copy of `(1..=n).map(|_| "?")` is a second thing
+/// that can disagree about what a list of n binds looks like.
+pub(crate) fn placeholders(n: usize) -> String {
     (1..=n).map(|_| "?").collect::<Vec<_>>().join(", ")
 }
 

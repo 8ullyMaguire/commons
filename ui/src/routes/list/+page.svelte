@@ -13,8 +13,12 @@
 <script lang="ts">
   import { page } from '$app/state';
   import ListTable from '$lib/components/ListTable.svelte';
+  import BulkEditModal from '$lib/components/BulkEditModal.svelte';
   import { KeysetStore } from '$lib/api/keyset.js';
   import { viewFromLocation, type ViewState } from '$lib/api/view.js';
+  import { selectedCount, type Selection } from '$lib/api/selection.js';
+  import { bulkTarget, type BulkOutcome } from '$lib/api/bulk.js';
+  import { bulkApplyTag, fetchTags, query } from '$lib/api/client.js';
 
   const view = $derived<ViewState>(viewFromLocation(page.url));
 
@@ -27,6 +31,71 @@
    */
   const store = new KeysetStore();
 
+  // --- the bulk edit (T-P5-006 item 3) ---------------------------------------
+  //
+  // The selection is mirrored here rather than read out of the table, because a
+  // parent cannot reach into a child's `$state`. The table already reports every
+  // change through `onchange`, so the mirror costs one assignment and needs no
+  // second source of truth to drift from.
+  let selection = $state<Selection>({});
+  let modalOpen = $state(false);
+  let busy = $state(false);
+  let outcome = $state<BulkOutcome | undefined>(undefined);
+  let bulkError = $state<string | null>(null);
+  let tags = $state<{ id: string; name: string }[]>([]);
+
+  // The tags are the *write target* of a bulk edit, so they are loaded with the
+  // page rather than fetched when the modal opens. A modal that opens empty and
+  // fills in a moment later is a modal whose confirm button flickers from
+  // disabled to enabled while the user is reading the scope line.
+  $effect(() => {
+    let cancelled = false;
+    fetchTags()
+      .then((r) => {
+        if (!cancelled) tags = r.tags;
+      })
+      .catch(() => {
+        /* An empty tag list leaves the modal with nothing to choose, which is a
+           visible dead end rather than a silent failure. */
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  /**
+   * The write, and what it reports.
+   *
+   * The server's three numbers are stored raw and classified by the modal, so
+   * the client never computes a count of its own -- see `bulk.ts`. On a failure
+   * the previous outcome is *cleared* rather than left in place: a modal still
+   * showing "Tagged 12 objects" above a red error is reporting two
+   * contradictory things about one action.
+   *
+   * Through `bulkApplyTag` and not a local `fetch`, because
+   * `tests/invariants.test.ts` asserts the transport is the only module that
+   * names one. That test caught this route's first version.
+   */
+  async function applyBulkTag(tagId: string) {
+    busy = true;
+    bulkError = null;
+    try {
+      const res = await bulkApplyTag(tagId, bulkTarget(selection, view.filter ?? ''));
+      outcome = {
+        applied: res.bulkApplyTag.applied,
+        skipped_invisible: res.bulkApplyTag.skippedInvisible,
+        requested: res.bulkApplyTag.requested
+      };
+      selection = {};
+      await refresh();
+    } catch (e) {
+      outcome = undefined;
+      bulkError = e instanceof Error ? e.message : 'the write could not be sent';
+    } finally {
+      busy = false;
+    }
+  }
+
   /**
    * The store's state, mirrored into Svelte's.
    *
@@ -38,6 +107,25 @@
    */
   // svelte-ignore state_referenced_locally
   let state = $state(store.state);
+
+  /** The loaded ids, derived once: the guard, the button and the modal all read them. */
+  const loadedIds = $derived(state.rows.map((r) => r.id));
+
+  function openBulk() {
+    // Nothing selected, nothing to open. A modal that opens on an empty
+    // selection and reports "no objects selected" is a dialog asking the user
+    // to confirm a write with no scope.
+    //
+    // The count is over the *real* loaded ids, not an empty list. Reading it
+    // with `[]` counts zero hand-picked rows -- the guard then refuses to open
+    // a modal the button is visibly enabled for, which is the worst version of
+    // this bug: the UI says yes and the handler says no, with nothing on screen
+    // to explain the difference.
+    if (selectedCount(selection, loadedIds, state.totalCount) === 0) return;
+    outcome = undefined;
+    bulkError = null;
+    modalOpen = true;
+  }
 
   async function refresh() {
     await store.loadMore();
@@ -95,6 +183,28 @@
     totalCount={state.totalCount}
     density={view.density}
     matchesQuery={() => true}
+    onchange={(next) => (selection = next)}
+  />
+
+  <button
+    data-testid="open-bulk"
+    onclick={openBulk}
+    disabled={selectedCount(selection, loadedIds, state.totalCount) === 0}
+  >
+    Bulk edit
+  </button>
+
+  <BulkEditModal
+    open={modalOpen}
+    {selection}
+    {loadedIds}
+    serverCount={state.totalCount}
+    {tags}
+    {outcome}
+    error={bulkError}
+    {busy}
+    onapply={applyBulkTag}
+    oncancel={() => (modalOpen = false)}
   />
 </div>
 

@@ -61,15 +61,43 @@ fi
 # a number that rots, and the two mutations it found were both in code the
 # ordinary suite called green.
 if [ "${COMMONS_MUTATE:-0}" = "1" ]; then
-  echo "== mutation pass (T-P5-004)"
-  if python3 "$REPO/scripts/mutate-dedup.py" > /tmp/commons-mutate.txt 2>&1; then
-    tail -3 /tmp/commons-mutate.txt | sed 's/^/   /'
-  else
-    sed -n '/SURVIVED:/,$p' /tmp/commons-mutate.txt | sed 's/^/   /'
-    echo "   FAILED: a mutation survived, so a test is not testing what it claims"
-    fail=1
-  fi
-  echo
+  # Every mutation script, not just the first one. Three features now have a
+  # mutation pass, and a gate that only runs the oldest is a gate that has
+  # quietly stopped covering two thirds of the code it claims to.
+  #
+  # The list is explicit rather than globbed: a glob over `scripts/mutate-*.py`
+  # would pick up a scratch script and, worse, would silently stop covering a
+  # feature when its script is renamed. A missing entry is a visible edit here.
+  for mut in dedup bulk; do
+    script="$REPO/scripts/mutate-$mut.py"
+    [ -f "$script" ] || { echo "   FAILED: $script is missing"; fail=1; continue; }
+    echo "== mutation pass ($mut)"
+    if python3 "$script" > "/tmp/commons-mutate-$mut.txt" 2>&1; then
+      tail -1 "/tmp/commons-mutate-$mut.txt" | sed 's/^/   /'
+    else
+      sed -n '/survived:/,$p' "/tmp/commons-mutate-$mut.txt" | sed 's/^/   /'
+      echo "   FAILED: a mutation survived, so a test is not testing what it claims"
+      fail=1
+    fi
+    echo
+  done
+  # The UI scripts target TypeScript and drive the node harness, so they run
+  # from `ui/`; `mutate-dedup.py` and `mutate-bulk.py` target Rust and its
+  # `#[cfg(test)]` suites, so they run from the repo root. Same loop, different
+  # working directory, named per script rather than guessed from the filename.
+  for mut in bulk-ui gestures selection; do
+    script="$REPO/scripts/mutate-$mut.py"
+    [ -f "$script" ] || { echo "   FAILED: $script is missing"; fail=1; continue; }
+    echo "== mutation pass ($mut, ui)"
+    if (cd "$REPO/ui" && python3 "$script" > "/tmp/commons-mutate-$mut.txt" 2>&1); then
+      tail -1 "/tmp/commons-mutate-$mut.txt" | sed 's/^/   /'
+    else
+      sed -n '/survived/,$p' "/tmp/commons-mutate-$mut.txt" | sed 's/^/   /'
+      echo "   FAILED: a mutation survived, so a test is not testing what it claims"
+      fail=1
+    fi
+    echo
+  done
 fi
 
 # The history scan is a *publishing* gate, not a build gate: it reads every

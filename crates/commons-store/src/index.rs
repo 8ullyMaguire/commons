@@ -443,25 +443,63 @@ pub async fn set_consent_tier(
     tier: &str,
     decided_by: &str,
 ) -> Result<(), StoreError> {
-    sqlx::query(
-        "INSERT INTO consent_record
-            (id, object_id, tier, redistribution_permitted, decided_by, decided_at, updated_at)
-         VALUES (?, ?, ?, 0, ?, ?, ?)
-         ON CONFLICT (object_id) DO UPDATE
-            SET tier = excluded.tier,
-                decided_by = excluded.decided_by,
-                decided_at = excluded.decided_at,
-                updated_at = excluded.updated_at",
-    )
-    .bind(Uuid::new_v4().to_string())
-    .bind(object_id.to_string())
-    .bind(tier)
-    .bind(decided_by)
-    .bind(ts::now())
-    .bind(ts::now())
-    .execute(store.pool())
-    .await
-    .map_err(StoreError::Query)?;
+    // Both engines, via `match`, rather than `store.pool()`.
+    //
+    // `pool()` is SQLite-only and panics on Postgres, so a Postgres caller of
+    // this function got a panic instead of a consent record. That was invisible
+    // for as long as every caller was the SQLite scanner; the first Postgres
+    // test to set a consent tier hit it. A consent tier is the input to every
+    // visibility decision in the store, so "works on one engine" is not a
+    // reasonable state for it to be in.
+    let now = ts::now();
+    match store {
+        Store::Sqlite(p) => {
+            sqlx::query(
+                "INSERT INTO consent_record
+                    (id, object_id, tier, redistribution_permitted, decided_by, decided_at, updated_at)
+                 VALUES (?, ?, ?, 0, ?, ?, ?)
+                 ON CONFLICT (object_id) DO UPDATE
+                    SET tier = excluded.tier,
+                        decided_by = excluded.decided_by,
+                        decided_at = excluded.decided_at,
+                        updated_at = excluded.updated_at",
+            )
+            .bind(Uuid::new_v4().to_string())
+            .bind(object_id.to_string())
+            .bind(tier)
+            .bind(decided_by)
+            .bind(now.clone())
+            .bind(now)
+            .execute(p)
+            .await
+            .map_err(StoreError::Query)?;
+        }
+        Store::Postgres(p) => {
+            let sql = Store::bind_sql(
+                "INSERT INTO consent_record
+                    (id, object_id, tier, redistribution_permitted, decided_by, decided_at, updated_at)
+                 -- `0`, not `false`: the column is INTEGER on both engines
+                 -- (0001_core.sql, `redistribution_permitted INTEGER NOT NULL`),
+                 -- and Postgres refuses to coerce a boolean into it.
+                 VALUES ($1, $2, $3, 0, $4, $5, $6)
+                 ON CONFLICT (object_id) DO UPDATE
+                    SET tier = excluded.tier,
+                        decided_by = excluded.decided_by,
+                        decided_at = excluded.decided_at,
+                        updated_at = excluded.updated_at",
+            );
+            sqlx::query(&sql)
+                .bind(Uuid::new_v4().to_string())
+                .bind(object_id.to_string())
+                .bind(tier)
+                .bind(decided_by)
+                .bind(now.clone())
+                .bind(now)
+                .execute(p)
+                .await
+                .map_err(StoreError::Query)?;
+        }
+    }
     Ok(())
 }
 

@@ -2561,6 +2561,33 @@ unsaved-entry protection (#6466), CSV import (#1296), per-field ignore lists
 attempt navigation with an unsaved edit and assert a confirm appears.
 **Done when:** that test exists.
 
+**Progress (1-3 of 17).** Item 1, the selection model, and item 2, the list
+table, are in `ui/src/lib/api/selection.ts` and
+`ui/src/lib/components/ListTable.svelte`. Item 3, the bulk write and its modal,
+is in `crates/commons-store/src/bulk.rs` and
+`ui/src/lib/components/BulkEditModal.svelte`, specced separately in
+`docs/spec/t-p5-006-bulk-mutation.md`.
+
+Item 3 needed a server-side mutation that did not exist, and the interesting
+part of it was not the write. Two decisions are worth recording because they
+constrain everything after this item:
+
+- **The consent clause goes in the data layer, not the caller.**
+  `Store::bulk_apply_tag` takes a `CallerId` with no default and no other
+  constructor, the mechanism `Store::query` already uses. A bulk write with no
+  clause does not leak one object, it rewrites four thousand.
+- **A destructive action states its scope before the write, and the number it
+  states is the server's.** The client has no honest count for a select-all —
+  `selectedCount` returns `'unknown'` rather than guessing — so `canApply` is
+  false while the count is unknown rather than optimistically enabled.
+
+The remaining 14 items are the surfaces that all read this selection: the
+scopes, the field editors, per-field ignore lists (#2318, #2399), the undo
+affordance (#3221), right-click paste (#7139), CSV import (#1296),
+create-from-subpage (#3694) and create-all-missing (#1017, #3122). Items 4 and
+5 are the natural next two: they are the scopes, and everything after them
+assumes a scope exists.
+
 ### T-P5-007 — Theming, accessibility, deep links
 
 **Spec:** §10.8, §15.10

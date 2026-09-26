@@ -470,7 +470,10 @@ impl Store {
     }
 
     /// Whether a tag row exists.
-    async fn tag_exists(&self, id: &str) -> Result<bool> {
+    /// `pub(crate)` so `bulk.rs` can check a tag before a batch rather than
+    /// discovering a missing one by way of a foreign key violation on a
+    /// statement that already ran.
+    pub(crate) async fn tag_exists(&self, id: &str) -> Result<bool> {
         let n: i64 = match self {
             Store::Sqlite(p) => sqlx::query_scalar("SELECT COUNT(*) FROM tag WHERE id = ?")
                 .bind(id.to_string())
