@@ -14,7 +14,7 @@ use commons_store::Store;
 use uuid::Uuid;
 
 mod common;
-use common::{account, account_on_field, store};
+use common::{account, account_on_field, store, vote_with_weight};
 
 /// The ticket's first named test: three proposals with weights 5/3/1 resolve
 /// to the weight-5 value.
@@ -28,16 +28,25 @@ async fn a_three_proposal_field_resolves_to_the_heaviest() {
     let (_d, store) = store().await;
     let subject = Uuid::new_v4();
 
-    let heavy = account_on_field(&store, "heavy", Role::Contributor, "title", 5.0).await;
-    let middle = account_on_field(&store, "middle", Role::Contributor, "title", 3.0).await;
-    let light = account_on_field(&store, "light", Role::Contributor, "title", 1.0).await;
+    // Ordinary accounts. The weights that matter here are the *votes*', and
+    // they are frozen at cast time — which is what `vote_with_weight` says. An
+    // earlier version gave the accounts a reputation of 5, 3 and 1, which is
+    // not a thing: the reputation curve is bounded at 4, so `cast_vote`
+    // recomputed all three back to 1.0 and this test was asserting nothing.
+    let heavy = account(&store, "heavy", Role::Contributor, 1.0).await;
+    let middle = account(&store, "middle", Role::Contributor, 1.0).await;
+    let light = account(&store, "light", Role::Contributor, 1.0).await;
 
     let p_heavy = propose(&store, subject, "title", "\"Heavy Title\"", &heavy).await;
     let p_middle = propose(&store, subject, "title", "\"Middle Title\"", &middle).await;
     let p_light = propose(&store, subject, "title", "\"Light Title\"", &light).await;
 
-    for (a, p) in [(&heavy, &p_heavy), (&middle, &p_middle), (&light, &p_light)] {
-        vote(&store, a, p, "title").await;
+    for (a, p, w) in [
+        (&heavy, &p_heavy, 5.0),
+        (&middle, &p_middle, 3.0),
+        (&light, &p_light, 1.0),
+    ] {
+        vote_with_weight(&store, a, p, "title", w).await;
     }
 
     let r = resolve::resolve(&store, subject, "title").await.unwrap();
@@ -70,11 +79,11 @@ async fn a_heavier_proposal_flips_a_settled_value() {
     let (_d, store) = store().await;
     let subject = Uuid::new_v4();
 
-    let five = account_on_field(&store, "five", Role::Contributor, "title", 5.0).await;
-    let six = account_on_field(&store, "six", Role::Contributor, "title", 6.0).await;
+    let five = account(&store, "five", Role::Contributor, 1.0).await;
+    let six = account(&store, "six", Role::Contributor, 1.0).await;
 
     let p_five = propose(&store, subject, "title", "\"Five\"", &five).await;
-    vote(&store, &five, &p_five, "title").await;
+    vote_with_weight(&store, &five, &p_five, "title", 5.0).await;
     assert_eq!(
         resolve::resolve(&store, subject, "title")
             .await
@@ -85,7 +94,7 @@ async fn a_heavier_proposal_flips_a_settled_value() {
     );
 
     let p_six = propose(&store, subject, "title", "\"Six\"", &six).await;
-    vote(&store, &six, &p_six, "title").await;
+    vote_with_weight(&store, &six, &p_six, "title", 6.0).await;
 
     let r = resolve::resolve(&store, subject, "title").await.unwrap();
     assert_eq!(
@@ -105,18 +114,18 @@ async fn a_locked_field_ignores_a_hundred_weight_proposal() {
     let (_d, store) = store().await;
     let subject = Uuid::new_v4();
 
-    let modest = account_on_field(&store, "modest", Role::Contributor, "title", 1.0).await;
-    let overwhelming = account_on_field(&store, "overwhelming", Role::Admin, "title", 100.0).await;
+    let modest = account(&store, "modest", Role::Contributor, 1.0).await;
+    let overwhelming = account(&store, "overwhelming", Role::Admin, 1.0).await;
 
     let p_modest = propose(&store, subject, "title", "\"Modest\"", &modest).await;
     vote(&store, &modest, &p_modest, "title").await;
-    let steward = account_on_field(&store, "steward", Role::Steward, "title", 1.0).await;
+    let steward = account(&store, "steward", Role::Steward, 1.0).await;
     resolve::lock(&store, subject, "title", "\"Modest\"", &steward)
         .await
         .unwrap();
 
     let p_huge = propose(&store, subject, "title", "\"Overwhelming\"", &overwhelming).await;
-    vote(&store, &overwhelming, &p_huge, "title").await;
+    vote_with_weight(&store, &overwhelming, &p_huge, "title", 100.0).await;
 
     let r = resolve::resolve(&store, subject, "title").await.unwrap();
     assert_eq!(

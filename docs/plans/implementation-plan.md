@@ -1719,27 +1719,129 @@ a fixture that should not. Assert the `source` and the justification string.
 **Done when:** every proposer has both a positive and a negative test — the
 negative tests are what keep it from firing on everything.
 
-### T-P4-003 — Reputation and trust
+### T-P4-003 — Reputation and trust — **DONE**
 
 **Spec:** §8.3
-**Files:** `commons-index/src/reputation.rs`
+**Files:** `crates/commons-index/src/reputation.rs`,
+`crates/commons-store/migrations/{postgres,sqlite}/0008_reputation_audit.sql`,
+`crates/commons-index/tests/reputation.rs`
 
-1. Reputation derives from **agreement with settled outcomes over time**, not
-   from volume. A user whose proposals are repeatedly confirmed gains weight.
-2. New accounts ramp from a low base (the newcomer problem; stash-box#743 says
-   the current method is flawed).
-3. Decay on sustained rejection.
-4. **Sybil damping**: many accounts voting identically is discounted;
-   coordinated patterns are *flagged for a steward*, never silently punished.
-5. Weights are **per-field**: agreeing about titles says nothing about tags.
-6. Trust tier with double votes (stash-box#630) is steward-granted with an
-   audit trail.
+1. Reputation derives from **agreement with settled outcomes over time**.
+2. New accounts ramp from a low base; sustained rejection decays them.
+3. **Sybil damping** discounts a bloc; a coordinated pattern is **flagged for a
+   steward, never silently punished**.
+4. Weights are **per-field**.
+5. Trust tier with double votes is steward-granted with an audit trail.
+6. A vote's weight is frozen at cast time.
 
-**Accept:** simulation test — 100 accounts, a known fraction malicious
-coordinating; assert (a) honest weight rises over rounds, (b) a coordinated
-bloc's marginal influence is sublinear, (c) the bloc is flagged. Assert
-per-field independence: agreement in field A does not raise weight in field B.
-**Done when:** the per-field independence assertion exists.
+**Accept:** simulation — 100 accounts, a known fraction coordinating; (a) honest
+weight rises over rounds, (b) the bloc's marginal influence is sublinear, (c) the
+bloc is flagged. Per-field independence asserted.
+**Done when:** the per-field independence assertion exists. **Met.**
+
+**Implementation notes.**
+
+**Nothing here is a counter.** `reputation_event` is append-only and the weight is
+recomputed from it, by the same rule §8.6 applies to votes. A counter drifts:
+every write path must remember to update it, and there is always one that does
+not. Here a lost increment is impossible, because there are no increments — a
+lost *event* is a missing row, and the recomputation is the only thing that reads
+the log, so it is the one place a bug would show.
+
+The unique index on `(account, COALESCE(proposal_id, ''), kind)` is what makes a
+settlement pass re-runnable. `settle_round` can be called again after a merge or
+a rollback without double-counting, which is a property of the schema rather than
+of a caller's loop. `a_repeated_settlement_does_not_double_count` pins it.
+
+**The log is authoritative and the columns are its cache.** `cast_vote` reads
+`account.field_reputation`. The first version left it that way after
+`reputation.rs` existed, and the consequence was that reputation as implemented
+could not affect a single outcome: a settlement pass recomputed a weight, wrote
+it to the log, and no vote ever saw it, because the vote read a column nothing
+wrote. Every test that did not go through a vote still passed.
+
+`ballot_weight` is now the only writer of `account.reputation` and
+`account.field_reputation`, and `cast_vote` calls it. A column anybody can write
+is a second source of truth, and the disagreement between two sources is exactly
+the bug above. `voting_refreshes_the_cached_reputation_columns` asserts the cache
+equals the log to within a float epsilon.
+
+**A frozen weight means a reputation change applies from the next ballot, not by
+rewriting the last one.** T-P4-001 left this open and it belongs here: a settle
+pass that could change what somebody said they believed when they said it would
+make §8.6's audit trail editable. The consequence is that a weight above
+`max_weight` is not a reputation at all, which is what forced the test fixture to
+change shape — see below.
+
+**The disagreement penalty saturates; it does not compound.** `penalty·d/(1+fd)`,
+not `penalty·d·(1-f)^d`. The compounding version was written to mean "each
+dispute costs less than the last", and it is not monotone: at the defaults the
+total penalty runs 0.30, 0.36, 0.324 for the first three disputes, so an account's
+standing got *better* on its third rejection. A punishment that expires is not a
+punishment.
+
+Only `sustained_rejection_decays_weight_but_not_to_zero`'s *per-round* assertion
+found it, and that is the transferable part: "is the final value lower" cannot see
+a non-monotone curve. A decay has to assert that it never rises, round by round.
+
+**Three detection rules, and each needs an off switch.** A proposal is referred to
+a steward when its backers hold a large share of the field's votes, when
+essentially nobody disagrees with it, or when the group behind it has never once
+been on the losing side. All three were individually deletable with the suite
+green, because every realistic test shape trips two or three at once and a test
+that passes if any of three things happens cannot tell you which worked.
+
+The fix is `coordination_share`, `coordination_unanimity` and
+`coordination_lockstep` in the config, so a test can arm one rule and assert the
+input shape makes the other two impossible — which it does *before* checking the
+outcome, so the test fails for the right reason if the shape is wrong. Six tests
+in `mod rules` now cover each rule in both directions: referred and not referred.
+
+A detector with no off switch can only be tested through the shape of its input,
+and that is a design smell in the production code, not only in the test.
+
+**Flagging changes no weight, and that is its own test.** `flagging_does_not_change_any_weight`
+reads every weight in the bloc before and after a detection. §8.3 says
+"flagged, not silently punished", and that is a claim about a *process* — not
+that a number is right but that a step did not run — so it cannot be an
+assertion inside a test about numbers.
+
+**A trust tier is a multiplier, and it is not the role.** Tier 0 is exactly 1.0
+(`an_untiered_account_weighs_exactly_its_reputation`), tier 1 is
+`tier_multiplier` and each tier above squares it, so tier 2 is
+stash-box#630's "double votes". A tier-1 is deliberately less than double, so the
+tier a steward grants without discussion is not the tier that doubles somebody's
+vote. `trust_tier` is a separate table from `role` because a role is what an
+account may *do* and a tier is what its word is *worth*; collapsing them would
+mean granting vote weight and queue access with one click.
+
+The revocation keeps the grant row and fills in `revoked_by`. A deleted grant is
+indistinguishable from one never made, and a reason is required on both paths —
+`a_tier_change_needs_a_reason` covers `""`, `"   "` and `"\t\n"`.
+
+**Mutations: twenty-four.** Eight survived the first pass and every one was a
+real gap. Two findings are worth carrying:
+
+* the four tests that wanted a "5.0-reputation account" could not be repaired by
+  making the fixture write events, because the curve is bounded at
+  `max_weight = 4.0` and no number of agreements reaches 5.0. Inverting the
+  curve for an unreachable value is an infinite loop, and the fixture looped to
+  400 round-trips before the suite timed out rather than failed. The fix is
+  `vote_with_weight`: cast the vote, then freeze the weight onto it. That is
+  what a vote's weight *is* — a number frozen at cast time — so it says what the
+  test means, where an out-of-range account reputation was a claim about an
+  account that cannot exist. Those three `resolve` tests had been asserting
+  nothing at all: `cast_vote` recomputed all three weights back to 1.0.
+* `an_untiered_account_weighs_exactly_its_reputation` compares the weight against
+  the *standing*, not against `weight()` — because `weight()` is itself
+  multiplied, so a broken multiplier cancels out of the comparison and the
+  assertion passes with the bug in place.
+
+One mutation survives and is equivalent rather than missed: making tier 0 take
+`tier_multiplier` instead of `1.0` is unobservable through `powi`, because
+`tier_multiplier.powi(0) == 1.0`. Removing the `tier <= 0` guard is caught the
+moment the comparison is to `tier_multiplier` rather than to `1.0`, and that is
+the test above.
 
 ### T-P4-004 — Edit history with recomputed integrity
 

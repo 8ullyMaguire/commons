@@ -106,6 +106,8 @@ pub enum ResolveError {
     Disabled(Uuid),
     #[error(transparent)]
     Store(#[from] StoreError),
+    #[error(transparent)]
+    Reputation(#[from] crate::reputation::ReputationError),
 }
 
 /// The result of resolving one `(subject, field)`.
@@ -511,7 +513,13 @@ async fn compute(
 /// The floor of 0.2 is what stops a bloc of two being worth nothing next to a
 /// bloc of one: `sqrt(2)/2 = 0.707` normally, and the floor only bites past
 /// about twenty-five backers, by which point the discount is meant to be severe.
-fn sybil_damp(backers: usize, config: &ResolveConfig) -> f64 {
+/// How much a proposal is discounted for the number of accounts backing it.
+///
+/// `1/sqrt(n)` with a floor of 0.2, so a bloc is discounted however large it is
+/// and its *marginal* backer is worth less and less. The floor stops a bloc of
+/// two counting for nothing next to a lone voice, which would make forming any
+/// agreement impossible rather than merely difficult.
+pub fn sybil_damp(backers: usize, config: &ResolveConfig) -> f64 {
     if backers <= 1 {
         return 1.0;
     }
@@ -561,25 +569,6 @@ fn parse_role(s: &str) -> Result<Role, ResolveError> {
     Role::parse(s).ok_or(ResolveError::MayNotVote { role: Role::Public })
 }
 
-async fn account_weight(store: &Store, account: &str, field: &str) -> Result<f64, StoreError> {
-    let rep: Option<String> =
-        sqlx::query_scalar("SELECT field_reputation FROM account WHERE id = ?")
-            .bind(account)
-            .fetch_optional(store.pool())
-            .await
-            .map_err(StoreError::Query)?;
-    // No per-field map, or an empty one, means the account is at the base weight
-    // of 1.0 -- which is what a brand-new account is, and is the whole of
-    // §8.3's "new accounts ramp from a low base".
-    let Some(json) = rep.filter(|j| !j.trim().is_empty()) else {
-        return Ok(1.0);
-    };
-    let map: serde_json::Value = serde_json::from_str(&json).unwrap_or(serde_json::Value::Null);
-    let w = map.get(field).and_then(|v| v.as_f64()).unwrap_or(1.0);
-    tracing::debug!(account, field, weight = w, raw = %json, "resolved account weight");
-    Ok(w)
-}
-
 // ---- writing --------------------------------------------------------------
 
 /// Cast a vote at the account's current reputation for this field.
@@ -626,7 +615,20 @@ pub async fn cast_vote(
         });
     }
 
-    let weight = account_weight(store, &account.to_string(), field).await?;
+    // The weight is frozen at cast time, so a reputation change takes effect
+    // from the next ballot rather than rewriting what somebody said they
+    // believed when they said it (T-P4-003's decision).
+    //
+    // The event log is authoritative and `account.weight` is its cache. Reading
+    // the cache alone — which is what this did first — means a settlement pass
+    // has no effect on any vote until something else rewrites the column, so
+    // reputation as implemented could not affect a single outcome. The log wins
+    // and the column is refreshed from it, which is one write rather than two
+    // sources of truth.
+    let weight = match crate::reputation::ballot_weight(store, account, field).await {
+        Ok(w) => w,
+        Err(e) => return Err(e.into()),
+    };
     index::insert_vote(
         store,
         &Vote {

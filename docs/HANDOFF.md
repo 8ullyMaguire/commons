@@ -17,14 +17,14 @@ self-service performer claim, T-P3-006 the performer field model. All Phases 4
 through 8 are not started. Nothing built is a stub.
 
 `python3 scripts/plan-status.py` is the authority on that sentence, not this
-file and not the plan. It counts 31 of 84 tickets closed and 45 genuinely
+file and not the plan. It counts 32 of 84 tickets closed and 44 genuinely
 unstarted, and it exits non-zero if any ticket is *marked* done while the file
 it names is absent -- the failure mode that reads as progress and builds as
 nothing. `scripts/verify.sh` runs it, so the claim cannot rot.
 
 | | State |
 |---|---|
-| Rust workspace | 846 tests, 0 failures |
+| Rust workspace | 869 tests, 0 failures |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | `cargo fmt --all --check` | clean |
 | UI unit tests | 43 pass (`node ./tests/run-tests.mjs`) |
@@ -478,3 +478,37 @@ two sources of truth with a rule about which wins. The index on
 `(cluster_id, object_id)` makes it as cheap as it needs to be; the cost of a
 stored column is paid on every write forever and this one is paid on a read that
 already touches the row.
+
+---
+
+## Phase 4 has started, and the first ticket is where the design was hardest
+
+`commons-index` is no longer an empty crate. T-P4-001 is `resolve`, and three
+things in it are worth carrying forward because they are the kind of mistake
+that looks correct.
+
+**A cache key must include everything that changes the answer.** The obvious key
+is `(subject, field, fingerprint)` — the evidence. It silently ignores
+configuration: two different `half_life_days` produce identical keys, so the
+second is served the first's result. Two decay tests were passing for the wrong
+reason, agreeing with the no-decay answer. Any cache whose key omits a knob has
+this bug, and the tests will not find it unless two settings of the knob are
+compared against each other in the same test.
+
+**Clamp a contribution, never a total.** A floor on a *proposal's* weight gives
+every unvoted proposal the same positive weight, so one beats a heavily-backed
+value. A ceiling on a total makes reputation 5 and 6 indistinguishable, so
+"better evidence moves the value" stops holding at the top of the scale. Both
+were written, both were caught, and both look like reasonable bounds.
+
+**Distinguish inference from extraction.** A tagger that looked at a frame and a
+parser that moved a string out of a filename are both `is_automatic`, and both
+carry a `confidence`. They are not the same claim. Only the first one's
+confidence is support; the second is a candidate. Without the split, a freshly
+scanned library settles every field on whatever the first parser guessed.
+
+**T-P4-003 (reputation) is next and `resolve` already leans on it.** The
+per-field reputation is written into `vote.weight` at cast time and read
+nowhere else, so a reputation pass that wants to change a weight has to decide
+whether to rewrite history or apply from the next ballot. That decision belongs
+in T-P4-003 and it is not obvious.

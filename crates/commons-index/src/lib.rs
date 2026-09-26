@@ -5,4 +5,5 @@
 //! Phase 4. `resolve` is the centre: every other module here either feeds it
 //! proposals or reads what it settled.
 
+pub mod reputation;
 pub mod resolve;
