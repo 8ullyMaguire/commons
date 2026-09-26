@@ -1,0 +1,57 @@
+/* Global styles. Deliberately almost empty: a design system is not this
+   ticket, and a component library would violate "no UI framework" in the
+   ticket. What is here is the reset and the two colour variables the grid
+   reads, so a future theme is a variable change and not a component rewrite. */
+
+:root {
+  --bg: #111;
+  --fg: #eee;
+  --muted: #999;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  /* Two apps in one codebase, one for the library and one for the index
+     (spec 3.1). They are different modes of one binary, so they are different
+     routes, not different documents. */
+}
+
+.app {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100%;
+}
+
+.toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid #2a2a2a;
+  font-size: 0.9rem;
+}
+
+.toolbar input {
+  flex: 1;
+  padding: 6px 8px;
+  background: #1c1c1c;
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: var(--fg);
+}
+
+.count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}

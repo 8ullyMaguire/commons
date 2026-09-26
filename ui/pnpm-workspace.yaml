@@ -1,0 +1,11 @@
+# pnpm 10+ moved dependency-build-script settings out of package.json, and
+# pnpm 12 reads them from here. The key is `allowBuilds` — pnpm renamed
+# `onlyBuiltDependencies` to `allowBuilds` when it made the setting tri-state.
+#
+# esbuild's postinstall places the platform binary and vite cannot start
+# without it, so a fresh clone could not build until this was set. Written by
+# `pnpm approve-builds --all --yes`, then commented: the map is the checked-in
+# record of the decision, and without it the next person gets a `pnpm install`
+# that exits non-zero.
+allowBuilds:
+  esbuild: true
