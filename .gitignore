@@ -1,0 +1,14 @@
+target/
+**/target/
+node_modules/
+.svelte-kit/
+ui/build/
+ui/.vite/
+data/
+*.sqlite
+*.sqlite3
+*.sqlite3-journal
+*.db
+.env
+.env.*
+.DS_Store
