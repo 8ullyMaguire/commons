@@ -19,3 +19,6 @@ rayon = { workspace = true }
 camino = { workspace = true }
 notify = { workspace = true }
 chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
