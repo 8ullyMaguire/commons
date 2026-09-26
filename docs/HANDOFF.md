@@ -880,3 +880,52 @@ on the list route, which owns the selection, so the shell delegates them as a
 without a focusable target. Both are visible in the palette rather than hidden,
 which is the honest state, but they are not complete and the spec says so.
 
+### T-P5-006 item 6 — folders, and a latent failure that had been there since T-P5-001
+
+`crates/commons-store/src/folders.rs`, migration `0018_folders.sql`, spec
+`docs/spec/t-p5-006-folders.md`. 32 tests, both engines. Rust total 1198.
+
+The ticket reads as a sidebar — a tree, a name, a drag handle. What had to be
+built was the query half, and the reason is worth more than the ticket.
+
+**`Filter::Saved { id }` has been in the AST since T-P5-001, and it compiled to
+`o.saved_filter_ids LIKE ?` — a column no migration creates.** Any filter naming
+a folder failed at the database with "no such column". Nothing caught it because
+the only test touching that variant asserted its serde shape and never ran the
+SQL, and because the whole path was unreachable: there was no table, no
+resolver, and no UI to reach it with. It now returns
+`FilterError::UnresolvedSavedReference`, which names the missing step instead of
+a column that does not exist.
+
+Three bugs, all found by tests that run the schema rather than the resolver:
+
+- **A cut filter-cycle must be `Or([])`, not `And([])`.** `And([])` compiles to
+  `1 = 1`, so the first version's cycle guard made a self-referencing folder
+  match the *whole library*. It looks right — a folder with a lot in it is not
+  obviously wrong — and nobody finds out until a filter on `tagged = "x"` returns
+  things not tagged x. `Or([])` compiles to `1 = 0`.
+- **The tree cycle walk has to descend, not climb.** Seeding a recursive walk at
+  `NEW.parent_id` and asking how deep it goes cannot detect a cycle: the
+  proposed parent is *below* the moved row, so moving `p` under its own child `c`
+  seeds the climb at `c`, which reaches `p` and stops. The write is allowed and
+  every later walk up the tree is an infinite loop. This one was verified against
+  a live database before it was fixed — the reparent succeeded and a recursive
+  query over the result hung until it was killed. The walk now descends from
+  `NEW.id` and asks whether `NEW.parent_id` is among its descendants.
+- **A plpgsql variable and a CTE column both named `depth`.** `MAX(depth)` is
+  then ambiguous, and the trigger fails on every insert that has a parent — every
+  insert but a root. The table looked completely fine and nesting was simply
+  impossible.
+
+**A folder holds no objects.** There is no `folder_members` table and no object
+column; membership is recomputed per query, which is what makes §5.14's
+"re-evaluated on every open" true rather than aspirational. The obvious
+alternative — a denormalized `saved_filter_ids` that the existing broken SQL
+already expected — is a cache of the filter's answer stored on the row, and a
+filter edit would leave it stale until each member was touched.
+
+`tests/folders_db.rs` exists because `tests/folders.rs` could not have found any
+of the three. That file tests the resolver over a literal map; it cannot tell
+whether the table exists, whether the partial index covers the roots, or whether
+a trigger fires. The harness's own header says it: "It proves the tree applies. A
+migration that applies for the wrong reason still applies."

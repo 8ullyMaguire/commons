@@ -2561,7 +2561,7 @@ unsaved-entry protection (#6466), CSV import (#1296), per-field ignore lists
 attempt navigation with an unsaved edit and assert a confirm appears.
 **Done when:** that test exists.
 
-**Progress (1-5 of 17).** Item 1, the selection model, and item 2, the list
+**Progress (6 of 17).** Item 1, the selection model, and item 2, the list
 table, are in `ui/src/lib/api/selection.ts` and
 `ui/src/lib/components/ListTable.svelte`. Item 3, the bulk write and its modal,
 is in `crates/commons-store/src/bulk.rs` and
@@ -2569,7 +2569,12 @@ is in `crates/commons-store/src/bulk.rs` and
 `docs/spec/t-p5-006-bulk-mutation.md`. Item 4, the unsaved guard, is in
 `ui/src/lib/api/guard.ts`, `guard-store.svelte.ts` and the app shell
 `ui/src/routes/+layout.svelte`, specced separately in
-`docs/spec/t-p5-006-unsaved-guard.md`.
+`docs/spec/t-p5-006-unsaved-guard.md`. Item 5, the command registry and
+palette, is in `ui/src/lib/api/keys.ts`, `commands.ts`, `commands-ui.ts` and
+`ui/src/lib/components/CommandPalette.svelte`, specced in
+`docs/spec/t-p5-006-commands.md`. Item 6, folders, is in
+`crates/commons-store/src/folders.rs` with migration `0018_folders.sql`,
+specced in `docs/spec/t-p5-006-folders.md`.
 
 **The "done when" for this item was wrong, and the gap it hid is worth more
 than the item.** "That test exists" is satisfied by a guard that prompts on
@@ -2595,12 +2600,34 @@ constrain everything after this item:
   `selectedCount` returns `'unknown'` rather than guessing — so `canApply` is
   false while the count is unknown rather than optimistically enabled.
 
-The remaining 14 items are the surfaces that all read this selection: the
+**Item 6 was not a UI item, and that is the finding.** Folders look like a
+sidebar: a tree, a name, a drag handle. What actually had to be built was the
+*query* half, because `Filter::Saved { id }` had been in the AST since T-P5-001
+compiling to `o.saved_filter_ids LIKE ?` — a column no migration creates. Any
+filter naming a folder failed at the database with "no such column", and the
+only test that touched the variant asserted its serde shape without ever running
+the SQL. Two tests in `tests/folders_db.rs` now run the schema on both engines,
+which is the only reason the three bugs below were found at all:
+
+- A cycle in the *filter* graph has to resolve to `Or([])`, not `And([])`.
+  `And([])` compiles to `1 = 1`, so a folder naming itself matched the entire
+  library — and looked fine, because a folder with a lot in it is not obviously
+  wrong.
+- A cycle in the *tree* needs the walk to descend from `NEW.id` and ask whether
+  the proposed parent is among its descendants. Seeding at the proposed parent
+  and climbing cannot detect a cycle, because the proposed parent is below the
+  moved row. Verified against a live database: the reparent succeeded and a
+  recursive query over the result hung until it was killed.
+- A plpgsql variable and a CTE column both named `depth` made `MAX(depth)`
+  ambiguous, which failed every insert that had a parent — every insert but a
+  root, so the table looked fine and nesting was simply impossible.
+
+The remaining 11 items are the surfaces that all read this selection: the
 scopes, the field editors, per-field ignore lists (#2318, #2399), the undo
 affordance (#3221), right-click paste (#7139), CSV import (#1296),
-create-from-subpage (#3694) and create-all-missing (#1017, #3122). Items 4 and
-5 are the natural next two: they are the scopes, and everything after them
-assumes a scope exists.
+create-from-subpage (#3694) and create-all-missing (#1017, #3122). Items 4, 5
+and 6 were the natural next three: a scope, a command to act on it, and a saved
+one. Everything after them assumes a scope exists.
 
 ### T-P5-007 — Theming, accessibility, deep links
 
