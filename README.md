@@ -9,9 +9,9 @@ Commons combines the ideas of [stash](https://github.com/stashapp/stash) and
 revocable act. It is a library manager first and a federation participant
 second — the local use case is complete and useful on its own.
 
-> **Status: early development.** Phases 0 and 1 are done, backend and frontend;
-> see [Progress](#progress) below. Nothing here is a release yet, and the data
-> model will still move.
+> **Status: early development.** Phase 0 and Phase 1 are done, and Phase 2 is
+> five of eight tickets in; see [Progress](#progress) below. Nothing here is a
+> release yet, and the data model will still move.
 
 ## What makes it different
 
@@ -147,7 +147,7 @@ that is still alive and would recover.
 
 ## Testing
 
-394 tests across the workspace. The ones that matter most are the ones that
+616 tests across the workspace. The ones that matter most are the ones that
 were verified by breaking the code on purpose:
 
 - **Zip-Slip** (`commons-media`, `archive.rs`) — a comic archive is the most
@@ -204,14 +204,23 @@ enforcing so the intent is not lost.
 |---|---|---|
 | 0 — Foundations | done | schema, migrations, filter language, plugin host, server, memory harness |
 | 1 — Content types | done | detection, probing, segments, archives, hashing, the five remaining content types, and the windowed grid |
-| 2 — Library and scale | in progress | watcher, checkpoints, hashing, move detection, missing volumes, job queue |
+| 2 — Library and scale | 5 of 8 | watcher, checkpoints, hashing, move detection, missing volumes, durable job queue, hardware acceleration |
 | 3–6 | planned | identity, federation, UI surfaces, review and automation |
 
 Closed so far, among others: #3530 (one file, many objects — 38 comments
 upstream), #2276 (multi-part scenes), #2511 (virtual compilations), #1258
 (audio), #1659 (comics), #1259 (text and links), #3031 (funscript discovery and
 parsing), #6339 (multi-axis interactive), #5111 (GIF versus video), #7229
-(non-zero start offsets), #1115 (oshash deprecation).
+(non-zero start offsets), #1115 (oshash deprecation), #5683 (a drive that is
+not plugged in), #7239 (an acceleration setting with no reason), #7007
+(unprivileged containers).
+
+The job queue is durable in the sense the ticket means: jobs are submitted,
+claimed, retried and completed through the `job` table, and a row left `running`
+by a crash comes back `queued`. Concurrency is bounded per (job kind, file), not
+per kind, so one job per file does not mean one job in the library. The
+suspend inhibitor is held *during* a job rather than between jobs, and released
+when the last one finishes.
 
 The frontend shell (`ui/`) is a SvelteKit 2 + TypeScript app with one GraphQL
 client, a keyset-paginated store, and a fixed-row-height virtualized grid. Every

@@ -719,7 +719,7 @@ noted in the handoff.
 **Exit:** a 100k-item library scans and browses within budget; C15–C20 closed;
 locator hashes computed.
 
-**Progress:** 4 of 8 tickets done (T-P2-001, T-P2-002, T-P2-003, T-P2-004).
+**Progress:** 5 of 8 tickets done (T-P2-001 … T-P2-005).
 
 ### T-P2-001 — Filesystem watcher and scan checkpoints
 
@@ -862,22 +862,45 @@ same file and comes back `Queued` with `attempts: 0`.
   rather than returning a plausible wrong answer. **Postgres parity for the
   job table is a real remaining gap.**
 
-### T-P2-005 — Hardware acceleration reporting
+### T-P2-005 — Hardware acceleration
 
 **Spec:** §6.4
-**Files:** `crates/commons-media/src/hwaccel.rs`
+**Files:** `crates/commons-media/src/hwaccel.rs`,
+`crates/commons-media/src/hwaccel_plan.rs`, `crates/commons-media/src/thumbs.rs`
 
-1. Probe available acceleration (VA-API, NVENC, QSV) and record a
-   `HwAccelStatus { available: Vec<String>, unavailable: Vec<(String, String)> }`
-   where the second element is a **human-readable reason** (stash#7239 asks for
-   precisely this: `[0] gives no actionable reason`).
-2. Wire it into thumbnail/sprite/transcode selection, with CPU fallback.
-3. Docker image ships with the hooks present but unprivileged (stash#7007).
+**Status: complete** (`6dcf001`)
 
-**Accept:** a test asserting that for each unavailable accelerator, the reason
-string is non-empty and mentions a concrete cause. An empty reason fails the
-test — that is the regression guard for stash#7239.
-**Done when:** that assertion exists.
+Detects VA-API, NVENC, QSV and VideoToolbox, and reports *why* each one that
+is unavailable is unavailable (stash#7239: `[0] gives no actionable reason`).
+The plan layer turns a detected accelerator into a coherent ffmpeg invocation.
+
+**Accept:** for each unavailable accelerator the reason is non-empty and names
+a concrete cause — met, and the shape makes an empty reason unconstructible
+(`Unavailable` is an enum, not a string). The acceptance suite additionally
+drives the real ffmpeg on real hardware for all three artifact kinds.
+
+**The findings that shaped it:**
+
+- **ffmpeg cannot answer whether acceleration is available.** Its encoder list
+  names every compiled-in encoder regardless of the hardware, which is how a
+  machine with no GPU reports NVENC as available. Each accelerator is therefore
+  probed against the device itself.
+- **There is no hardware WebP encoder**, so `-c:v libwebp` never changes.
+  Acceleration applies to decode and scale. `AccelPlan::encoder()` takes no
+  argument so a caller cannot pass a hardware encoder and produce a JPEG named
+  `.webp`.
+- **A hardware scaler returns hardware frames**, and neither the software
+  encoder nor `tile` can read one. `hwdownload` has to precede the first
+  software filter, not the last one — the difference between a working
+  thumbnail and an empty sprite.
+- **The plan names the device the probe found.** An index (`va:0`) fails on a
+  machine whose only DRM node is `card1`, and produces a plan that disagrees
+  with the status beside it.
+
+**Verified:** 133 tests in `commons-media`, of which 7 drive the real ffmpeg
+against this machine's VA-API device. 616 workspace. Nine mutations, all
+caught. fmt and clippy `-D warnings` clean.
+
 
 ### T-P2-006 — Storage accounting
 
