@@ -11,6 +11,7 @@ pub mod progress;
 pub mod segment;
 pub mod types;
 pub mod walker;
+pub mod watch;
 
 pub use detect::{detect, detect_from_bytes, Container, Detection, Evidence};
 pub use funscript::{
@@ -23,3 +24,4 @@ pub use walker::{
     fs_type, glob_match, policy_for, read_head, walk, walk_resume, Checkpoint, FoundFile, SkipRule,
     VolumeKind, VolumePolicy, WalkConfig, WalkReport, WalkStats, Walker,
 };
+pub use watch::{Change, ChangeKind, ChangeSink, Debouncer, VolumeWatcher, WatchMode};
