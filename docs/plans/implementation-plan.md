@@ -2803,15 +2803,37 @@ identical text loses one of them with no error anywhere.
 ### T-P6-003 — Funscript and interactive playback
 
 **Spec:** §5.6
-**Files:** `ui/src/lib/player/FunscriptPlayer.svelte`, `commons-media/src/funscript.rs`
+**Files:** `ui/src/lib/player/FunscriptPlayer.svelte`, `ui/src/lib/player/funscript.ts`,
+`commons-scan/src/funscript_timeline.rs`, `commons-store/src/funscript.rs`,
+`commons-server/src/funscript.rs`, `ui/tests/funscript.test.ts`, `ui/e2e/funscript.spec.ts`
+**Status:** DONE
 
 Browser playback with timing sync, token/drm note (#5650), AutoBlow support
 (#6579), manual pause (#2762), and N named action axes with a 2-axis overlay
 and an N-axis controller (#6339).
 
-**Accept:** a Playwright test with a fake clock asserting a marker at t=10 s
-fires within 50 ms of the scripted position.
-**Done when:** the timing assertion exists.
+**Accept:** a Playwright test asserting a marker at t=10 s fires within 50 ms
+of the scripted position.
+**Done when:** the timing assertion exists. It does — plus 39 unit tests, 9
+e2e, 16 store tests on both engines, 16 route tests, 60 timeline tests.
+
+**Two corrections to this ticket as written**, both found while implementing it:
+
+1. **`commons-media/src/funscript.rs` was the wrong home for the timeline.**
+   The player is TypeScript, so `commons-media` has no caller for it, and the
+   layering table forbids `commons-server` from reaching `commons-scan` — so a
+   timeline there could not be served by the route that serves it. It went to
+   `commons-scan` next to the parser it reads, and `commons-server` grew a
+   `commons-scan` edge. The layering test holds.
+
+2. **"with a fake clock" was wrong, and the reason is the interesting part.**
+   A fake `requestAnimationFrame` makes a *frame count* deterministic, which is
+   not what a claim about *drift* is. Freezing rAF removes the scheduling jitter
+   drift is made of, and also freezes the `timeupdate` and resume-retry the
+   player depends on, so every seek races a resume and the clock snaps back to
+   0 — a failure indistinguishable from a player that ignores the scrubber. The
+   rate is proved arithmetically by `driftAfter()`; the e2e proves the wiring on
+   a real clock, within the same 50 ms.
 
 ### T-P6-004 — Interviews: transcription and Q&A search
 

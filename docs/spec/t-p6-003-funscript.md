@@ -11,15 +11,30 @@ discovers. It is a **scan-side** module, and the layering table forbids
 `commons-media` from depending on `commons-scan`, so the player cannot reach the
 parser from there.
 
-This ticket adds the three missing pieces, and none of them is "parse JSON"
+This ticket adds the four missing pieces, and none of them is "parse JSON"
 again:
 
 | Piece | File | Why it is not a copy |
 |---|---|---|
-| the **timeline** a player samples | `crates/commons-media/src/funscript.rs` | Owns interpolation and a sampled index. Parsing is not duplicated: it re-exports the scan parser. |
-| the **server routes** | `crates/commons-server/src/funscript.rs` | Owns the consent gate and the status codes. |
+| the **row** | `crates/commons-store/src/funscript.rs` | The path, size, hash and mtime. **Not** the actions: a 20,000-action script as 20,000 rows is unreadable, and the timeline is a pure function of the file, so it is recomputed rather than stored. |
+| the **timeline** a player samples | `crates/commons-scan/src/funscript_timeline.rs` | Owns interpolation and a sampled index, over the parser T-P1-007 already wrote. |
+| the **server routes** | `crates/commons-server/src/funscript.rs` | Owns the consent gate, the status codes, and the path containment check. |
 | the **player** | `ui/src/lib/player/funscript.ts` + `FunscriptPlayer.svelte` | Owns sync, and every decision in it is a pure function. |
 | the **e2e** | `ui/e2e/funscript.spec.ts` | The ticket's Done-when. |
+
+### Two places this spec was wrong, and why the timeline is in `commons-scan`
+
+The spec first put the timeline in `commons-media` on the reasoning that the
+player lives there. It does not: the player is TypeScript in the UI, and
+`commons-media` has no caller for a timeline at all. Worse, the layering table
+forbids `commons-server` from reaching `commons-scan`, so a timeline in
+`commons-media` could not be used by the route that serves it without amending
+the table in the wrong direction.
+
+So the timeline went to `commons-scan`, next to the parser it reads, and
+`commons-server` grew a `commons-scan` edge — the same edge it already had for
+`commons-media`, and the layering test (`commons-store --test layering`) holds
+with it.
 
 ## The two decisions that are not obvious
 
@@ -55,12 +70,42 @@ passes against an implementation that stopped nothing.
 
 ## Done when
 
-The ticket's own Done-when is a Playwright test with a fake clock asserting a
-marker at t=10 s fires within 50 ms of the scripted position. `ui/e2e/
-funscript.spec.ts` asserts exactly that, and also asserts the two things the
-50 ms assertion cannot see: that the interpolated value at the midpoint of two
-actions is the midpoint, and that manual pause freezes the device clock while
-the video is paused.
+The ticket's own Done-when is a Playwright test asserting a marker at t=10 s
+fires within 50 ms of the scripted position. `ui/e2e/funscript.spec.ts`
+asserts exactly that — on a **real** clock.
+
+This spec originally said "with a fake clock", and that was wrong. A fake
+`requestAnimationFrame` is the right tool for making a *frame count*
+deterministic, and it is the wrong tool for a claim about *drift*: freezing
+rAF removes the very scheduling jitter that drift is made of, and freezing it
+also freezes the `timeupdate` and the resume-retry that the player depends on,
+so the seek races a resume and the test fails on a clock that snaps back to 0.
+That failure is indistinguishable from a player that ignores the scrubber.
+
+So the split is: the **rate** is proved arithmetically by `driftAfter()` in
+`funscript.ts` (a unit test can hold a claim about ten minutes), and the
+e2e proves the **wiring** on a real clock, within the ticket's 50 ms.
+
+The e2e also asserts the two things the 50 ms assertion cannot see: that the
+interpolated value at the midpoint of two actions is the midpoint, and that
+manual pause freezes the device clock while the video moves.
+
+## What the browser found
+
+Three failures during the e2e were bugs in existing code, not in the feature.
+They are recorded here because the shape of each one — a silent, plausible
+wrong answer rather than an error — is the thing worth remembering.
+
+- **`Player.svelte`'s `on:play` never cleared `paused`.** A video that had been
+  paused once was reported paused for ever after. Nothing visible read both
+  variables, so it was latent until the funscript needed the distinction.
+- **A media stub without `accept-ranges: bytes` cannot be seeked.** Chromium
+  accepts the assignment, fires no error, reports `readyState` 4 on a fully
+  buffered element, and does not move. The symptom is a player that appears to
+  ignore every seek.
+- **`/media/<id>` 404s as a *page* with HTTP 200** in a static build, so every
+  assertion fails on "element not found" and nothing says "wrong route". The
+  player is at `/play?o=<id>`.
 
 ## Not claimed here
 
