@@ -21,6 +21,10 @@ pub mod create;
 pub mod db;
 pub mod filter_ast;
 pub mod folders;
+// T-P6-003: the funscript row and its metadata. The actions are NOT
+// stored -- see the module doc for why the path is the row and the timeline
+// is recomputed per player load.
+pub mod funscript;
 pub mod fuzzy;
 pub mod index;
 pub mod locator;
