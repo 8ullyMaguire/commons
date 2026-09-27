@@ -197,6 +197,43 @@ fi
 # The plan's own bookkeeping. A ticket marked done whose file is not there is
 # the expensive failure -- it reads as progress and builds as nothing -- so that
 # is a gate. An unwritten future ticket is normal and only reported.
+# Both remotes must hold the same HEAD and the same tags. A push to one and not
+# the other is the silent half-state this check exists for: the work looks done
+# locally, and the mirror quietly disagrees. Both remotes are private, so this
+# compares refs over the wire rather than trusting a local reflog.
+echo "== remotes in sync"
+local_head=$(git rev-parse HEAD)
+local_tags=$(git tag | wc -l | tr -d ' ')
+sync_ok=1
+for r in origin forgejo; do
+  if ! git ls-remote --exit-code -q "$r" >/dev/null 2>&1; then
+    echo "   $r is not reachable"
+    sync_ok=0
+    continue
+  fi
+  rh=$(git ls-remote "$r" refs/heads/main | cut -f1)
+  # Count DISTINCT TAG NAMES, not refs. An annotated tag makes ls-remote emit
+  # two lines (the tag and its peeled "^{}"), so counting lines or peeled refs
+  # both disagree with `git tag`: 43 of 48 tags here are annotated, and a
+  # peeled-ref count reports 43, which reads as five missing tags on both
+  # remotes. Names are the thing the two sides are actually comparable on.
+  rt=$(git ls-remote --tags "$r" | cut -f2 | sed 's@refs/tags/@@' | sed 's@\^{}@@' | sort -u | wc -l | tr -d ' ')
+  if [ "$rh" != "$local_head" ]; then
+    echo "   $r main is at ${rh:0:9}, local is ${local_head:0:9}"
+    sync_ok=0
+  fi
+  if [ "$rt" != "$local_tags" ]; then
+    echo "   $r has $rt tags, local has $local_tags"
+    sync_ok=0
+  fi
+done
+if [ "$sync_ok" = "1" ]; then
+  echo "   origin and forgejo both at ${local_head:0:9}, $local_tags tags"
+else
+  echo "   FAILED: the remotes disagree. Push to both: git pushall --tags"
+  fail=1
+fi
+
 echo "== plan status"
 if python3 "$REPO/scripts/plan-status.py" > /tmp/commons-plan.txt 2>&1; then
   sed -n '3,6p' /tmp/commons-plan.txt | sed 's/^/   /'

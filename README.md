@@ -156,6 +156,30 @@ that is still alive and would recover.
 - A bare letter in a text field is a letter. A chord is ours, because you cannot
   type a control character.
 
+## Remotes
+
+This repository lives on two private remotes, and they are meant to hold
+identical history:
+
+| Remote | Where |
+|---|---|
+| `origin` | `github.com/8ullyMaguire/commons` |
+| `forgejo` | `git.polarisocial.xyz/hirrolot19/commons` |
+
+A plain `git push` still goes to `origin` alone, unchanged. To move both:
+
+```
+git pushall            # main
+git pushall --tags     # main and every milestone tag
+```
+
+`scripts/verify.sh` ends with a **remotes-in-sync** check that compares `HEAD`
+and the tag set on each remote against local, over the wire. A push to one
+remote and not the other is the half-state worth catching: locally everything
+looks done, and the mirror quietly disagrees. The check counts *distinct tag
+names*, because an annotated tag makes `git ls-remote --tags` emit two lines and
+counting lines reports five missing tags when there are none.
+
 ## Testing
 
 1224 Rust tests across the workspace, plus 237 UI unit tests and 56 Playwright end-to-end tests (11 grid, 5 lightbox, 6 list, 13 bulk, 9 guard, 12 commands). The ones that matter most are the ones that

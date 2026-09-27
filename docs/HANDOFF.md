@@ -8,6 +8,30 @@ milestone carries an annotated `phase-*` tag.
 
 ---
 
+### Two remotes, and a check that they agree
+
+The repository is mirrored to two private remotes and `verify.sh` now ends by
+comparing them:
+
+| Remote | Where |
+|---|---|
+| `origin` | `github.com/8ullyMaguire/commons` |
+| `forgejo` | `git.polarisocial.xyz/hirrolot19/commons` |
+
+Both private. `git pushall` (a local alias) moves both; a bare `git push` still
+goes to `origin` alone, deliberately unchanged, so nothing about the existing
+workflow moved.
+
+The check compares `HEAD` and the tag set per remote against local, over the
+wire, and is the half-state guard: a push to one remote and not the other leaves
+local looking complete and the mirror quietly behind. Proven by pushing a
+throwaway tag to `origin` only and watching the check fail, then removing it.
+
+One trap in writing it: `git ls-remote --tags` emits **two lines per annotated
+tag** (the tag and its peeled `^{}` ref), so counting lines reports 91 for 48
+tags, and counting only peeled refs reports 43 and reads as five missing on both
+remotes. It has to count **distinct tag names**. Both remotes do hold all 48.
+
 ## Where it is
 
 Phases 0, 1, 2, 3 and 4 are complete, and Phase 5 has opened with
