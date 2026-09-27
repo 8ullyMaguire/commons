@@ -270,6 +270,33 @@ impl Timeline {
         self.axes.iter().find(|a| a.name == name)?.sample(t)
     }
 
+    /// The actions of the axis at `index`, in order, clamped to `duration_ms`.
+    ///
+    /// The TIMELINE, for a caller that is about to seek -- which is what a
+    /// player loading a script wants. Distinct from [`Timeline::sample_all`],
+    /// which answers a per-frame question and returns one position per axis: a
+    /// caller that reached for the wrong one gets a 20,000-action script as a
+    /// single point and a player that seeks to a constant.
+    ///
+    /// Returns an empty vec for an out-of-range index rather than panicking:
+    /// the index comes from `axis_names().enumerate()` on the same timeline, so
+    /// a mismatch is a bug, and a panic in a route handler takes the process
+    /// down rather than the request.
+    pub fn axis_actions(&self, index: usize, duration_ms: u64) -> Vec<Action> {
+        let Some(axis) = self.axes.get(index) else {
+            return Vec::new();
+        };
+        if duration_ms == 0 {
+            axis.actions.clone()
+        } else {
+            axis.actions
+                .iter()
+                .filter(|a| a.at_ms < duration_ms)
+                .cloned()
+                .collect()
+        }
+    }
+
     /// The position on every axis at `t`, in script order.
     ///
     /// This is what a player calls once per frame: one N-axis script is one

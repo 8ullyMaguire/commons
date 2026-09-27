@@ -19,6 +19,9 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 pub mod config;
+// T-P6-003. This is the first route that opens a path read out of the
+// database, so `contained_in` is load-bearing here -- see the module doc.
+pub mod funscript;
 pub mod health;
 pub mod media;
 pub mod playback;
@@ -104,6 +107,16 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/media/:object_id/subtitles/:document_id.vtt",
             get(subtitles::get_vtt),
+        )
+        // T-P6-003. The list is cheap and changes on a re-scan; the timeline is
+        // the parsed action list a player seeks in. Two routes because a list
+        // can succeed while every script on it is unreadable, and a client that
+        // cannot tell those apart shows an empty player and the user concludes
+        // their funscript is broken.
+        .route("/media/:object_id/funscripts", get(funscript::list))
+        .route(
+            "/media/:object_id/funscripts/:funscript_id",
+            get(funscript::timeline),
         )
         .layer(TraceLayer::new_for_http())
         .with_state(state)

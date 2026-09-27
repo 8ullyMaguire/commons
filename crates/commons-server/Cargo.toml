@@ -17,6 +17,12 @@ commons-plugin = { workspace = true }
 # is amended in the same commit -- a dependency added without amending the
 # table is a test failure, which is the point of having one.
 commons-media = { workspace = true }
+# T-P6-003: the funscript route serves a PARSED timeline, and parsing lives in
+# `commons-scan` beside the parser (T-P1-007). The alternative -- reimplementing
+# the parse here, or amending the table to let `commons-media` depend on
+# `commons-scan` -- would put a second JSON parser in the codebase, and two
+# parsers is two sets of opinions about what a malformed script means.
+commons-scan = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "postgres"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

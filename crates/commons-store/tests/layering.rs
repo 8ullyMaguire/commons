@@ -140,6 +140,16 @@ fn allowed_edges() -> BTreeMap<&'static str, &'static [&'static str]> {
             // status codes -- and the consent gate is `Store::media_path`, the
             // same call `/media/:id` makes, so there is one gate rather than two.
             "commons-media",
+            // T-P6-003, same shape of argument. The funscript route serves a
+            // PARSED timeline and the parser is in `commons-scan`; the
+            // timeline was first written in `commons-media` next to the other
+            // player-facing code, and the table refuses `media -> scan`. Rather
+            // than amend THAT edge, the timeline moved to `commons-scan` beside
+            // the parser it samples -- a sibling module, no new edge, and no
+            // second JSON parser. The server then needs `scan` for the same
+            // reason it needs `media`: to read a domain type, not to reimplement
+            // one.
+            "commons-scan",
         ],
     );
     // The Tauri shell. It is a client of the server, so it depends on the

@@ -827,6 +827,7 @@ dependencies = [
  "commons-core",
  "commons-media",
  "commons-plugin",
+ "commons-scan",
  "commons-store",
  "http-body-util",
  "serde",
