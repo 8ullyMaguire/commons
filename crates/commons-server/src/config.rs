@@ -49,6 +49,8 @@ pub struct FileConfig {
     pub bind: Option<String>,
     /// Off by default: a metrics endpoint exposes library statistics.
     pub metrics: Option<bool>,
+    /// The origin share links are built against (T-P5-007 part 2B).
+    pub public_base_url: Option<String>,
 }
 
 /// The resolved configuration.
@@ -58,6 +60,16 @@ pub struct Config {
     pub data_dir: PathBuf,
     pub bind: String,
     pub metrics: bool,
+    /// The origin share links are built against, e.g. `https://media.example`.
+    ///
+    /// A config field rather than derived from `bind`, because `bind` is where
+    /// the process listens and the link needs where the *user* is: behind a
+    /// reverse proxy, a TLS terminator, or a different hostname, `bind` is
+    /// wrong in every one of those cases and the link still resolves for the
+    /// person who was sent it. Defaulting to the request's own host would
+    /// produce a link that works until somebody opens it from a different
+    /// network, which is the worst time to find out.
+    pub public_base_url: String,
 }
 
 /// XDG base directories (stash#2814). `$XDG_DATA_HOME/commons` and friends,
@@ -137,6 +149,8 @@ pub struct Cli {
     pub bind: Option<String>,
     pub config: Option<PathBuf>,
     pub metrics: bool,
+    /// The origin share links are built against (T-P5-007 part 2B).
+    pub public_base_url: Option<String>,
 }
 
 impl Cli {
@@ -163,6 +177,7 @@ impl Cli {
                 "--bind" => cli.bind = Some(value(&mut it)?),
                 "--config" => cli.config = Some(PathBuf::from(value(&mut it)?)),
                 "--metrics" => cli.metrics = true,
+                "--public-base-url" => cli.public_base_url = Some(value(&mut it)?),
                 "--help" | "-h" => return Err(USAGE.to_string()),
                 "--version" | "-V" => return Err(format!("commons {}", env!("CARGO_PKG_VERSION"))),
                 other => return Err(format!("unknown flag {other}\n\n{USAGE}")),
@@ -189,6 +204,8 @@ OPTIONS:
                         0.0.0.0:9999 for index]
     --config <FILE>     TOML config file
     --metrics           expose /metrics (off by default: it reports library stats)
+    --public-base-url   origin share links are built against, e.g.
+                        https://media.example [default: http://<bind>]
     -h, --help          print this help
     -V, --version       print the version
 ";
@@ -215,11 +232,24 @@ pub fn resolve(cli: &Cli, file: Option<&FileConfig>) -> Result<Config, ConfigErr
 
     let metrics = cli.metrics || file.and_then(|f| f.metrics).unwrap_or(false);
 
+    // Defaulting to the bind address is right for the common case (a library on
+    // localhost) and wrong behind a reverse proxy, which is why it is
+    // overridable rather than derived from the request. The `http://` prefix is
+    // added because `bind` is a socket address and an origin is a URL, and
+    // making the operator write a full URL to say "the same host I already
+    // said" is a chance to get it wrong.
+    let public_base_url = cli
+        .public_base_url
+        .clone()
+        .or_else(|| file.and_then(|f| f.public_base_url.clone()))
+        .unwrap_or_else(|| format!("http://{bind}"));
+
     Ok(Config {
         mode,
         data_dir,
         bind,
         metrics,
+        public_base_url,
     })
 }
 
@@ -260,6 +290,7 @@ mod tests {
     #[test]
     fn cli_flag_beats_config_file_beats_default() {
         let file = FileConfig {
+            public_base_url: None,
             mode: Some(RunMode::Index),
             data_dir: Some(PathBuf::from("/from/file")),
             bind: Some("1.1.1.1:1".into()),
@@ -336,6 +367,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("commons.toml");
         let original = FileConfig {
+            public_base_url: None,
             mode: Some(RunMode::Peer),
             data_dir: Some(PathBuf::from("/srv/library")),
             bind: Some("0.0.0.0:8080".into()),

@@ -23,6 +23,12 @@ commons-media = { workspace = true }
 # `commons-scan` -- would put a second JSON parser in the codebase, and two
 # parsers is two sets of opinions about what a malformed script means.
 commons-scan = { workspace = true }
+# T-P5-007 part 2B. A share link is a CAPABILITY GRANT and the policy for one
+# lives in `commons-consent` (`share.rs`) beside every other consent decision --
+# so the route calls `resolve` rather than reimplementing "revoked before
+# expired, signature before policy". The layering table already permits this
+# edge (see `commons-store/tests/layering.rs`), so no amendment is needed here.
+commons-consent = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "postgres"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -33,6 +39,9 @@ tokio = { workspace = true }
 axum = { workspace = true }
 tower-http = { workspace = true }
 toml = { workspace = true }
+# T-P5-007 part 2B: grant lifetimes and the ISO-8601 stamps on the wire.
+chrono = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

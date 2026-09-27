@@ -11,7 +11,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use commons_store::{Mode, Store};
 use tower_http::trace::TraceLayer;
@@ -27,6 +27,9 @@ pub mod media;
 pub mod playback;
 pub mod proxy;
 pub mod range;
+// T-P5-007 part 2B. Share links (§9.5, #5612). The policy is in
+// `commons-consent::share`; this file is the wire shape and nothing else.
+pub mod share;
 pub mod subtitles;
 
 pub use config::{Config, RunMode};
@@ -118,6 +121,18 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/media/:object_id/funscripts/:funscript_id",
             get(funscript::timeline),
         )
+        // T-P5-007 part 2B. The owner's routes and the recipient's routes are
+        // kept apart even though both live under /api: a recipient's token is a
+        // capability and must never be presented to a route that assumes the
+        // caller owns the library, so the two sets have different handlers and
+        // no shared prefix beyond /api.
+        .route(
+            "/api/share",
+            post(share::create_share).get(share::list_share),
+        )
+        .route("/api/share/:id", axum::routing::delete(share::revoke_share))
+        .route("/api/s/:token", get(share::resolve_share))
+        .route("/api/s/:token/access", get(share::share_access))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
         .fallback(not_found)
@@ -257,6 +272,7 @@ mod tests {
 
     fn config(dir: PathBuf, metrics: bool) -> Config {
         Config {
+            public_base_url: "http://127.0.0.1:9999".to_string(),
             mode: RunMode::Library,
             data_dir: dir,
             bind: "127.0.0.1:0".into(),

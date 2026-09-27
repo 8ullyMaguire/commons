@@ -78,6 +78,7 @@ impl TestApp {
         // here: the database file and the media files live together, and
         // dropping the tempdir removes both.
         let config = Config {
+            public_base_url: "http://127.0.0.1:9999".to_string(),
             mode: commons_server::RunMode::Library,
             data_dir,
             bind: "127.0.0.1:0".to_owned(),
@@ -125,6 +126,32 @@ impl TestApp {
                 .uri(path)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(body.to_owned()))
+                .expect("a request"),
+        )
+        .await
+    }
+
+    /// A JSON `POST` with the given body. T-P5-007 part 2B needs it for
+    /// `/api/share`; `put_json` is the same call with a different verb.
+    pub async fn post_json(&self, path: &str, body: &str) -> TestResponse {
+        self.send(
+            Request::builder()
+                .method("POST")
+                .uri(path)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_owned()))
+                .expect("a request"),
+        )
+        .await
+    }
+
+    /// A `DELETE` at a path, for `/api/share/:id`.
+    pub async fn delete(&self, path: &str) -> TestResponse {
+        self.send(
+            Request::builder()
+                .method("DELETE")
+                .uri(path)
+                .body(Body::empty())
                 .expect("a request"),
         )
         .await

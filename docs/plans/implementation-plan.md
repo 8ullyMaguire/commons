@@ -2734,6 +2734,45 @@ view mode, tagger selection, player position. Time-limited share links
 identical DOM state. Plus an axe-core scan with zero critical violations.
 **Done when:** both pass.
 
+**In progress** (2026-09-28). Both accept criteria pass — `deeplink.spec.ts` and
+`a11y.spec.ts`, 21 axe scans across every route in both colour schemes. The
+ticket's item list was audited rather than assumed, which found two items that
+had never been built and one that was marked done in error:
+
+| Item | State |
+|---|---|
+| Dark/light, contrast | done — `theme/contrast.ts`, tokens centralized |
+| Focus management | done — `theme/focus.ts` + `trapFocus`, 18 table tests |
+| Popovers, viewport-constrained (#4667) | done — `theme/viewportPopover.ts` + `Menu.svelte` |
+| Hit-target sizing, safe-area (#3322, #6383, #5979) | present |
+| ARIA labels | done — per-route, axe-clean |
+| Tagger selection in the URL | present |
+| Filters, sorts, view mode in the URL | **was broken, now fixed** — a reload did not preserve the query, which *is* this ticket's own accept criterion; the ticket had been marked done in error |
+| Player position in the URL | **added** — `/play?o=<id>&t=4:12`; see part 2A below |
+| Time-limited share links (#5612) | **in progress** — part 2B, policy and storage complete |
+
+The filter bug is the one worth recording. `VirtualGrid` seeded `lastKey` with
+the initial query, so the first load never called `reset()` and the store
+fetched with its empty query: the URL said `?q=brav` and the request sent
+`filter: null`. It survived a full manual pass because nothing asserted a
+reload.
+
+### T-P5-007 part 2 — spec `docs/spec/t-p5-007-share-links.md`
+
+Written before the code, per the standing workflow.
+
+**Part 2A — player position (done).** `ui/src/lib/player/position.ts` (pure
+throttle, 20 table tests), `startAtMs` + `onposition` props on `Player`, wired
+in `ui/src/routes/play/+page.svelte`, 8 e2e. The interesting finding: reporting
+the position only from `on:seeked` means a scrub on a file whose range is not
+buffered records *nothing* — `seeked` never fires and no error does either. It
+now reports from `on:input` as well, and the `on:seeked` report corrects the URL
+if the browser disagrees.
+
+**Part 2B — share links.** Policy (`commons-consent/src/share.rs`, 18 tests)
+and storage (`commons-store/src/share.rs`, 13 tests × 2 engines) are complete.
+**Remaining: the HTTP surface and the two pages.** Not claimed as done.
+
 ---
 
 ## Phase 6 — Player, plugins, API
