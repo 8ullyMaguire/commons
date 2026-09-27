@@ -88,10 +88,7 @@ export function decodeView(search: string): ViewState {
     mode: mode === 'list' || mode === 'grid' ? mode : defaultView.mode,
     // A density below the minimum renders tiles narrower than their own
     // content, and a non-numeric one is NaN, which silently renders nothing.
-    density:
-      Number.isFinite(density) && density >= 80 && density <= 1000
-        ? density
-        : defaultView.density
+    density: isDensity(density) ? density : defaultView.density
   };
 }
 
@@ -104,4 +101,133 @@ export function viewToHref(v: ViewState): string {
 /** Read view state out of a full URL or a location-like object. */
 export function viewFromLocation(loc: { search: string }): ViewState {
   return decodeView(loc.search);
+}
+
+// --------------------------------------------------------------------------
+// Per-user density (T-P5-006 item 8, spec 10.4)
+// --------------------------------------------------------------------------
+
+/**
+ * The density range, in one place.
+ *
+ * One range, not two. If the URL bounds and the stored-preference bounds could
+ * drift apart, a density could be stored that the URL would then reject, and
+ * what the user saw would depend on which path a value happened to arrive by.
+ */
+export const DENSITY_LIMITS = { min: 80, max: 1000 } as const;
+
+/** A plain integer tile width inside the range. Anything else is not one. */
+export function isDensity(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= DENSITY_LIMITS.min && v <= DENSITY_LIMITS.max;
+}
+
+/**
+ * Somewhere to keep a per-user preference.
+ *
+ * An interface rather than a direct `localStorage` call, for the reason every
+ * test in this codebase injects its store: `localStorage` throws for reasons
+ * that have nothing to do with this app -- Safari private mode, a full quota,
+ * storage blocked in a third-party frame. Every one of those is an environment,
+ * and the right response to a preference that cannot be read is the default
+ * rather than a blank page.
+ */
+export interface DensityStore {
+  read(): number | null;
+  write(density: number): void;
+}
+
+/**
+ * The stored density, or `null` if there is not a usable one.
+ *
+ * Every failure -- absent, unparseable, out of range, or a store that throws --
+ * comes back as `null`, and the caller renders the default. Discarding rather
+ * than clamping is deliberate: clamping a stored 40 to the minimum of 80 shows
+ * tiles the user did not ask for and leaves no way back to 40, and a value
+ * outside the range is a corrupt or hand-edited store rather than a preference.
+ */
+export function storedDensity(store: DensityStore | null | undefined): number | null {
+  if (!store) return null;
+  let raw: number | null;
+  try {
+    raw = store.read();
+  } catch {
+    return null;
+  }
+  return isDensity(raw) ? raw : null;
+}
+
+/**
+ * Record a density the user chose.
+ *
+ * Only when it differs from what is already there, and only if it is a density
+ * at all. The "only when it differs" is not a micro-optimisation: writing on
+ * every render means a slider drag writes N times, and a store written during a
+ * render is a store a component can write on its way out. The write is the
+ * user's decision, so it happens on the decision.
+ *
+ * Returns whether anything was written, which is what a test asserts rather
+ * than reaching into the store to see.
+ */
+export function storedDensitySet(density: number, store: DensityStore | null | undefined): boolean {
+  if (!store || !isDensity(density)) return false;
+  if (storedDensity(store) === density) return false;
+  try {
+    store.write(density);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * View state for a location, with the stored density as the fallback.
+ *
+ * THE RULE, and the reason this function exists: **the stored value is a
+ * default, not an override.** A link carrying `?density=400` shows 400 even if
+ * the recipient's own preference is 180; the bare URL shows whatever they last
+ * chose.
+ *
+ * The alternative -- stored preference wins -- makes a shared link render
+ * differently on every machine, and spec 5.16 requires the URL to survive being
+ * shared. Reload, bookmark, share, back: a preference that overrides the URL
+ * breaks three of those four. The asymmetry is the point: an explicit URL value
+ * is a statement by the sender, a stored value is a default the receiver
+ * happens to have, and a statement beats a default.
+ */
+export function viewForLocation(loc: { search: string }, store?: DensityStore | null): ViewState {
+  const fromUrl = decodeView(loc.search);
+  if (loc.search.includes('density=')) return fromUrl;
+  const stored = storedDensity(store);
+  return stored === null ? fromUrl : { ...fromUrl, density: stored };
+}
+
+/**
+ * A `DensityStore` over `localStorage`, for the app to use.
+ *
+ * Reads a string and parses it with `parseInt`, which is why
+ * {@link isDensity} insists on an integer: `parseInt('320px')` is 320, so the
+ * parse is deliberately loose and the check after it is what makes the result
+ * safe.
+ */
+export function localDensityStore(key = 'commons.density'): DensityStore {
+  return {
+    read(): number | null {
+      const raw = globalThis.localStorage?.getItem(key);
+      if (raw === null || raw === undefined) return null;
+      // `Number`, not `parseInt`.
+      //
+      // `parseInt('320px')` is 320, so a lenient parse would accept a value
+      // the user never chose and silently read past the part it did not
+      // understand. `Number('320px')` is NaN, which `isDensity` rejects -- so
+      // a stored string has to BE a number, all of it, or it is discarded.
+      // This is the same reasoning as `isDensity` refusing a float: the point
+      // is not that the bad value is harmless, it is that accepting it means
+      // the store's meaning depends on the parser.
+      const n = Number(raw.trim());
+      return Number.isNaN(n) ? null : n;
+    },
+    write(density: number): void {
+      globalThis.localStorage?.setItem(key, String(density));
+    }
+  };
 }
