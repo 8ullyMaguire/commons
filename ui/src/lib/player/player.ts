@@ -514,3 +514,255 @@ export function skipIntroWindow(
   }
   return { startMs, endMs };
 }
+
+
+// ---------------------------------------------------------------------------
+// Subtitles (T-P6-002 section 6)
+// ---------------------------------------------------------------------------
+
+/** One stored subtitle document, as the client sees it. */
+export interface SubtitleDoc {
+  id: number;
+  /** A BCP-47-ish tag, or null for a track with no language. */
+  language: string | null;
+  /** `subrip`, `webvtt`, `ass`, `mov_text` — ffprobe's spelling. */
+  format: string;
+  /** The label to show when there is no language. */
+  label?: string | null;
+  cueCount?: number | null;
+}
+
+/** The "(none)" row, and the reason it exists. */
+export const NO_SUBTITLES = 'none';
+
+/**
+ * A language tag in the shape a `<select>` value can hold.
+ *
+ * Null rather than the empty string, because `''` is what an unset form field
+ * sends and a track with no language and a track whose language was never
+ * recorded are different facts. The display name is the last segment after `-`
+ * or `_`, so `pt-BR` reads "BR" and `en` reads "en" — capitalised, because a
+ * list of lowercase two-letter codes is harder to scan than the same codes
+ * capitalised.
+ */
+export function languageDisplay(tag: string | null | undefined): string {
+  if (!tag) return 'Unknown';
+  const tail = tag.split(/[-_]/).filter(Boolean).pop() ?? tag;
+  return tail.charAt(0).toUpperCase() + tail.slice(1).toLowerCase();
+}
+
+/**
+ * The rows for a language menu, with "(none)" always first.
+ *
+ * **(none) is a fact, not an empty state.** A select with no options is
+ * indistinguishable from a request that failed, and the user cannot tell
+ * "this video has no subtitles" from "the subtitle list did not load" — so the
+ * row is present whether there are zero documents or forty. It is also the
+ * default selection, which makes "off" the state a player opens in rather than
+ * a mode the user has to leave.
+ */
+export function subtitleOptions(docs: SubtitleDoc[]): { value: string; label: string }[] {
+  const rows = [{ value: NO_SUBTITLES, label: '(none)' }];
+  for (const d of docs) {
+    rows.push({
+      value: String(d.id),
+      label: d.label?.trim()
+        ? `${d.label} — ${languageDisplay(d.language)}`
+        : languageDisplay(d.language),
+    });
+  }
+  return rows;
+}
+
+/**
+ * Group documents by language, in first-seen order.
+ *
+ * First-seen rather than sorted: the server returns them in whatever order the
+ * store gave, and for a single-language file sorting is a no-op while for a
+ * multi-language one the user's own file ordering is more informative than
+ * alphabetical. What matters is that the ORDER IS STABLE, so the menu does not
+ * reshuffle between two renders of the same data.
+ */
+export function groupByLanguage(docs: SubtitleDoc[]): { language: string | null; docs: SubtitleDoc[] }[] {
+  const order: (string | null)[] = [];
+  const groups = new Map<string | null, SubtitleDoc[]>();
+  for (const d of docs) {
+    const key = d.language ?? null;
+    if (!groups.has(key)) {
+      groups.set(key, []);
+      order.push(key);
+    }
+    groups.get(key)!.push(d);
+  }
+  return order.map((language) => ({ language, docs: groups.get(language)! }));
+}
+
+/**
+ * Which document a menu selection names.
+ *
+ * Returns null for `(none)`, for an id that is not in the list, and for a
+ * non-numeric value. The last two matter because a stored preference can name
+ * a document that was deleted, and rendering a `<track>` for it would request
+ * a 404 on every cue change.
+ */
+export function selectedDoc(
+  value: string | null | undefined,
+  docs: SubtitleDoc[]
+): SubtitleDoc | null {
+  if (value === null || value === undefined || value === NO_SUBTITLES) return null;
+  const id = Number(value);
+  if (!Number.isFinite(id)) return null;
+  return docs.find((d) => d.id === id) ?? null;
+}
+
+
+/**
+ * The signed nudge a user applies to subtitle timing, in ms (#4771).
+ *
+ * A display-time offset, never a write to the stored timestamps. A stored
+ * offset would make the document wrong for the next viewer, would need its own
+ * undo, and would make "reset offset" indistinguishable from "the file has no
+ * offset" — three problems that a display-time value does not have.
+ */
+export function applyOffset(cueStartMs: number, offsetMs: number | null | undefined): number {
+  const o = Number.isFinite(offsetMs) ? (offsetMs as number) : 0;
+  return cueStartMs + o;
+}
+
+/**
+ * The cue a given playhead position falls inside.
+ *
+ * Half-open `[start, end)`, matching the server's convention and
+ * `commons-media::range`. Inclusive at both ends would make the boundary cue
+ * match twice and the cue before it never fire; a file whose cues abut — which
+ * is every file where one line of dialogue follows another — is exactly where
+ * that shows up.
+ *
+ * Returns null at a position no cue covers, which is the normal answer for most
+ * of a film and must not be an error: a `<track>` with no active cue is a
+ * subtitle-less frame, and the browser handles that itself.
+ */
+export function cueAt(
+  cues: { start_ms: number; end_ms: number }[],
+  positionMs: number
+): number {
+  // Linear, not binary. A subtitle file is hundreds of cues, the player seeks
+  // roughly once a second, and a binary search over 500 elements saves nothing
+  // measurable while costing a second implementation to get right. If this ever
+  // shows up in a profile, that is the moment to change it — not before.
+  for (let i = 0; i < cues.length; i++) {
+    const c = cues[i];
+    if (positionMs >= c.start_ms && positionMs < c.end_ms) return i;
+  }
+  return -1;
+}
+
+/**
+ * Escape a cue's text for WebVTT.
+ *
+ * `&` and `<` are the two that matter, and the order is load-bearing: `&` first,
+ * or `&lt;` becomes `&amp;lt;` and every ampersand in a caption turns into
+ * visible noise.
+ *
+ * A bare `>` is left alone. WebVTT does not require it escaped and doing so
+ * turns a caption reading "5 > 3" into "5 &gt; 3" on screen, which is a
+ * regression in the reading for no gain.
+ */
+export function escapeCueText(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+}
+
+/**
+ * A cue as a WebVTT timestamp: `HH:MM:SS.mmm`.
+ *
+ * **`HH` is always two digits and always present.** WebVTT's grammar allows
+ * `MM:SS.mmm`, but ffmpeg's muxer writes the long form and a browser accepts
+ * both — so the long form is the safe one, and it is what the extractor's
+ * parser expects to read back.
+ *
+ * A negative input is clamped to zero rather than wrapped. A cue before the
+ * start of the file has no representation, and `-00:00:01.000` is not a
+ * timestamp any parser will accept — it fails the whole file rather than one
+ * cue, which is the failure mode this module exists to avoid.
+ */
+export function toVttTimestamp(ms: number): string {
+  const v = Number.isFinite(ms) && ms > 0 ? Math.floor(ms) : 0;
+  const h = Math.floor(v / 3_600_000);
+  const m = Math.floor((v % 3_600_000) / 60_000);
+  const s = Math.floor((v % 60_000) / 1000);
+  const ms3 = v % 1000;
+  const p = (n: number, w: number) => String(n).padStart(w, '0');
+  return `${p(h, 2)}:${p(m, 2)}:${p(s, 2)}.${p(ms3, 3)}`;
+}
+
+/**
+ * Render cues as a WebVTT document.
+ *
+ * Cues with `end <= start` are DROPPED, not emitted. A browser discards such a
+ * cue silently — it is not an error, it is a cue that never appears — so
+ * emitting one produces a document that is valid, parses cleanly, and is
+ * missing a caption. Dropping it here makes the omission visible in the output
+ * instead.
+ *
+ * That is also why the extractor's parser treats an unreadable timestamp as an
+ * error rather than a zeroed cue: the two ends of this pipeline agree that a
+ * zero-length cue is not a caption.
+ */
+export function toWebVtt(cues: { start_ms: number; end_ms: number; text: string }[]): string {
+  const parts = ['WEBVTT', ''];
+  for (const c of cues) {
+    if (!(c.end_ms > c.start_ms)) continue;
+    parts.push(`${toVttTimestamp(applyOffset(c.start_ms, 0))} --> ${toVttTimestamp(applyOffset(c.end_ms, 0))}`);
+    parts.push(escapeCueText(c.text));
+    parts.push('');
+  }
+  return parts.join('\n');
+}
+
+/**
+ * The VTT for a document at a given display offset.
+ *
+ * The offset is applied to BOTH ends, not just the start. Applying it to the
+ * start alone would stretch or compress every cue by the offset amount, which
+ * for a 500 ms nudge moves the last cue's end half a second — visible as cues
+ * that linger after they should have gone.
+ */
+export function toWebVttWithOffset(
+  cues: { start_ms: number; end_ms: number; text: string }[],
+  offsetMs: number | null | undefined
+): string {
+  return toWebVtt(
+    cues.map((c) => ({
+      start_ms: applyOffset(c.start_ms, offsetMs),
+      end_ms: applyOffset(c.end_ms, offsetMs),
+      text: c.text,
+    }))
+  );
+}
+
+/**
+ * Can this format's styling be honoured in a browser?
+ *
+ * **No, for ASS and SSA.** A browser cannot draw ASS, so those cues render as
+ * styled text we cannot honour: position, colour, karaoke and animation are
+ * lost. §6 of the spec states this as a ceiling rather than a bug, and the
+ * reason it matters here is that the UI has to *say so* — a user who selects
+ * an ASS track and gets flat text with no explanation concludes the feature is
+ * broken.
+ *
+ * The alternative is burning the cues in with ffmpeg's `ass` filter, which is
+ * pixel-perfect and which this does not do: burned-in subtitles cannot be
+ * turned off, searched, or re-styled, and a player that offers "burn in"
+ * without offering "turn off" is worse than one that states the limit.
+ */
+export function stylingHonoured(format: string | null | undefined): boolean {
+  if (!format) return true;
+  const f = format.toLowerCase();
+  return f !== 'ass' && f !== 'ssa';
+}
+
+/** The warning to show for a format the browser cannot render faithfully. */
+export function stylingWarning(format: string | null | undefined): string | null {
+  if (stylingHonoured(format)) return null;
+  return 'This track uses ASS styling (position, colour, karaoke). Subtitles are shown as plain text.';
+}
