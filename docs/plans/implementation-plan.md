@@ -2561,7 +2561,7 @@ unsaved-entry protection (#6466), CSV import (#1296), per-field ignore lists
 attempt navigation with an unsaved edit and assert a confirm appears.
 **Done when:** that test exists.
 
-**Progress (11 of 17).** Item 1, the selection model, and item 2, the list
+**Progress (12 of 17).** Item 1, the selection model, and item 2, the list
 table, are in `ui/src/lib/api/selection.ts` and
 `ui/src/lib/components/ListTable.svelte`. Item 3, the bulk write and its modal,
 is in `crates/commons-store/src/bulk.rs` and
@@ -2595,8 +2595,9 @@ a later phase, so there is no resolver for these or for `bulkApplyTag`; the UI
 is proved against the same mocked endpoint the bulk tests use. Item 11,
 right-click paste, is in `ui/src/lib/api/paste.ts`,
 `ui/src/lib/components/MultiValueField.svelte` and the `tags` route, specced in
-`docs/spec/t-p5-006-paste.md`. CSV import (#1296) and the per-field ignore lists
-(#2318, #2399) are the two remaining §10.10 actions.
+`docs/spec/t-p5-006-paste.md`. CSV import (#1296) is item 12, in
+`ui/src/lib/api/csv.ts`, specced in `docs/spec/t-p5-006-csv.md`; the per-field
+ignore lists (#2318, #2399) are the last remaining §10.10 action.
 
 **Both atomicity gaps the spec named are closed, and neither needed a
 transaction — which is worth recording, because the spec's own conclusion was

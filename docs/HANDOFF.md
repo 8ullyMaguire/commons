@@ -420,6 +420,63 @@ the truth for every mutant and looked like four survivors. A harness that
 reports the wrong answer is worse than no harness, because it sends you looking
 for holes that are not there.
 
+### T-P5-006 item 12 — CSV import, and a correction to item 11's spec
+
+**First: item 11's spec was wrong.** It closed with a "what is deliberately
+not here" list saying "No CSV import. That is #1296, its own item." §10.10
+reads "CSV **and** paste-parse import (#1296, #431)" — one issue, two formats.
+The CSV half was never separate work, it was the rest of the same issue, and it
+is item 12. A "not here" list is a claim about the future, and an unexamined
+claim about the future is how work falls through the gap between two items.
+
+`ui/src/lib/api/csv.ts` is a character-by-character state machine rather than
+`paste.ts` with a different splitter, because RFC 4180 allows a newline INSIDE a
+quoted field and a Postgres export puts a paragraph in one cell. A
+line-splitting parser turns one value into three and blames three different rows.
+It reuses `ParsedValue` and `preview` from `paste.ts` so the file path and the
+paste path share one preview, one Apply and one Esc — asserted directly in the
+e2e by checking the same element carries `data-source="file"` then
+`data-source="paste"`.
+
+**A bug the unit tests could not see.** The first `decodeCsvBytes` asked
+whether the bytes were valid UTF-8. NUL is a *valid* UTF-8 character, so a
+UTF-16 file decoded as UTF-8 comes out as `a\0b\0c\0` with no replacement
+character, the check passes, the UTF-16 heuristic below it is unreachable, and
+the file imports as mojibake. "Is this valid UTF-8" cannot separate the two
+encodings for ASCII; "are there NULs where text should be" can.
+
+**Three more tests that named a boundary without straddling it** — the sixth,
+seventh and eighth in this project, each found by a surviving mutation. The
+sharpest: the sniffer test used a comma inside quotes, where a naive count and
+the quote-aware count give the same modal value, so the test passed with the
+quotes ignored. Two further tests were not enough either. The case that
+separates them puts the wrong delimiter BOTH inside a quoted field and as a
+real separator, so the tie-break is magnitude and the naive count wins.
+
+**Four exempt mutations, each proved rather than assumed.** `TextDecoder` strips
+a BOM itself (`ignoreBOM: false` means *do not ignore*), so the `subarray` is
+redundant — kept anyway, with a comment saying the reason is explicitness rather
+than coverage. The sniffer's escaped-quote branch is not load-bearing because
+that function only counts and never emits; an exhaustive sweep over all 1,093
+strings of length <= 6 in {a, ", ;} found zero differences. The UTF-16LE BOM
+check widened to accept a UTF-8 BOM is unreachable *because* the UTF-8 check
+returns first, so a test asserts the ordering directly instead.
+
+**A bug only the browser could find.** Esc did not dismiss a file import. The
+keydown handler was on the field wrapper, and a file import leaves focus on the
+hidden file input, outside it — so Esc did nothing. That is the only way to open
+a preview without touching the field, which makes it the only way a user who
+opens a file, reads the warning and changes their mind has no way out. Now
+listened for on the document while a preview is open, in the capture phase so it
+beats an enclosing modal.
+
+Also: a truncated file gets NO Apply button, not a disabled one, because a
+greyed-out button beside "Add 3" is a control the user cannot use and cannot
+understand. Blank lines are reported as gaps on their own count, separate from
+empty rows, because "we discarded 40 lines" reported as 0 is a lie.
+
+34 mutations: 30 killed, 4 exempt, 0 stale. 76 UI tests, 14 e2e; UI 425, e2e 97.
+
 ### T-P5-006 item 11 — right-click paste, and a survivor that was a real bug
 
 `ui/src/lib/api/paste.ts` parses a paste into N values; the design decision is

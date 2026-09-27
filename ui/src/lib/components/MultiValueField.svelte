@@ -39,6 +39,7 @@
 -->
 <script lang="ts">
   import { addCount, parsePaste, preview, type PasteResult } from '$lib/api/paste.js';
+  import { decodeCsvBytes, describeImport, importCsv, type CsvImport } from '$lib/api/csv.js';
 
   interface Props {
     /** The field's label, for the aria name and the menu heading. */
@@ -62,9 +63,45 @@
   let menuOpen = $state(false);
   let menuEl = $state<HTMLElement | null>(null);
   let fieldEl = $state<HTMLElement | null>(null);
+  let fileEl = $state<HTMLInputElement | null>(null);
+
+  /**
+   * A file chosen with the file picker, already imported.
+   *
+   * It is the SAME shape as a paste result -- `CsvImport` carries `values`,
+   * `skipped` and `duplicates` in `ParsedValue` form -- so one preview and one
+   * Apply button serve both. That is the reason the importer was given
+   * `parsePaste`'s result type instead of a CSV-specific one: a second type
+   * would have meant a second preview, a second Apply, and a second Esc.
+   */
+  let fromFile = $state<CsvImport | null>(null);
+  /** Set when a file could not be read at all, as opposed to read and refused. */
+  let fileError = $state<string | null>(null);
 
   const parsed = $derived<PasteResult | null>(pasted === null ? null : parsePaste(pasted, p.values));
   const addable = $derived(parsed === null ? 0 : addCount(parsed));
+
+  /** How many values are waiting, whichever way they arrived. */
+  const fileAddable = $derived(fromFile === null ? 0 : fromFile.values.length);
+
+  /** The sentence, from whichever source is pending. */
+  const summary = $derived(
+    fromFile !== null ? describeImport(fromFile) : parsed === null ? null : preview(parsed),
+  );
+
+  /**
+   * Whether the pending import can be applied.
+   *
+   * A TRUNCATED file cannot, however many values it managed to parse. The
+   * whole point of reporting the truncation is that the file is not what the
+   * user thinks it is, and an Apply button that is merely disabled is a
+   * control the user cannot understand -- so the truncated state has no Apply
+   * at all and says what to fix.
+   */
+  const truncated = $derived(fromFile?.truncatedAtLine ?? null);
+  const canApply = $derived(
+    fromFile !== null ? fromFile.values.length > 0 && truncated === null : addable > 0,
+  );
 
   function openMenu(event: MouseEvent) {
     // The browser's own menu is suppressed because it contains exactly one
@@ -111,6 +148,16 @@
   }
 
   function apply() {
+    // One commit path for both sources. A paste and a file produce the same
+    // kind of value, and two commit paths would be two places for a bug in
+    // "what exactly gets added" to live.
+    if (fromFile !== null) {
+      if (!canApply) return;
+      p.onchange([...p.values, ...fromFile.values.map((v) => v.value)]);
+      fromFile = null;
+      fileError = null;
+      return;
+    }
     if (parsed === null) return;
     p.onchange([...p.values, ...parsed.values.map((v) => v.value)]);
     pasted = null;
@@ -118,7 +165,55 @@
 
   function cancel() {
     pasted = null;
+    fromFile = null;
+    fileError = null;
     menuOpen = false;
+  }
+
+  /**
+   * Read a chosen file and import it.
+   *
+   * `File.arrayBuffer()` rather than `FileReader` because it is a promise and
+   * this is already inside one, and because the bytes are needed as a
+   * `Uint8Array` for the encoding check -- which is the whole reason the file
+   * path is not `file.text()`. A UTF-16 CSV read with `.text()` is mojibake
+   * before the parser ever sees it, and the parser cannot tell, because the
+   * damage is done to the bytes.
+   */
+  async function onFile(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (file === undefined) return;
+    fileError = null;
+    fromFile = null;
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const decoded = decodeCsvBytes(bytes);
+      fromFile = importCsv(decoded.text, {
+        // Trimmed because a tag with a leading space cannot be found again, and
+        // the spreadsheet the user exported from is the one that put the space
+        // there by accident. `importCsv` leaves it off by default so a general
+        // reader does not silently change data.
+        trimValues: true,
+        existing: p.values,
+      });
+    } catch {
+      // A file that cannot be read at all. The message says what is wrong
+      // rather than "error", and it does not claim the field is unchanged --
+      // it is, because nothing was applied, but that is implied by there being
+      // no preview.
+      fileError = 'Could not read that file. Try saving it again as a plain CSV.';
+    } finally {
+      // Cleared so choosing the SAME file twice fires a second `change` event.
+      // Without this, a user who cancels a file and picks it again gets
+      // nothing at all, with no indication that anything was attempted.
+      input.value = '';
+    }
+  }
+
+  function openFilePicker() {
+    menuOpen = false;
+    fileEl?.click();
   }
 
   function oncancelmenu() {
@@ -130,7 +225,7 @@
       // Esc closes, and closes the PREVIEW first: §10.7 names Esc-closes-modals
       // explicitly, and a user who pastes by accident needs one Esc to undo the
       // paste and a second to close the menu.
-      if (pasted !== null) {
+      if (pasted !== null || fromFile !== null) {
         event.stopPropagation();
         cancel();
         return;
@@ -145,6 +240,36 @@
       const first = menuEl.querySelector<HTMLElement>('button');
       first?.focus();
     }
+  });
+
+  /**
+   * Esc is listened for on the DOCUMENT, not on the wrapper.
+   *
+   * The wrapper's `onkeydown` only fires for events that bubble through it, so
+   * Esc worked when the user had clicked the field and did nothing after a file
+   * import -- which leaves focus on the hidden file input, outside the wrapper.
+   * That is the one way a preview is opened without the user touching the field,
+   * so it is the one way Esc failed, and it is the way a user who opens a file,
+   * reads the warning, and changes their mind is left with no way out.
+   *
+   * It is on the document rather than on the preview because the preview is not
+   * focusable either, and making a message focusable so that a key can reach it
+   * is a worse trade than listening where the key actually lands.
+   *
+   * The listener is removed when the preview closes, and it calls
+   * `stopPropagation` so that Esc dismissing a preview does not also reach an
+   * enclosing modal that would close at the same time.
+   */
+  $effect(() => {
+    const open = pasted !== null || fromFile !== null || fileError !== null;
+    if (!open || typeof document === 'undefined') return;
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.stopPropagation();
+      cancel();
+    };
+    document.addEventListener('keydown', onEscape, true);
+    return () => document.removeEventListener('keydown', onEscape, true);
   });
 </script>
 
@@ -218,26 +343,147 @@
       >
         Paste values
       </button>
+
+      <!--
+        The file half of #1296, which is "CSV AND paste-parse import" -- one
+        issue, two formats. It is a menu item rather than a bare input because
+        the menu is already the "add values by some means" surface, and two
+        entry points in two places is how a feature ends up with one of them
+        undocumented.
+      -->
+      <button
+        type="button"
+        role="menuitem"
+        data-testid="multi-file-item"
+        onclick={openFilePicker}
+      >
+        Import a CSV file
+      </button>
     </div>
+  {/if}
+
+  <!--
+    A real `<input type="file">`, visually hidden and triggered by a button,
+    rather than a styled div. A file input is a control the platform owns --
+    drag-and-drop, the OS file picker, the mobile share sheet, and a real
+    `accept` filter -- and replacing it with a div throws all of that away.
+    `accept` is a hint, not a filter: the parser sniffs the delimiter and the
+    encoding, so a `.txt` with commas in it imports correctly and a `.csv` that
+    is really tab-separated still works.
+  -->
+  <input
+    type="file"
+    class="visually-hidden"
+    data-testid="multi-file-input"
+    accept=".csv,.tsv,.txt,text/csv,text/plain"
+    bind:this={fileEl}
+    onchange={onFile}
+  />
+
+  <!--
+    A file that could not be read. It gets its own line rather than becoming a
+    preview, because there IS nothing to preview: saying "nothing to add" about
+    a file that failed to open would be a lie about a file the user is fairly
+    sure exists.
+  -->
+  {#if fileError !== null}
+    <p class="error" data-testid="multi-file-error">{fileError}</p>
   {/if}
 
   <!--
     The preview, in the field rather than in a dialog. It is one sentence and
     two buttons, and a modal for that is a modal the user dismisses without
     reading — which is how a 400-row paste gets applied unexamined.
+
+    ONE preview for a paste and for a file, because `CsvImport` is shaped like
+    `PasteResult`. `summary` and `canApply` are the two things that differ, and
+    they are the two things that should.
   -->
-  {#if parsed !== null}
-    <div class="preview" data-testid="multi-preview" data-state={addable > 0 ? 'ready' : 'empty'}>
-      <p data-testid="multi-preview-text">{preview(parsed)}</p>
-      <button
-        type="button"
-        data-testid="multi-preview-apply"
-        disabled={addable === 0}
-        onclick={apply}
-      >
-        {addable === 0 ? 'Nothing to add' : `Add ${addable}`}
-      </button>
+  {#if summary !== null}
+    <div
+      class="preview"
+      data-testid="multi-preview"
+      data-state={canApply ? 'ready' : 'empty'}
+      data-source={fromFile !== null ? 'file' : 'paste'}
+    >
+      <p data-testid="multi-preview-text">{summary}</p>
+
+      <!--
+        A truncated file gets NO Apply button at all, not a disabled one. The
+        file is not what the user thinks it is: its last quoted value swallowed
+        the rest of it. A greyed-out button next to "Add 47" is a control the
+        user cannot act on and cannot understand, and the message beside it
+        already says what to fix.
+      -->
+      {#if truncated === null}
+        <button
+          type="button"
+          data-testid="multi-preview-apply"
+          disabled={!canApply}
+          onclick={apply}
+        >
+          {canApply ? `Add ${fromFile !== null ? fileAddable : addable}` : 'Nothing to add'}
+        </button>
+      {/if}
+
       <button type="button" data-testid="multi-preview-cancel" onclick={cancel}>Cancel</button>
+
+      <!--
+        Warnings are shown, not swallowed. A file that parsed with a stray quote
+        in it has values the user should look at before they are committed, and
+        §10.7's rule is that an action states its scope -- a warning the user
+        cannot see is not a warning.
+      -->
+      {#if fromFile !== null && fromFile.warnings.length > 0}
+        <p data-testid="multi-file-warnings">
+          {fromFile.warnings.length === 1
+            ? '1 row had a stray quote; it was kept as text.'
+            : `${fromFile.warnings.length} rows had a stray quote; they were kept as text.`}
+        </p>
+      {/if}
     </div>
   {/if}
 </div>
+
+<style>
+  /*
+    The hidden file input must be hidden to SIGHT and not to ASSISTIVE TECH.
+    `display: none` and `visibility: hidden` both remove it from the
+    accessibility tree, which would leave a file input the platform can open and
+    no screen reader can describe -- the same control, present for the mouse and
+    absent for everyone else.
+
+    Clipping to a 1px box keeps it focusable, in the tree, and reachable by
+    keyboard, which is the combination that makes it an accessible control
+    rather than a decoration.
+  */
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .preview {
+    /* The preview is a message plus two buttons, and it sits in the flow rather
+       than floating, so it cannot cover the values it is about to change. */
+    margin-top: 0.5rem;
+    padding: 0.5rem;
+    border: 1px solid currentColor;
+    border-radius: 4px;
+  }
+
+  .preview[data-state='empty'] {
+    /* Dimmed, not hidden: the user still needs to read WHY nothing will happen. */
+    opacity: 0.7;
+  }
+
+  .error {
+    margin-top: 0.5rem;
+  }
+</style>
