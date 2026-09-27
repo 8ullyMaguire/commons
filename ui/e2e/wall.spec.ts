@@ -220,4 +220,80 @@ test.describe('the wall', () => {
     const range = await wall.evaluate((el) => el.scrollHeight - el.clientHeight);
     expect(range).toBeLessThanOrEqual(1);
   });
+  // --- windowing (§4.2) -----------------------------------------------------
+  //
+  // The regression item 14 left open. A wall that renders every group renders
+  // 50,000 tiles for a 50,000-row library, and the difference between that and a
+  // working wall is invisible until the library is big enough to hurt.
+
+  test('renders a bounded number of tiles for a large library', async ({ page }) => {
+    await seed(page, 5_000);
+    await page.setViewportSize({ width: 900, height: 500 });
+    await page.goto('/wall?group=month');
+
+    await expect(page.getByTestId('wall-tile').first()).toBeVisible();
+    const tiles = await page.getByTestId('wall-tile').count();
+    // A screenful plus overscan. Generous, because the bound is a contract about
+    // growth rather than about a tuning constant -- but nowhere near 5,000.
+    expect(tiles).toBeLessThan(400);
+  });
+
+  test('the rendered tiles CHANGE as the user scrolls', async ({ page }) => {
+    // The assertion that distinguishes a window from a truncation. A wall that
+    // renders the first N tiles forever passes a count check and is not
+    // virtualized at all.
+    await seed(page, 5_000);
+    await page.setViewportSize({ width: 900, height: 500 });
+    await page.goto('/wall?group=month');
+    await expect(page.getByTestId('wall-tile').first()).toBeVisible();
+
+    const first = await page.getByTestId('wall-tile').first().getAttribute('href');
+    await page.getByTestId('wall').evaluate((el) => el.scrollTo({ top: 20_000 }));
+    await page.waitForTimeout(200);
+
+    const later = await page.getByTestId('wall-tile').first().getAttribute('href');
+    expect(later).not.toBe(first);
+  });
+
+  test('a group far down the wall renders its tiles when scrolled to', async ({ page }) => {
+    // The local-offset bug. A row window computed from the wall's scroll offset
+    // rather than the group's lands past the end of a group halfway down, and
+    // that group renders a header and nothing under it.
+    await seed(page, 5_000);
+    await page.setViewportSize({ width: 900, height: 500 });
+    await page.goto('/wall?group=month');
+    await expect(page.getByTestId('wall-tile').first()).toBeVisible();
+
+    const total = Number(await page.getByTestId('wall').getAttribute('data-total'));
+    await page.getByTestId('wall').evaluate((el) => el.scrollTo({ top: el.scrollHeight * 0.6 }));
+    await page.waitForTimeout(250);
+
+    // Every group that is actually on screen has tiles in it.
+    const empty = await page.getByTestId('wall-group').evaluateAll((els) =>
+      els
+        .filter((el) => {
+          const r = el.getBoundingClientRect();
+          return r.bottom > 0 && r.top < window.innerHeight;
+        })
+        .filter((el) => el.querySelectorAll('[data-testid="wall-tile"]').length === 0)
+        .map((el) => el.getAttribute('data-value'))
+    );
+    expect(empty).toEqual([]);
+    expect(total).toBeGreaterThan(0);
+  });
+
+  test('the wall reports how many groups and rows it is rendering', async ({ page }) => {
+    // So a bound is assertable without counting the DOM, and so a future
+    // regression is visible in the reported numbers as well as the tiles.
+    await seed(page, 5_000);
+    await page.setViewportSize({ width: 900, height: 500 });
+    await page.goto('/wall?group=month');
+    await expect(page.getByTestId('wall-tile').first()).toBeVisible();
+
+    const wall = page.getByTestId('wall');
+    const groups = Number(await wall.getAttribute('data-groups'));
+    const rendered = Number(await wall.getAttribute('data-rendered-groups'));
+    expect(groups).toBeGreaterThan(1);
+    expect(rendered).toBeLessThan(groups);
+  });
 });

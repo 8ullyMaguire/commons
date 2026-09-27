@@ -454,3 +454,208 @@ export function autoScroll(state: AutoScrollState, slack = AUTOSCROLL_SLACK): Au
 export function initialScrollTop(): number {
   return 0;
 }
+
+// ---------------------------------------------------------------------------
+// Windowing
+// ---------------------------------------------------------------------------
+
+/**
+ * One group's placement in the wall. Pure geometry, no rows.
+ */
+export interface GroupBox {
+  readonly value: string;
+  readonly index: number;
+  /** Distance from the top of the wall. */
+  readonly top: number;
+  /** Full height, including the header. */
+  readonly height: number;
+  /** How many rows of tiles the group holds. */
+  readonly rows: number;
+  /** How many of those rows are already loaded and can be rendered. */
+  readonly loadedRows: number;
+  /** How many rows are still unloaded, so the reservation is not a lie. */
+  readonly pending: number;
+}
+
+/**
+ * A prefix-sum of the group heights: where each group starts.
+ *
+ * Built once per layout rather than accumulated per group per frame. A wall
+ * with 5,000 groups would otherwise make the scroll handler O(groups) on every
+ * frame, and the scroll handler is the one thing that must stay O(1) — it runs
+ * on every frame of a trackpad fling, and a layout that walks 5,000 sections
+ * per frame is a dropped-frame layout, not a slow one.
+ */
+export interface GroupLayout {
+  readonly boxes: readonly GroupBox[];
+  /** Cumulative height, no trailing gap. */
+  readonly contentHeight: number;
+}
+
+/**
+ * The offsets of every group.
+ *
+ * `pending` is passed alongside `extents` because `WallExtents` deliberately
+ * reports only whether anything is pending, not how much: the per-group counts
+ * are the caller's, and re-deriving them here would let the two disagree.
+ */
+export function groupLayout(
+  groups: readonly Group[],
+  extents: WallExtents,
+  pending: readonly number[],
+  m: WallMetrics,
+): GroupLayout {
+  const boxes: GroupBox[] = [];
+  let top = 0;
+  for (const [i, g] of groups.entries()) {
+    const height = extents.groupHeights[i] ?? 0;
+    // The body is everything under the header. The rows are the body measured
+    // in row heights, and `rows` is what the window slices -- so it has to come
+    // from the same arithmetic `groupHeight` used, or a rendered row count and a
+    // reserved height disagree and the wall grows as it scrolls.
+    const body = Math.max(0, height - m.headerHeight);
+    const p = pending[i] ?? 0;
+    const itemCount = g.indices.length + p;
+    const rows = Math.ceil(itemCount / Math.max(1, m.columns));
+    boxes.push({
+      value: g.value,
+      index: i,
+      top,
+      height,
+      rows,
+      loadedRows: Math.ceil(g.indices.length / Math.max(1, m.columns)),
+      pending: p,
+    });
+    top += height + m.gap;
+  }
+  return { boxes, contentHeight: top > 0 ? top - m.gap : 0 };
+}
+
+/**
+ * The groups to render, and the rows to render inside each.
+ *
+ * This is the whole of §4.2 for a grouped wall, and it is O(visible + 1) rather
+ * than O(loaded). A wall that renders every group of a 50,000-row library is not
+ * a wall, it is a DOM dump, and the difference is invisible until the library
+ * is big enough to hurt.
+ *
+ * `OVERSCAN` counts whole groups rather than pixels, because a group shorter
+ * than the overscan band is simply included — the alternative is a group that
+ * is half on screen with none of its tiles rendered.
+ */
+export const GROUP_OVERSCAN = 1;
+
+export interface WallWindow {
+  /** Indices into `layout.boxes` that intersect the viewport, in order. */
+  readonly groupIndices: readonly number[];
+  /** For each rendered group, the first and last ROW to render. Half-open. */
+  readonly rowWindows: readonly (readonly [number, number])[];
+}
+
+/**
+ * Which groups and which rows are on screen.
+ *
+ * `scrollTop` and `viewportHeight` are the only inputs, so the whole thing is
+ * O(rendered groups) after one linear scan for the first group. The scan is a
+ * binary search, not a loop, because a wall with 50,000 groups that linearly
+ * scans on every scroll frame is the thing this function exists to prevent.
+ */
+export function wallWindow(
+  layout: GroupLayout,
+  m: WallMetrics,
+  scrollTop: number,
+  viewportHeight: number,
+  overscan = GROUP_OVERSCAN,
+): WallWindow {
+  const boxes = layout.boxes;
+  if (boxes.length === 0) return { groupIndices: [], rowWindows: [] };
+
+  // First group whose bottom is past the top of the viewport. The boxes are
+  // sorted by `top`, so this is a binary search.
+  let lo = 0;
+  let hi = boxes.length - 1;
+  let first = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (boxes[mid]!.top + boxes[mid]!.height > scrollTop) {
+      first = mid;
+      hi = mid - 1;
+    } else {
+      lo = mid + 1;
+    }
+  }
+
+  const from = Math.max(0, first - overscan);
+  const bottom = scrollTop + viewportHeight;
+
+  const groupIndices: number[] = [];
+  const rowWindows: [number, number][] = [];
+  for (let i = from; i < boxes.length; i += 1) {
+    const b = boxes[i]!;
+    // Once a group starts below the viewport, every later one does too --
+    // the boxes are in order, so this is where the scan stops.
+    if (b.top > bottom) break;
+    groupIndices.push(i);
+    rowWindows.push(rowRange(b, m, scrollTop, viewportHeight, overscan));
+  }
+  return { groupIndices, rowWindows };
+}
+
+/**
+ * The rows of one group that are on screen, half-open.
+ *
+ * The subtle part, and the reason this is not `floor(scrollTop / rowHeight)`:
+ * the scroll offset is the WALL's, not the group's. A group that starts 5,000px
+ * down the wall has a local offset of zero, so a row window computed from the
+ * global offset would be tens of thousands of rows past the end of that group
+ * and render nothing at all. The local offset is `scrollTop - b.top`, clamped at
+ * zero for a group that begins above the viewport.
+ */
+function rowRange(
+  b: GroupBox,
+  m: WallMetrics,
+  scrollTop: number,
+  viewportHeight: number,
+  overscan: number,
+): [number, number] {
+  // The tile row height, recovered from the group's own height. `groupHeight`
+  // put this together and `groupLayout` took it apart, so this is exact rather
+  // than an estimate -- and an estimate here is a wall whose rows drift as it
+  // scrolls.
+  const rowHeight = rowHeightOf(b, m);
+  if (rowHeight <= 0 || b.loadedRows === 0) return [0, 0];
+
+  // `localTop` is the scroll offset RELATIVE to this group. For a group that
+  // starts above the viewport it is the group's whole height plus however far
+  // past it the user has scrolled, which is larger than the group -- so the
+  // first row it computes is past the end. Clamping `first` to the group is
+  // what keeps a group above the viewport from claiming rows it does not have,
+  // and `last` is then derived from the CLAMPED first, not the raw one.
+  const localTop = Math.max(0, scrollTop - b.top);
+  const rawFirst = Math.floor(localTop / rowHeight) - overscan;
+  const first = Math.min(b.loadedRows, Math.max(0, rawFirst));
+  const localBottom = Math.max(0, scrollTop + viewportHeight - b.top);
+  const visible = Math.ceil(localBottom / rowHeight) + overscan;
+  const last = Math.min(b.loadedRows, first + visible);
+  return [first, Math.max(first, last)];
+}
+
+/**
+ * The height of one row of tiles in a group.
+ *
+ * Recovered from the group's height, which is `header + rows*h + (rows-1)*gap`
+ * for a known row count. A group whose height includes a pending reservation
+ * has MORE rows than are loaded, so the recovery is done against the loaded
+ * row count: that is the number the scroll maths is slicing, and using the
+ * reserved count would shrink every row by the pending fraction.
+ */
+function rowHeightOf(b: GroupBox, m: WallMetrics): number {
+  if (b.loadedRows <= 0) return 0;
+  const body = Math.max(0, b.height - m.headerHeight);
+  // With N loaded rows reserved as part of `body`, the per-row height is
+  // (body - (N-1)*gap) / N. Solved rather than measured, because measuring means
+  // a layout pass, and a layout pass per scroll frame is the cost this module
+  // exists to avoid.
+  return (body - (b.loadedRows - 1) * m.gap) / b.loadedRows;
+}
+

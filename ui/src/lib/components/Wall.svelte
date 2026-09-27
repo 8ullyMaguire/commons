@@ -35,9 +35,11 @@
     columnCount,
     groupExtents,
     groupLabel,
+    groupLayout,
     groupRows,
     initialScrollTop,
     pendingPerGroup,
+    wallWindow,
     type GroupKey,
     type WallMetrics
   } from '$lib/api/wall.js';
@@ -93,8 +95,23 @@
   const pending = $derived(
     pendingPerGroup(groups, groups.map((g) => g.indices.length), state.totalCount ?? rows.length)
   );
-  const extents = $derived(groupExtents(groups, pending, TILE * POSTER_RATIO, metrics));
   const tileHeight = $derived(TILE * POSTER_RATIO);
+  const extents = $derived(groupExtents(groups, pending, tileHeight, metrics));
+
+  /**
+   * The window: which groups and which rows of each are rendered.
+   *
+   * This is §4.2 for a grouped surface. Without it the wall renders every group
+   * of a 50,000-row library, which is a DOM dump rather than a wall -- and the
+   * difference is invisible until the library is big enough to hurt, which is
+   * exactly the size nobody tests at.
+   *
+   * `wallWindow` is O(log groups) plus the rendered set, and the scroll handler
+   * is the one thing that must stay cheap: it runs on every frame of a trackpad
+   * fling.
+   */
+  const layout = $derived(groupLayout(groups, extents, pending, metrics));
+  const window = $derived(wallWindow(layout, metrics, scrollTop, viewport.height || 800));
 
   /**
    * Load one page and mirror the result.
@@ -164,7 +181,7 @@
   });
 </script>
 
-<div class="wall" bind:this={viewportEl} bind:clientWidth={viewport.width} bind:clientHeight={viewport.height} onscroll={onscroll} data-testid="wall" data-exact={extents.exact} data-pinned={pinned} data-groups={groups.length} data-total={extents.totalHeight}>
+<div class="wall" bind:this={viewportEl} bind:clientWidth={viewport.width} bind:clientHeight={viewport.height} onscroll={onscroll} data-testid="wall" data-exact={extents.exact} data-pinned={pinned} data-groups={groups.length} data-total={extents.totalHeight} data-rendered-groups={window.groupIndices.length}>
   <!--
     The spacer is what makes the scrollbar real. The sections below are
     absolutely positioned inside it at the offsets the pure geometry computed,
@@ -174,20 +191,32 @@
   <div class="spacer" style:height="{extents.totalHeight}px" data-testid="wall-spacer"></div>
 
   <div class="sections" style:height="{extents.totalHeight}px">
-    {#each groups as g (g.value + ':' + g.index)}
+    <!--
+      Indexed, not searched. `rowWindows` is parallel to `groupIndices` and
+      already in order, so a group's window is positional. Looking it up with
+      `indexOf` per group is O(n^2) over the rendered set, and a re-derivation of
+      an answer `wallWindow` already gave.
+
+      The slice is the whole of §4.2 for this surface: only the rows the window
+      names are rendered, so a group holding 50,000 rows contributes a screenful
+      of tiles rather than 50,000 of them.
+    -->
+    {#each window.groupIndices as gi, slot (groups[gi]!.value + ':' + gi)}
+      {@const g = groups[gi]!}
+      {@const rowWindow = window.rowWindows[slot] ?? [0, 0]}
       <section
         class="group"
         data-testid="wall-group"
         data-value={g.value}
-        data-pending={pending[g.index]}
-        style:top="{offsets[g.index]}px"
-        style:height="{extents.groupHeights[g.index]}px"
+        data-pending={pending[gi]}
+        style:top="{offsets[gi]}px"
+        style:height="{extents.groupHeights[gi]}px"
       >
         {#if label !== null}
           <h2 data-testid="wall-group-label">{label}: {g.value}</h2>
         {/if}
         <div class="items">
-          {#each g.indices as i (rows[i]!.id)}
+          {#each g.indices.slice(rowWindow[0] * columns, rowWindow[1] * columns) as i (rows[i]!.id)}
             {@const r = rows[i]!}
             {@const shape = tileShape(r, POSTER_RATIO)}
             <a

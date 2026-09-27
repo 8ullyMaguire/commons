@@ -420,6 +420,62 @@ the truth for every mutant and looked like four survivors. A harness that
 reports the wrong answer is worse than no harness, because it sends you looking
 for holes that are not there.
 
+### T-P5-006 item 15 -- windowing the wall, and closing 4.2
+
+Item 14 recorded its own gap: the wall virtualized per PAGE, not per pixel, so a
+group holding 50,000 rows rendered 50,000 tiles. That is not cosmetic. Section
+4.2 says virtualization throughout, and the DOM is what stops the browser.
+
+**Why it was left open, which is a real tension rather than an oversight.**
+VirtualGrid gets 4.2 free from one decision: fixed row height, so the first
+visible row is floor(scrollTop / rowHeight) - OVERSCAN and the window is O(1). A
+grouped wall has variable row heights, so there is no single rowHeight to divide
+by. The resolution is to keep the O(1) property per GROUP rather than for the
+wall as a whole, recovering each group's row height from the group's own reserved
+height -- an exact recovery rather than an estimate, because groupHeight
+assembled the height from the same arithmetic groupLayout takes apart.
+
+**The bug the structure invites.** A group's row window must use ITS OWN scroll
+offset, scrollTop - b.top. The naive version divides the WALL's scrollTop, which
+is correct for the first group -- which is exactly what makes it survive a
+casual look. A group starting 5,000px down has a local offset of zero, so the
+naive window lands tens of thousands of rows past the end and that group renders
+its header and no tiles. Three unit tests pin it and the e2e asserts the
+rendered consequence: every group overlapping the viewport has tiles in it.
+
+**A second bug: overscan past the end of a group.** For a group ENTIRELY above
+the viewport -- which overscan deliberately includes -- localTop exceeds the
+group's height, rawFirst runs past the end, and a Math.max(first, last) guard
+then inflated last ABOVE loadedRows. The wall asked for rows 0..3 of a 2-row
+group. Harmless in the DOM because the slice clamps, and wrong in the
+arithmetic -- the kind of wrong that becomes visible the moment the slice stops
+clamping. The invariant is now asserted at five scroll positions, not one.
+
+**A test that named the wrong thing.** "The first RENDERED group is the one at
+the top of the viewport" failed, and the failure was correct: the first rendered
+group is the OVERSCAN one, which starts above the viewport. It now asserts the
+claim worth making -- every group that overlaps the viewport is rendered. A test
+that pins a wrong invariant is worse than a missing test, because it survives the
+fix and fails after it.
+
+**Two component bugs, both with the same signature: a green build and an empty
+page.** A {@@const} inside a nested {@each} is a runtime error, not a compile
+one -- it must be an immediate child of a block -- and a loop renamed from
+`as g` to `as gi` whose body still said `g.indices` leaves the surface blank
+with HTTP 200. Neither points anywhere; both are fixed by a console probe rather
+than a re-read, and both are now in the harness skill. The first attempt also
+looked the row window up with indexOf inside the template, which is O(n^2) over
+the rendered set and a re-derivation of an answer wallWindow already returned in
+order; it is positional now.
+
+41 mutations, 41 killed, 0 survived, 0 stale. 21 UI tests, 4 new e2e.
+UI now 549, e2e 127, Rust 1310.
+
+The test that matters most is "every group is reachable by scrolling to it": a
+window that renders only the top groups passes every count assertion. Walking the
+whole wall and checking each group renders when the viewport is on it is what
+rules that out.
+
 ### T-P5-006 item 14 -- the wall, with group-by and auto-scroll
 
 #6544 (group-by) and #6955 (auto-scroll) are one surface, and the interesting

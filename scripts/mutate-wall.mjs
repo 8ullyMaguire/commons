@@ -194,6 +194,86 @@ const MUTANTS = [
     to: 'export function initialScrollTop(): number {\n  return Number.MAX_SAFE_INTEGER;\n}',
     note: 'A wall that opens at the bottom is a wall whose top the user cannot find.',
   },
+  // --- windowing (item 15) --------------------------------------------------
+
+  {
+    name: 'wallWindow renders every group',
+    from: '    if (b.top > bottom) break;',
+    to: '    if (b.top > bottom && false) break;',
+    note: 'The §4.2 claim: the rendered set is bounded independently of library size.',
+  },
+  {
+    name: 'wallWindow uses the wall scroll offset for the row window',
+    from: '  const localTop = Math.max(0, scrollTop - b.top);',
+    to: '  const localTop = Math.max(0, scrollTop);',
+    note: 'A group far down the wall would compute a row window past its own end and render nothing.',
+  },
+  {
+    name: 'wallWindow ignores the viewport height',
+    from: '  const localBottom = Math.max(0, scrollTop + viewportHeight - b.top);',
+    to: '  const localBottom = Math.max(0, scrollTop - b.top);',
+    note: 'The bottom of the viewport decides the last row; without it only the first is rendered.',
+  },
+  {
+    name: 'wallWindow drops the overscan on the first group',
+    from: '  const from = Math.max(0, first - overscan);',
+    to: '  const from = first;',
+    note: 'A group scrolled half off the top renders with its visible half missing.',
+  },
+  {
+    name: 'wallWindow lets the first row past the end of its group',
+    from: '  const first = Math.min(b.loadedRows, Math.max(0, rawFirst));',
+    to: '  const first = Math.max(0, rawFirst);',
+    note: 'A group entirely above the viewport claims rows it does not have.',
+  },
+  {
+    name: 'wallWindow renders one row of every group',
+    from: '  const last = Math.min(b.loadedRows, first + visible);',
+    to: '  const last = Math.min(b.loadedRows, first + 1);',
+    note: 'A visible group with 5 rows would render 1 of them.',
+  },
+  {
+    name: 'rowHeightOf ignores the gap between rows',
+    from: '  return (body - (b.loadedRows - 1) * m.gap) / b.loadedRows;',
+    to: '  return body / b.loadedRows;',
+    note: 'Rows drift out of alignment with the reserved height as a group grows.',
+  },
+  {
+    name: 'rowHeightOf is not guarded against zero',
+    from: '  if (b.loadedRows <= 0) return 0;',
+    to: '  if (b.loadedRows < 0) return 0;',
+    note: 'A group with no loaded rows divides by zero and the row window is NaN.',
+  },
+  {
+    name: 'groupLayout counts the pending rows as loaded',
+    from: '    const rows = Math.ceil(itemCount / Math.max(1, m.columns));',
+    to: '    const rows = Math.ceil(g.indices.length / Math.max(1, m.columns));',
+    note: 'The window would try to render rows that were never loaded.',
+  },
+  {
+    name: 'groupLayout puts every group at the same top',
+    from: '    top += height + m.gap;',
+    to: '    top += 0;',
+    note: 'Sections stack on each other and the wall renders one visible group.',
+  },
+  {
+    name: 'groupLayout leaves a trailing gap in the content height',
+    from: '  return { boxes, contentHeight: top > 0 ? top - m.gap : 0 };',
+    to: '  return { boxes, contentHeight: top };',
+    note: 'Scroll range containing nothing at the end; reads as a rendering bug.',
+  },
+  {
+    name: 'wallWindow binary-searches from the wrong end',
+    from: '      first = mid;\n      hi = mid - 1;\n    } else {\n      lo = mid + 1;',
+    to: '      first = mid;\n      lo = mid + 1;\n    } else {\n      hi = mid - 1;',
+    note: 'The search converges on the wrong group and the viewport renders the wrong section.',
+  },
+  {
+    name: 'wallWindow renders nothing when the viewport is unmeasured',
+    from: '    if (b.top > bottom) break;\n    groupIndices.push(i);',
+    to: '    if (b.top > bottom) break;\n    if (b.top < bottom) groupIndices.push(i);',
+    note: 'A viewport measured at 0 renders nothing and the wall stays blank.',
+  },
 ];
 
 /**
