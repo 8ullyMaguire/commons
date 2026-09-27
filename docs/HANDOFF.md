@@ -1802,3 +1802,48 @@ inherited and invisible, which is a default one line away from changing under
 you. The landing is not asserted because this browser will not seek a paused
 video at all, so such a test would pass because the seek never happened. §8.2 of
 the spec records it, and says what the test is on a machine that can run it.
+
+## `git push "$r" --tags` pushes tags and NOT the branch
+
+Found by the remote-sync gate in `scripts/verify.sh`, which is the only reason
+that gate is worth having.
+
+`--tags` is a **refspec**, and naming it *replaces* the default
+`refs/heads/*` refspec rather than adding to it. So the line
+
+    git push "$r" --tags      # what scripts/pushall.sh did
+
+pushed every milestone tag and **no branch at all**. It reported success, it
+exited 0, and for **five consecutive commits** it left `main` untouched.
+
+Everything a reasonable check would have told you looked fine:
+
+- `git ls-remote --tags` listed all 53 tags, so a tag check passed;
+- the commit objects were reachable, so a plain `git fetch` brought them in and
+  a by-SHA fetch worked;
+- the local commit log was correct, because it was local.
+
+The only thing that disagreed was `refs/heads/main` — the one ref the gate
+compares, and the one a reader of the remote would actually look at. `main` was
+five commits behind while every tag pointed into the future.
+
+**The lesson is the one the script's own history already told, one layer down.**
+The first version of this script was a `git config alias` that used `-q` and
+exited 0 having pushed nothing. So the file already carried a comment about a
+push that reported success and did nothing — and then introduced a second one,
+differently shaped, for the same reason: a green result that is not a result.
+
+**Both remotes are now verified against `ls-remote` after the push**, which is
+the same evidence the gate uses, so the script and the gate cannot disagree
+about what "pushed" means. And the verification is `|| true`-guarded on
+purpose: under `set -e` an unreachable remote kills the script at the first
+failing command, so a Forgejo outage aborted the script *before origin's result
+was reported* — the one thing the script exists to tell you is which remote is
+behind. It now reports all of them and exits 1, naming the unreachable one as
+unreachable rather than as behind.
+
+**Forgejo is still returning HTTP 500** on every request that touches its
+database, which is every push and every `ls-remote`. That is a server-side
+fault on `git.polarisocial.xyz`, not a credential or a network problem, and it
+is the one gate in `verify.sh` that cannot go green until it is fixed. Origin
+(GitHub) is verified at the current commit with all 53 tags.
