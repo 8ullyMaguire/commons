@@ -160,6 +160,20 @@ for m in "$REPO"/scripts/mutate-*.mjs; do
   fi
 done
 
+# The Phase 11 ecosystem numbers, re-measured. A staleness check, not a
+# correctness one: upstream pushes daily so the numbers WILL change, and what
+# must not happen is README.md, HANDOFF.md, the plan and the Phase 11 brief
+# quietly disagreeing with reality. Four figures were wrong in the first draft
+# and nothing failed, because they were prose in a comment.
+echo "== ecosystem measurements"
+if python3 "$REPO/scripts/measure-ecosystem.py" --check > /tmp/commons-eco.txt 2>&1; then
+  sed -n '2,6p' /tmp/commons-eco.txt | sed 's/^/   /'
+else
+  sed -n '1,10p' /tmp/commons-eco.txt | sed 's/^/   /'
+  echo "   FAILED: the stashapp ecosystem has moved and the docs quote stale counts"
+  fail=1
+fi
+
 echo "== ui: unit tests"
   if (cd "$REPO/ui" && node ./tests/run-tests.mjs) > /tmp/commons-ui-unit.txt 2>&1; then
     grep -E '^. (tests|pass|fail) ' /tmp/commons-ui-unit.txt | sed 's/^/   /'

@@ -1,0 +1,191 @@
+{
+  "CommunityScrapers": {
+    "lib_files": 19,
+    "py_common_files": 9,
+    "ref": "master",
+    "scraper_site_dirs": 216,
+    "scrapers_dir_files": 981,
+    "scrapers_markdown": 65,
+    "scrapers_python": 163,
+    "scrapers_ruby": 7,
+    "scrapers_yaml": 728,
+    "scrapers_yaml_flat": 497,
+    "scrapers_yaml_grouped": 231,
+    "total_files": 1035
+  },
+  "CommunityScripts": {
+    "archived_files": 19,
+    "plugin_dirs": 79,
+    "plugin_files": 462,
+    "plugin_js": 58,
+    "plugin_markdown": 84,
+    "plugin_python": 95,
+    "plugin_yaml": 79,
+    "ref": "main",
+    "theme_css": 28,
+    "theme_dirs": 11,
+    "theme_files": 53,
+    "total_files": 566,
+    "userscript_dirs": 2,
+    "userscript_files": 4
+  },
+  "measured": "2026-09-27T09:52:08+02:00",
+  "org": "stashapp",
+  "repo_count": 14,
+  "repos": {
+    ".github": {
+      "archived": false,
+      "default_branch": "main",
+      "forks": 0,
+      "language": null,
+      "license": null,
+      "pushed_at": "2024-05-27",
+      "reason": "org defaults",
+      "scope": "out",
+      "stars": 0
+    },
+    "CommunityScrapers": {
+      "archived": false,
+      "default_branch": "master",
+      "forks": 520,
+      "language": "YAML",
+      "license": "AGPL-3.0",
+      "pushed_at": "2026-09-26",
+      "reason": "the declarative scraper corpus",
+      "scope": "work",
+      "stars": 841
+    },
+    "CommunityScripts": {
+      "archived": false,
+      "default_branch": "main",
+      "forks": 242,
+      "language": "JavaScript",
+      "license": "AGPL-3.0",
+      "pushed_at": "2026-09-24",
+      "reason": "plugins, themes, userscripts",
+      "scope": "work",
+      "stars": 284
+    },
+    "Stash-Docs": {
+      "archived": false,
+      "default_branch": "main",
+      "forks": 64,
+      "language": "HTML",
+      "license": "CC-BY-SA-4.0",
+      "pushed_at": "2026-06-27",
+      "reason": "behavioural specification; read, never port",
+      "scope": "read",
+      "stars": 80
+    },
+    "StashDB-Docs": {
+      "archived": false,
+      "default_branch": "main",
+      "forks": 20,
+      "language": "SCSS",
+      "license": "AGPL-3.0",
+      "pushed_at": "2026-08-31",
+      "reason": "documentation for a different service",
+      "scope": "out",
+      "stars": 37
+    },
+    "StashFrontend": {
+      "archived": true,
+      "default_branch": "master",
+      "forks": 3,
+      "language": "TypeScript",
+      "license": "MIT",
+      "pushed_at": "2018-11-25",
+      "reason": "archived pre-2019 TypeScript client",
+      "scope": "out",
+      "stars": 4
+    },
+    "StashOSX": {
+      "archived": true,
+      "default_branch": "master",
+      "forks": 1,
+      "language": "Swift",
+      "license": "MIT",
+      "pushed_at": "2018-06-04",
+      "reason": "archived pre-2019 Swift client",
+      "scope": "out",
+      "stars": 5
+    },
+    "StashServer": {
+      "archived": true,
+      "default_branch": "master",
+      "forks": 9,
+      "language": "Ruby",
+      "license": "MIT",
+      "pushed_at": "2019-02-11",
+      "reason": "archived pre-2019 Ruby server",
+      "scope": "out",
+      "stars": 50
+    },
+    "metadata-api-discuss": {
+      "archived": false,
+      "default_branch": "master",
+      "forks": 1,
+      "language": null,
+      "license": "MIT",
+      "pushed_at": "2019-11-15",
+      "reason": "dormant issue threads; historical context",
+      "scope": "read",
+      "stars": 8
+    },
+    "plugins-repo-template": {
+      "archived": false,
+      "default_branch": "main",
+      "forks": 5,
+      "language": "Shell",
+      "license": "AGPL-3.0",
+      "pushed_at": "2026-04-20",
+      "reason": "the source-index format T-P11-001 reads",
+      "scope": "consumed",
+      "stars": 13
+    },
+    "scrapers-repo-template": {
+      "archived": false,
+      "default_branch": "main",
+      "forks": 1,
+      "language": "Shell",
+      "license": "AGPL-3.0",
+      "pushed_at": "2026-04-20",
+      "reason": "the source-index format T-P11-001 reads",
+      "scope": "consumed",
+      "stars": 1
+    },
+    "stash": {
+      "archived": false,
+      "default_branch": "develop",
+      "forks": 1187,
+      "language": "Go",
+      "license": "AGPL-3.0",
+      "pushed_at": "2026-09-22",
+      "reason": "the reference implementation",
+      "scope": "out",
+      "stars": 13026
+    },
+    "stash-box": {
+      "archived": false,
+      "default_branch": "master",
+      "forks": 96,
+      "language": "TypeScript",
+      "license": "MIT",
+      "pushed_at": "2026-09-17",
+      "reason": "a service to be a client of; MIT; not an artifact to adapt",
+      "scope": "read",
+      "stars": 371
+    },
+    "website": {
+      "archived": false,
+      "default_branch": "master",
+      "forks": 8,
+      "language": "SCSS",
+      "license": "AGPL-3.0",
+      "pushed_at": "2025-01-31",
+      "reason": "marketing",
+      "scope": "out",
+      "stars": 11
+    }
+  }
+}

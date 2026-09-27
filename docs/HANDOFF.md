@@ -1041,21 +1041,28 @@ CommunityScripts and CommunityScrapers, adapted to this implementation, and
 **only after everything else is done**. Added to the plan as Phase 11 with
 seven tickets. Nothing implemented.
 
-The measurements that shaped it, all taken from the GitHub API rather than
-assumed — re-take them before trusting any of these numbers, since upstream
-pushes daily:
+The brief for the phase is
+[`docs/prompts/phase-11-stashapp-ecosystem.md`](prompts/phase-11-stashapp-ecosystem.md) —
+self-contained, so an agent with no memory of this project can execute it.
+
+The measurements below were **re-taken from the GitHub trees API on 2026-09-27**
+and four of the earlier figures were wrong: this table previously claimed 729
+YAML, 155 Python, 982 files and 12 theme directories, where the truth is 728,
+163, 981 and 11. A number nobody re-measures is a number that was true once.
+The re-measured figures are now the ones asserted in the plan's accept criteria,
+so the count is a test rather than a comment:
 
 | | |
 |---|---|
-| `CommunityScrapers` (`master`) | 982 files under `scrapers/`: **729 YAML**, 155 Python, 9 `py_common` |
-| `CommunityScripts` (`main`) | 462 plugin files across **79 plugin directories**; 12 theme directories, 54 CSS |
+| `CommunityScrapers` (`master`) | 981 files under `scrapers/`: **728 YAML**, 163 Python, 90 other (65 `.md`, 7 `.rb`), 9 `py_common` |
+| `CommunityScripts` (`main`) | 462 plugin files across **79 plugin directories**; 11 theme directories, 53 theme files, 28 CSS; 2 userscripts; 19 archived |
 | Both | AGPL-3.0, actively pushed |
 | `stash` itself | Go, 13k stars — the reference implementation, not a target |
 | Archived | `StashServer`, `StashFrontend`, `StashOSX` (all pre-2019) |
 
 Three decisions, and the reasoning matters more than the decisions:
 
-1. **The YAML scrapers get an interpreter, not a translator.** 729 declarative
+1. **The YAML scrapers get an interpreter, not a translator.** 728 declarative
    definitions, each a program in a small language (entry-point table, XPath and
    JSON selectors, a `postProcess` chain of `replace`/`parseDate`/`truncate`/
    `map`). A per-file converter has to track every upstream construct forever.

@@ -231,6 +231,13 @@ regenerated corpus does not show up as a diff.
   upstream issues)
 - [`docs/plans/implementation-plan.md`](docs/plans/implementation-plan.md) —
   the implementation plan, with per-ticket status and commit hashes
+- [`docs/prompts/phase-11-stashapp-ecosystem.md`](docs/prompts/phase-11-stashapp-ecosystem.md)
+  — the brief for adapting the `stashapp` ecosystem (728 YAML scrapers, 163
+  Python scrapers, 79 plugin directories, 11 themes). Written to be handed to an
+  agent with no memory of this project. **Not started, and deliberately last**:
+  the rest of the project comes first. Its counts come from
+  `./scripts/measure-ecosystem.py`, which `verify.sh` runs with `--check` so the
+  numbers cannot drift from upstream.
 
 The spec is the authority. Where the code and the spec disagree, that is a bug
 in the code, and the test names and comments here say which rule they are
@@ -279,7 +286,7 @@ that is a worse lie than "I do not know yet".
 | 2 — Library and scale | 8 of 8 | watcher, checkpoints, hashing, move detection, missing volumes, durable job queue, hardware acceleration, storage accounting, encoder configuration, the locator consent gate, the throughput budget |
 | 3 | 2 of 8 | scan pipeline and face detection done; clustering, the performer model, still to come |
 | 4–6 | planned | federation, UI surfaces, review and automation |
-| 11 — community ecosystem | planned, **last** | adapt the stashapp ecosystem rather than fork it: 729 YAML scrapers, 155 Python scrapers, 79 plugin directories, 12 theme directories. Nothing is vendored — every artifact is fetched at install time, pinned by commit. |
+| 11 — community ecosystem | planned, **last** | adapt the stashapp ecosystem rather than fork it: 728 YAML scrapers, 163 Python scrapers, 79 plugin directories, 11 theme directories. Nothing is vendored — every artifact is fetched at install time, pinned by commit. |
 
 Closed so far, among others: #3530 (one file, many objects — 38 comments
 upstream), #2276 (multi-part scenes), #2511 (virtual compilations), #1258
@@ -297,11 +304,11 @@ than forking them. It is deliberately the **last** phase: it is the only one
 whose value is entirely borrowed, and every ticket before it is about the thing
 it plugs into.
 
-The two repositories are two different problems. 729 of the 982 scraper
+The two repositories are two different problems. 728 of the 981 scraper
 definitions are **declarative YAML** — an entry-point table plus XPath/JSON
 selectors and a `postProcess` chain — so adapting them means writing an
-interpreter for that little language, not translating 729 programs. The other
-155 are ordinary Python on a `py_common` runtime, and the 79 plugin directories
+interpreter for that little language, not translating 728 programs. The other
+163 are ordinary Python on a `py_common` runtime, and the 79 plugin directories
 are Python or TypeScript. Those get a **compatibility layer**, because
 reimplementing 155 working programs in Rust is a different project with a worse
 success rate, and a hand-port that diverges from upstream is worse than no port

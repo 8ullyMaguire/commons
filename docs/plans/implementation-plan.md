@@ -3222,37 +3222,69 @@ recommendation — that is the point of writing it down.
 
 ## Phase 11 — The community ecosystem (stashapp/CommunityScripts, CommunityScrapers)
 
-**Added 2026-09-26 at the owner's request.** This phase is deliberately last: it
-is the only phase whose value is entirely borrowed, and every ticket before it
-is about the thing this ecosystem plugs into. Nothing here is implemented until
-Phase 10 is closed.
+**Added 2026-09-26 at the owner's request**, restated 2026-09-27 as *every
+repository in the `stashapp` organisation*, with `CommunityScrapers` and
+`CommunityScripts` called out specially. This phase is deliberately last: it is
+the only phase whose value is entirely borrowed, and every ticket before it is
+about the thing this ecosystem plugs into. Nothing here is implemented until the
+rest of the project is complete and verified.
+
+**The executable brief is
+[`docs/prompts/phase-11-stashapp-ecosystem.md`](../prompts/phase-11-stashapp-ecosystem.md).**
+It is self-contained — an agent with no memory of this project can work through
+it — and it carries the seven tickets, the per-ticket "how do you know it is
+done" criteria, the licensing constraints, the working agreement, and a
+reasoned scope decision for each of the organisation's other repositories
+(`stash-box` is a service to be a *client* of, `Stash-Docs` is a behavioural
+specification to read, and the three pre-2019 repositories are archived and
+explicitly out of scope).
+
+**Every count in this section was re-measured from the GitHub trees API on
+2026-09-27**, and four figures in the first draft were wrong (729 YAML → **728**,
+155 Python → **163**, 982 files → **981**, 12 themes → **11**). The corrected
+numbers are what T-P11-001's accept criteria assert, so the count is a test
+rather than a comment.
+
+**`./scripts/measure-ecosystem.py` regenerates them** from the GitHub API into
+`docs/ecosystem-2026-09-27.json`, and `verify.sh` runs it with `--check`, so a
+push upstream that changes a count fails the gate until the documents are updated
+with it. Upstream pushes daily, so this is expected to fire; it is a staleness
+check, not a correctness one.
 
 ### What is actually in those repositories
 
-Measured, not assumed. Both are AGPL-3.0, both are actively pushed
-(CommunityScrapers `master`, CommunityScripts `main`), and the `stashapp` org
-holds 14 public repositories.
+Measured, not assumed, and re-measured on 2026-09-27. Both artifact
+repositories are AGPL-3.0 and both are actively pushed (CommunityScrapers
+`master`, CommunityScripts `main`). The `stashapp` org holds 14 public
+repositories, of which two are the work and the rest are read, consumed, or
+explicitly out of scope.
 
-| Repo | Stars | Forks | Shape |
+| Repo | Stars | Shape | Scope here |
 |---|---|---|---|
-| `stash` (Go) | 13022 | 1184 | the reference implementation |
-| `CommunityScrapers` | 841 | 520 | **729 YAML + 155 Python** scraper definitions |
-| `stash-box` (TS) | 371 | 96 | GraphQL metadata graph, MIT |
-| `CommunityScripts` | 284 | 242 | **462 plugin files, 54 themes**, plus userscripts |
-| `Stash-Docs` | 80 | 64 | the manual, CC-BY-SA |
-| `plugins-repo-template`, `scrapers-repo-template` | 13, 1 | — | scaffolding |
-| `StashServer`, `StashFrontend`, `StashOSX`, `metadata-api-discuss` | — | — | **archived**, pre-2019, not targets |
+| `CommunityScrapers` | 841 | **728 YAML + 163 Python** scraper definitions, AGPL-3.0 | **T-P11-001…004** |
+| `CommunityScripts` | 284 | **462 plugin files / 79 directories, 11 themes**, 2 userscripts, AGPL-3.0 | **T-P11-005, 007** |
+| `stash-box` | 371 | Go + TS metadata / perceptual-hash API, MIT | **a service to be a client of** — §0 of the brief |
+| `stash` (Go) | 13k | the reference implementation | not a target |
+| `Stash-Docs` | 80 | the manual, CC-BY-SA | **read** as a behavioural spec |
+| `plugins-repo-template`, `scrapers-repo-template` | 13, 1 | source-index scaffolding | consumed by T-P11-001's index format |
+| `StashServer`, `StashFrontend`, `StashOSX` | — | Ruby / TS / Swift | **archived, pre-2019** — explicitly out of scope |
+| `StashDB-Docs`, `website`, `.github` | 37, 11, 0 | docs, marketing, org defaults | out of scope |
+| `metadata-api-discuss` | 8 | issue threads | **dormant since 2019** — historical context only |
+
+Fourteen public repositories, re-measured 2026-09-27. The first draft of this
+table listed thirteen and called `metadata-api-discuss` archived, which it is
+not: it is merely dormant, and it is a reading source, not a target.
 
 The two that matter here split into **two genuinely different problems**, and
 this plan does not pretend otherwise.
 
-**The scrapers are mostly declarative.** 729 of the 982 files under
+**The scrapers are mostly declarative.** 728 of the 981 files under
 `scrapers/` are YAML: an entry-point table (`performerByURL`, `sceneByFragment`,
 `galleryByURL`, …) plus `xPathScrapers` / `jsonScrapers` blocks that are
 selectors, `concat`, and a `postProcess` list of `replace` / `parseDate` /
 `truncate` / `map` transforms. A YAML scraper is a *program in a tiny
 declarative language*, and adapting it is a matter of writing an interpreter
-for that language. The 155 Python ones are not: they are ordinary programs that
+for that language. The 163 Python ones are not: they are ordinary programs that
 import `py_common` and, increasingly, `AyloAPI`.
 
 **The plugins are ordinary programs too.** 79 of them are Python invoked as
@@ -3263,7 +3295,7 @@ the manifest *is* the YAML, and the plugin id is the directory name.
 
 ### The three decisions this phase rests on
 
-1. **The YAML scraper language gets an interpreter, not a translator.** 729
+1. **The YAML scraper language gets an interpreter, not a translator.** 728
    definitions is too many to translate one at a time, and they are declarative
    by design. A converter would need to stay in sync with every upstream
    construct forever; an interpreter is written once and tracks the language.
@@ -3271,7 +3303,7 @@ the manifest *is* the YAML, and the plugin id is the directory name.
    semantics must be a *superset-compatible* reimplementation, and every
    divergence has to be a named, tested, reported difference.
 2. **The Python scrapers and plugins get a compatibility layer, not a
-   rewrite.** `py_common` is a real library with a real API; reimplementing 155
+   rewrite.** `py_common` is a real library with a real API; reimplementing 163
    programs in Rust is not adaptation, it is a different project with a worse
    success rate. So `py_common` ships as a shim over Commons' own host API,
    and a scraper that needs a capability Commons does not have says so at load
@@ -3291,8 +3323,8 @@ nothing; it builds a catalogue of `(repo, ref, path, kind, declared
 requirements)` and can pin a set of artifacts to exact commit SHAs.
 
 **Accept:** a test against a recorded fixture of the two trees that asserts the
-catalogue sees 729 YAML scrapers, 155 Python scrapers, 79 plugin directories and
-12 theme directories — and fails loudly if upstream has diverged, because a number that
+catalogue sees 728 YAML scrapers, 163 Python scrapers, 79 plugin directories and
+11 theme directories — and fails loudly if upstream has diverged, because a number that
 changes silently is a number nobody is maintaining. Pinning is by SHA, and a
 test asserts a SHAs-pinned fetch is byte-identical across two runs.
 **Done when:** the count assertions exist.
@@ -3307,7 +3339,7 @@ and JSON selector languages, and the `postProcess` chain
 `filter` / `setDefault`). Selectors evaluate against `lxml`-shaped results via
 `quick-xml` plus an HTML5 tree, not against a browser.
 
-**Accept:** every construct in the 729-file corpus is either implemented or
+**Accept:** every construct in the 728-file corpus is either implemented or
 recorded in a `unimplemented.yaml` list with the count. A differential test
 runs the interpreter over N real scrapers and asserts it produces a *structurally
 valid* result object; it does **not** assert equality with stash, because
@@ -3352,8 +3384,8 @@ queue.
 
 **Files:** `crates/commons-ecosystem/src/plugins.rs`, `crates/commons-plugin/src/api.rs`
 
-The 79 plugin directories (95 of the 462 files are Python) and the 12 theme
-directories, 54 files of CSS served into the app's stylesheet layer. The YAML becomes a `Manifest`:
+The 79 plugin directories (95 of the 462 files are Python) and the 11 theme
+directories, 28 files of CSS served into the app's stylesheet layer. The YAML becomes a `Manifest`:
 directory name is the id, `version` is the manifest version, `exec` is a
 `ProcessSpawn` capability that is **refused by default** under
 `HostPolicy::first_party` and must be granted visibly.
@@ -3467,8 +3499,8 @@ results: an unsupported field returns an error, because a scraper that reads
   acceptance test, not by mockup. Visual design is a separate exercise.
 - **No scraper *authoring*.** Phase 11 makes the existing
   `stashapp/CommunityScrapers` and `CommunityScripts` ecosystems usable here —
-  729 declarative YAML scrapers, 155 Python scrapers, 79 plugin directories and
-  12 theme directories (54 CSS files). Writing *new* per-site scrapers is out of
+  728 declarative YAML scrapers, 163 Python scrapers, 79 plugin directories and
+  11 theme directories (28 CSS files). Writing *new* per-site scrapers is out of
   scope: it adapts what the community already maintains and does not fork it.
   That is also why Phase 11 vendors nothing (§0.1 rule 6).
 - **No model training.** §7 and §8 consume ONNX models; this plan never trains
