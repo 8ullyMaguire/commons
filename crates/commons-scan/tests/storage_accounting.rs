@@ -267,9 +267,19 @@ fn disk_space_agrees_with_df() {
     // The bound is generous because it exists to catch a real regression: a
     // mis-mapped column, or reporting f_bfree where f_bavail was meant, differs
     // by the root reserve, which is hundreds of megabytes on a real filesystem.
+    //
+    // It was originally 16 blocks (64 KiB), which was too tight: the full
+    // workspace suite runs 75 targets and cargo is writing the target directory
+    // while this samples. That is a minute of compilation, and it moved the
+    // counter by 96 KiB -- three times the bound -- on a machine doing nothing
+    // but compiling. A tolerance that fails under the project's own test command
+    // is a tolerance that has to be widened, not a test to be deleted: the
+    // regression it guards is a root reserve of hundreds of megabytes, so
+    // 16 MiB still catches that with a factor of fifty to spare and stops
+    // depending on how much else the machine is doing.
     let drift = space.available.abs_diff(df_avail);
     assert!(
-        drift <= 16 * 4096,
+        drift <= 16 * 1024 * 1024,
         "statvfs bavail vs df available drifted by {drift} bytes, which is more \
          than concurrent writes between the two samples should account for"
     );

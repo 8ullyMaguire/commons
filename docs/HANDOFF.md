@@ -420,6 +420,50 @@ the truth for every mutant and looked like four survivors. A harness that
 reports the wrong answer is worse than no harness, because it sends you looking
 for holes that are not there.
 
+### T-P5-006 item 11 — right-click paste, and a survivor that was a real bug
+
+`ui/src/lib/api/paste.ts` parses a paste into N values; the design decision is
+that **a separator only counts outside quotes**. Splitting on newlines alone
+misses a spreadsheet column; splitting on commas turns "Smith, John" into two
+tags. The chosen rule trusts a quote, because the quoted form is unambiguous
+and the unquoted form is not — and a user who pastes `Smith, John` unquoted
+can see how to fix it (add quotes), where a parser that silently merged two of
+their tags leaves them nothing to do.
+
+A paste does not land until it is confirmed. One sentence, an Add button,
+Cancel, and Esc. A paste of 400 tags into a field holding 380 is not
+reversible by hand, and §10.10's rule — an action states its scope before you
+commit to it — is the bulk modal's scope line applied to the smallest unit it
+has.
+
+**A surviving mutation that turned out to be a real bug.** Removing `unquote`'s
+`endsWith` check survived, and chasing it found the defect: the splitter kept
+quote characters in the value buffer and stripped them at the end, so `"A", B`
+— balanced quotes, a separator *outside* them — read as one value with stray
+quotes in it. A quote only protects a separator next to it. The fix strips
+quotes during the scan and tracks whether a part opened with one, so a quoted
+blank survives as data. One of the three new tests guards a case that fix broke:
+trimming before filtering reduced `" "` to the empty string and discarded it.
+
+**One mutation is exempt, and proved rather than assumed.** "A doubled quote is
+read as a close, then an open" emits `""` instead of `"` and consumes one
+character instead of two. Both paths consume exactly two quote characters and
+leave the state unchanged, and the doubled form is undone by `unquote`. An
+exhaustive check over every string of length ≤ 8 in `{a, "}` found zero
+differences. Equivalent mutant, recorded next to the list with its reason rather
+than deleted to improve the number.
+
+14 mutations: 13 killed, 1 exempt. Four needed retargeting after the fix, which
+is the script's `COULD NOT APPLY` line doing its job — a stale mutation is a
+script that has stopped testing anything.
+
+The right-click test dispatches the event and reads `defaultPrevented` rather
+than clicking, because a menu that appears *beside* the browser's is the
+failure. An earlier version asserted on `navigator.userAgent`, which was both
+meaningless and false — HeadlessChrome contains an `x`.
+
+39 UI tests, 8 e2e, e2e now 83.
+
 ### T-P5-006 item 10, part 2 — the create UI, and a bug only a browser could see
 
 `ui/src/lib/api/create.ts` (pure) turns `CreateOutcome`'s three counts into the
