@@ -73,6 +73,11 @@ tokio-tungstenite = "0.24"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 blake3 = "1.5"
+# URL-safe token encoding for share links (T-P5-007 §9.5). std has no base64.
+base64 = "0.22"
+# Token secrets. rand 0.9 renamed `thread_rng` -> `rng`, and the workspace is
+# on 0.9, so a 0.8-style import does not compile.
+rand = "0.9"
 xxhash-rust = { version = "0.8", features = ["xxh3", "xxh64"] }
 wasmtime = "24"
 ort = "2.0"
