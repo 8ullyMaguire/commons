@@ -420,6 +420,64 @@ the truth for every mutant and looked like four survivors. A harness that
 reports the wrong answer is worse than no harness, because it sends you looking
 for holes that are not there.
 
+### T-P5-006 item 13 — per-field ignore lists, and §10.10 is complete
+
+#2318 (ignore fields when using the tagger) and #2399 (exclude fields from the
+search query) look like two features and are one mechanism at two different
+points. An APPLIED list decides what a scrape writes, so "Accept all" cannot
+overwrite a field the user curates by hand. A SEARCH list decides what a query
+looks at; nothing is written. Conflating them gives the worst of both: a user
+who excludes a field from the search silently stops getting its value, with
+nothing on screen saying why. Two lists, one shared vocabulary, never merged —
+and the e2e asserts independence by ticking one and checking the other.
+
+**The decision a Set cannot make.** With a `Set<string>`, "ignore nothing" and
+"ignore everything" are both an empty set, and #2399's real use case is an
+allow-list wearing an ignore-list's clothes. So the scope is `{ ignoreAll,
+fields }` and the inversion happens in exactly one place.
+
+**The vocabulary is pinned to the schema, in both directions.** `FieldProposal.
+field` is a String on purpose — §8.1 wants a proposal to be able to name a field
+this build has never heard of — so a UI has no checkbox list to offer, and
+`tagger-fields.ts` is that list. A test reads `crates/commons-core/src/domain.rs`
+and checks both directions: every offered name is a real column, and every
+user-facing column is either offered or on the not-offerable list. The second
+direction is the one that rots, and it names the struct and field in its failure.
+
+That test failed on its first run: `Object.kind` was neither offered nor
+excluded. It is now excluded, with the reason in the module.
+
+**A test that forced a design change.** The exclusion list was flat, and a test
+asserting no name is in both lists failed correctly. `Object.kind` is the §5.1
+discriminator and must not be offerable; `Producer.kind` (studio, circle,
+individual, collective) is metadata a tagger should propose. A flat list has one
+entry for `kind` and the two subjects need opposite verdicts, so it must pick
+one and be wrong. It is now per-subject, with a test pinning the pair.
+
+**Two bugs only the browser found.** The tick handler used `isIgnored`, so under
+an inverted scope every box unticked itself the moment the inversion went on,
+leaving an allow-list in which nothing was allowed — the label says "only the
+ticked fields are used", so a tick must mean membership. And the scope was
+written with a bare `history.replaceState`, which SvelteKit does not observe:
+the address bar changed and `page.url` did not, so the link the user copied was
+not the state they were looking at. Now `goto(..., { replaceState: true })`.
+
+**Two more tests that named a boundary without straddling it** — the fourth and
+fifth. `ignoredFields` gains a `.sort()`: the test's input was already
+alphabetical AND asserted a single ignored field, and one field sorts to itself.
+Two ignored fields in non-alphabetical order is the smallest case that differs.
+And `isOfferable` inverted, because that function — the one a settings UI calls
+— had no test of its own; the others read the lists directly. A function with no
+caller under test and no test of its own is the easiest bug to ship.
+
+28 mutations: 28 killed, 0 survived, 0 stale. 66 UI tests, 15 e2e.
+UI now 490, e2e 112, Rust 1310.
+
+§10.10 is now complete: the bulk-edit modal (#5336), right-click paste (#7139),
+unsaved-entry protection (#6466, #3253), CSV and paste-parse import (#1296, #431),
+the per-field ignore lists (#2318, #2399), and create-from-subpage /
+create-all-missing (#3694, #1017, #3122).
+
 ### T-P5-006 item 12 — CSV import, and a correction to item 11's spec
 
 **First: item 11's spec was wrong.** It closed with a "what is deliberately
