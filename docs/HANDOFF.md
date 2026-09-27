@@ -1905,4 +1905,10 @@ unreachable rather than as behind.
 database, which is every push and every `ls-remote`. That is a server-side
 fault on `git.polarisocial.xyz`, not a credential or a network problem, and it
 is the one gate in `verify.sh` that cannot go green until it is fixed. Origin
-(GitHub) is verified at the current commit with all 53 tags.
+(GitHub) is verified at the current commit with all 9 phase tags.
+
+**Re-checked at `965a9b0` (T-P6-002 step 4): still 500, still only Forgejo.**
+Every push and every `ls-remote` to that host fails identically, while origin
+takes the commit and the tags without complaint — which is the evidence that
+this is the server and not the credentials, since the same key works for the
+other remote.
