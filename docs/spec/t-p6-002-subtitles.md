@@ -443,16 +443,26 @@ Each is a real request, named so it is deferred rather than forgotten.
 | 1 | `0021_subtitles.sql` in both engines; `migration_parity.rs` green | **done** |
 | 2 | `commons-media/src/subtitles.rs`: `parse` for `srt`, `vtt`, `ass`/`ssa`, a **pure** cue model, and `to_webvtt`. Tested with no file and no process — a parser tested only by round-tripping through ffmpeg cannot tell a parser bug from an ffmpeg bug | **done** (35 tests) |
 | 3 | `commons-store/src/subtitles.rs`: `put_document` (one transaction), `list_documents`, `get_document`, `list_cues`, `stored_hash`, `delete_documents`, `count_documents`, on both engines | **done** (7 tests × 2 engines) |
-| 4 | `extract` — ffmpeg in, cues out | not started |
-| 5 | Sidecar discovery by convention, and a test that the two ambiguous cases in §8.1 resolve to one document each | not started |
-| 6 | `commons-media::transcode` replaces `-sn` with the two cases of §5, and a test asserting a **cue is present in the transcode output** — §8.3 | not started |
-| 7 | `SubtitleTrack.svelte` with the list, the WebVTT conversion, and the offset, and a unit test for the conversion that includes `<`, `&`, and an empty cue | not started |
-| 8 | A round-trip test asserting **every** cue within 40 ms of the original | not started |
-| 9 | `docs/HANDOFF.md` updated; `phase-6-002-subtitles` tagged | on completion of #4–#8 |
+| 4 | `extract` — ffmpeg in, cues out | **done** (17 tests) |
+| 5 | Sidecar discovery by convention, and a test that the two ambiguous cases in §8.1 resolve to one document each | **done** (15 tests) |
+| 6 | `commons-media::transcode` replaces `-sn` with the two cases of §5, and a test asserting a **cue is present in the transcode output** — §8.3 | **done** (`SubtitlePlan`; acceptance test probes the OUTPUT, not the exit status) |
+| 7 | A component with the list, the WebVTT conversion, and the offset, and a unit test for the conversion that includes `<`, `&`, and an empty cue | **done** — `SubtitleControls.svelte` (the plan named `SubtitleTrack.svelte`; it does not render a track, it renders the controls, and renaming it to match would have been a lie about what it does) |
+| 8 | A round-trip test asserting **every** cue within 40 ms of the original | **done** — worst case **0 ms** for srt and mov_text, under 1 ms for ass |
+| 9 | `docs/HANDOFF.md` updated; `phase-6-002-subtitles` tagged | **done** — `phase-6-002b-extract` … `phase-6-002j-component` |
 
-Two of the nine are done and both were the ones with a silent failure mode,
-which is the order the risk wanted them in: the parsers and the schema are where
-a bug costs a user a subtitle track with nothing in the logs.
+**All nine are done.** The delivery path beyond the parsers and the schema is
+also in, and is not in this table because it was not in the ticket: the two HTTP
+routes, the plan-status stub audit, and the scratch-path audit. Two of those
+three were found by a gate disagreeing with the code rather than by the code
+disagreeing with itself, which is the argument for the rest.
+
+**Two extra rows, added because the ticket's own Done-when did not ask for
+them and the work needed them to be verifiable:**
+
+| # | Item | State |
+|---|---|---|
+| 10 | `GET /media/:id/subtitles` and `.../subtitles/:doc.vtt`, with the same consent gate `/media/:id` uses | **done** (12 route tests) |
+| 11 | The gap: absent/denied must be indistinguishable, and a document id must not be readable under another object's id | **done** — the leak tests, and the 404-not-403 decision |
 - Sidecar discovery by convention, and a test that the two ambiguous cases in
   §8.1 resolve to one document each.
 - `commons-media::transcode` replaces `-sn` with the two cases of §5, and a

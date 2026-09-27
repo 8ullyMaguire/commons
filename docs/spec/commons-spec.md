@@ -68,8 +68,11 @@ Six decisions shape everything else:
    nothing. A user-configurable remote endpoint is available for hard cases and
    is opt-in per item, never silent (§6.5).
 
-**Deliberately not this:** a chat app, a social feed, a downloader, a tag
-manager with a database attached. Content acquisition is out of scope (§0.7).
+**Deliberately not this:** a chat app, a social feed, a tag manager with a
+database attached. Content acquisition is out of scope for **core** — and as of
+2026-09-27 a full P2P downloader is in scope as a plugin (§5.18.1.1, owner
+decision), which is the one place this list and §2 have to be read together
+rather than separately.
 
 The one boundary this list draws and then redraws: stash #2792 asked to serve
 a library publicly, and I originally wrote that as a non-goal. It is not. A
@@ -139,17 +142,23 @@ and §5, §7 and §8 are written around it rather than bolted onto it.
 
 Named explicitly, because a spec this size accumulates unstated scope.
 
-- **Not a downloader.** The platform organizes and curates content the user
-  already has, plus link objects for content hosted elsewhere (§5.7). It never
-  fetches item bodies. It *does* serve its own library to viewers over the web
-  (§12.1.1, adopting stash #2792) — that is streaming what you hold, not
-  acquiring what you don't. It also stores P2P locators and hands them to a
-  download client the user already runs (§5.18) — that is naming a file the
-  user may already have, not acquiring one they don't. There is no code path
-  in which the platform itself fetches a file body over BitTorrent, ed2k, or
-  any other network. Concretely: the locator capability is not in core at all
-  but in a one-click plugin (§5.18.1) whose sandbox makes the property
-  structural rather than aspirational.
+- **Not a downloader in core.** The platform organizes and curates content the
+  user already has, plus link objects for content hosted elsewhere (§5.7). Core
+  never fetches item bodies. It *does* serve its own library to viewers over
+  the web (§12.1.1, adopting stash #2792) — that is streaming what you hold,
+  not acquiring what you don't.
+
+  **Amended 2026-09-27 by owner decision.** A full P2P downloader is in scope,
+  delivered as a plugin — BitTorrent and ed2k implemented against the specs,
+  with DHT peer discovery, multi-connection transfers, seeding, and resume, not
+  a hand-off to a client the user already runs. The downloader is *not* core and
+  the plugin boundary is unchanged; what changed is how much the plugin may do.
+  §5.18.1 states exactly what this costs, and the cost is real: the sandbox's
+  no-downloader property drops from *impossible* to *declared and disclosed*.
+
+  What does not change: the consent gate (§14.1) stays in core and is never
+  evaluated by the plugin. A downloader that can redistribute must not also be
+  the thing that decides whether redistribution is permitted.
 - **Not a chat or social product.** Comments on entities are
   discussion-about-metadata only (answers a voting question, disputes a
   merge), scoped and rate-limited — not a messaging surface, no DMs, no
@@ -230,20 +239,32 @@ reason the website and the local app cannot drift apart.
 
 ### 3.2 Why Rust, and why not Go
 
-stash is Go. The choice here is not "better language", it is the license and
-the ecosystem:
+stash is Go. The choice here is not "better language", it is the ecosystem and
+the packaging:
 
-- **License.** stash is AGPL-3.0. Reusing stash's code obliges any networked
-  deployment to publish modifications. stash-box is MIT (permissive) but is a
-  thin API over a Postgres schema. A from-scratch implementation against a
-  documented behaviour set keeps the platform permissively licensed. The
-  upstream projects stay usable and untouched (§16).
 - **Ecosystem.** The ML runtime (ONNX Runtime, ort crate), the ANN index
   (usearch), the media pipeline (ffmpeg sidecar, not a binding) and the Tauri
   shell are all better-served in one language than across a Go backend plus a
   TS frontend plus a second Go/TS service.
 - **Practicality.** One static-ish binary with no runtime, no interpreter, no
   npm tree at deploy time.
+
+**Corrected 2026-09-27.** This section previously carried a licensing
+rationale: that a from-scratch implementation "keeps the platform permissively
+licensed", on the grounds that reusing stash's code would oblige any networked
+deployment to publish modifications. That was false, and it was false in a way
+worth recording rather than deleting quietly. `Cargo.toml` has said
+`license = "AGPL-3.0-only"` throughout, `LICENSE` is the AGPL text, and the
+license the owner chose is the license the project ships under. Writing the
+code yourself changes the copyright; it does not change the license you chose
+to apply, and the obligation described applied exactly as well to code written
+from scratch.
+
+The AGPL is kept deliberately, and `Cargo.toml` says why in one sentence: a
+public index must offer its source to the people it serves, and §13 of the
+license requires exactly that. For a platform whose stated purpose includes
+running a public, federated, anonymously-readable index (§12.1.1, §13), the
+condition is the point of the choice rather than an obstacle to it.
 
 What is deliberately *not* reimplemented: ffmpeg is used as an external
 process, not embedded (§11.5), and the Postgres schema is not copied —
@@ -631,10 +652,12 @@ column-family as a studio URL or a funder link, and it does three jobs:
    URI to a configured local client (qBittorrent, Transmission, Deluge, aria2)
    over its API. This is a *user action against an external program*, and it
    is the only acquisition-adjacent behaviour in the platform.
-3. **Nothing else.** The platform never speaks BitTorrent or ed2k itself. It
-   is not a downloader, has no swarms, no peer list, no DHT, no incoming
-   connections. There is no code path in which the platform fetches a file
-   body over a P2P network.
+3. **Nothing else — in core.** Core never speaks BitTorrent or ed2k. It has no
+   swarms, no peer list, no DHT, and no incoming connections, and there is no
+   code path in which **core** fetches a file body over a P2P network. Since
+   2026-09-27 the *plugin* does (§5.18.1.1); the boundary is core-versus-plugin,
+   not speaks-versus-does-not, and the distinction is now architectural rather
+   than absolute.
 
 **Why the distinction matters for consent.** A magnet link is a redistribution
 channel. Storing one is a distribution decision, not a metadata decision, so
@@ -714,16 +737,7 @@ The whole of §5.18 is **one installable plugin**, offered in the plugin gallery
 and installed with a single click, and it is not built into the server. The core
 never learns what a magnet is. Three reasons, in order of weight:
 
-1. **It keeps the no-downloader property true by construction.** The plugin
-   runs in the WASM sandbox of §11.4 with a declared capability set, and its
-   network capability is **loopback only**. It can reach a qBittorrent or aria2
-   API on `127.0.0.1` and it cannot resolve a public hostname, open an outbound
-   socket to a peer, speak the BitTorrent or ed2k wire protocols, join a swarm,
-   run a DHT, or accept an inbound connection. "No swarms, no peer list, no DHT,
-   no incoming connections" stops being a commitment in a design document and
-   becomes a property the host can prove, because the capability is absent
-   rather than unused.
-2. **The consent gate must not live in the plugin.** A tier check inside a
+1. **The consent gate must not live in the plugin.** A tier check inside a
    third-party component is a tier check that can be buggy, disabled, or
    hostile. So the split is: **the host owns the gate, the plugin only
    requests.** The plugin calls `locator.propose(object, locator)`; core
@@ -731,11 +745,59 @@ never learns what a magnet is. Three reasons, in order of weight:
    has no write path to the consent tier, the object, or the database. A
    malicious plugin can ask for a locator on a `denied` object and get a
    refusal, which is the same answer a well-behaved one gets.
-3. **It exercises the extension SDK against a real consumer.** §11.4's plugin
+
+   This reason is now the load-bearing one, and it is why the owner decision
+   above did not disturb it. A downloader that can redistribute must not also
+   be the component that decides whether redistribution is permitted. The more
+   powerful the plugin, the more the gate has to stay outside it — the argument
+   got *stronger*, not weaker, with scope.
+2. **It exercises the extension SDK against a real consumer.** §11.4's plugin
    API is a stability promise that upstream has asked for 34 times. Shipping
    the platform's own advertised capability *through* that API is the only way
    to find out whether the API is actually adequate, before a third party
    depends on it.
+3. **It keeps the core free of a P2P client.** Not the strong claim this section
+   used to make. A sandboxed plugin with loopback-only networking can *prove* it
+   never speaks BitTorrent, because the capability is absent rather than unused.
+   A full-featured downloader cannot make that claim: it needs real egress, and
+   therefore the property weakens to *declared in a manifest, disclosed before
+   install, and removable by the operator* — which is enforcement by consent
+   rather than enforcement by construction.
+
+   The weakening is real and is stated rather than argued away. What replaces
+   it: the capability set is declared and the pre-install disclosure (§11.4)
+   names exactly what the plugin will do, including "open outbound connections
+   to peers and accept inbound connections", which is a thing a user can be
+   surprised by and therefore must be told plainly.
+
+#### 5.18.1.1 Scope, after the 2026-09 amendment
+
+**Added by owner decision 2026-09-27.** The plugin is a full downloader, not a
+hand-off. Core-facing behaviour is unchanged — it still proposes locators and
+still cannot write consent state — and the additions are all peer-facing:
+
+| Capability | Detail |
+|---|---|
+| Protocols | BitTorrent (BEP 3/5/9/10/12/19/20/27/41/47), ed2k (eDonkey2000, eMule) |
+| Peer discovery | Kademlia DHT (BEP 5), Mainline DHT, explicit `.torrent`/ed2k ingest, local peer exchange |
+| Magnet | Full parsing, metadata fetch over BEP 9, peer-discovery fallback |
+| Transfers | Multi-connection per torrent, piece-hash verification, resume across restart, sparse files |
+| Seeding | Seeding while serving, upload cap, ratio target, super-seeding where the client permits |
+| Scheduling | Global and per-torrent rate limits, active-torrent cap, sequential/rare-first piece order, queueing |
+| Verification | Full and quick verify; a corrupt piece re-downloads rather than being skipped |
+| Library integration | Completed files move into a configured library path, are scanned, and are linked by fingerprint |
+| Safety | Per-locator allow/deny, **path sanitisation on ingest**, content-type warning surface |
+
+**Path traversal is the first test written, not the last.** A `.torrent` whose
+name is `../../etc/cron.d/x` must resolve inside the target root or the item is
+rejected. A peer-supplied filename is untrusted input, and this is the bug
+class that gets a whole box — worse in a full client than in a loopback hand-off,
+because a real client accepts far more attacker-controlled path material.
+
+**Protocols are implemented natively**, against the BEPs, not delegated to an
+external binary. An existing library is evaluated first and preferred where it
+covers the surface; ed2k is hand-rolled regardless, since no library has it.
+This is a change from the original §5.18.1, which computed hashes and stopped.
 
 **What is core regardless.** Content hashing (xxh128 + BLAKE3) stays in core,
 because §6.2's incremental-correctness rule depends on it and so does
@@ -1216,7 +1278,26 @@ never settled values on their own, and the confidence is visible. This is the
 "amateur content gets curated even with no official metadata source" promise,
 mechanically.
 
-### 8.3 Reputation and trust (C35, owner-added)
+#### 8.1.1 Carried from StashForge: sticky rejection
+
+**Added 2026-09-27 by owner decision.** StashForge M2 specified a rule this
+section does not state, and it is kept here because reputation makes it more
+necessary, not less: *rejection is sticky per `(target, field, author)`*. An
+author whose proposal on a field was rejected does not get an infinite retry
+queue against that same field. `superseded_by_newer` is a distinct terminal
+state from `rejected` and must be stored as one, not as a flavour of rejection.
+
+With weighted ballots and Sybil damping in play, a low-reputation account can
+cheaply generate near-misses. Without stickiness, reputation decays slowly
+while the retry queue is free, and the queue is the cheaper strategy.
+
+**Scores are recomputed from the accepted-edit set, never read from a stored
+counter.** StashForge arrived at this independently and it is the same rule, so
+it is stated once: a stored tally is a thing to be wrong, and this fixes
+stash-box #743/#9 in both codebases. A score that cannot drift cannot need
+repairing.
+
+#### 8.3 Reputation and trust (C35, owner-added)
 
 Vote weight is a function of reputation, and reputation is a function of
 *agreement with settled outcomes* over time, not of volume. Design points:
@@ -1798,10 +1879,12 @@ Nothing is copied. Both upstreams are read as behaviour specifications:
 
 - **stash** (AGPL-3.0) — read for the file model, the scanner/generate/identify
   pipeline, the tagger UX, the marker/sprite concepts, the GraphQL shape, and
-  the issue corpus. No code is taken. The license is incompatible with the
-  intent here (a permissively licensed platform), and the architecture differs
-  enough that a clean-room implementation from the documented behaviour is
-  both feasible and correct.
+  the issue corpus. No code is taken. **The license is not a reason.** This
+  project is AGPL-3.0 too (§3.2), so the two are compatible and that is
+  deliberate; the reason for a clean-room implementation is that the
+  architecture differs enough that copying the schema or the query layer would
+  import upstream's design decisions along with its code, and those decisions
+  are not the ones being made here.
 - **stash-box** (MIT) — read for the metadata schema shape, the fingerprint
   concept, the voting model, the submission/moderation flow, and the GraphQL
   API. No code is taken; the schema is designed fresh in §15 because the
@@ -1835,6 +1918,15 @@ documented reason.
 
 ## Changelog
 
+- **2026-09-27 — reconciled with StashForge** (owner decisions; full reasoning in
+  that repo's `docs/specs/2026-09-27-reconciliation.md`). AGPL-3.0 kept and
+  §3.2's false licensing rationale removed. A full P2P downloader plugin is now
+  in scope (§5.18.1.1) — this *weakens* §5.18.1's structural no-downloader
+  claim, and the weakening is stated there rather than argued away. Sticky
+  rejection and the recomputed-score rule carried in from StashForge
+  (§8.1.1). Unchanged and adopted by StashForge: §7.1 clustering, §8.1–8.5
+  governance, §12.1.1's role table, §14.1's consent tiers.
+
 - **v1 (2026-09-26)** — Initial spec. Merges `stashapp/stash` and
   `stashapp/stash-box` into one design and adds the amateur-curation,
   unsupervised-identity, and federation capabilities neither has. All 850 open
@@ -1858,11 +1950,12 @@ documented reason.
   URLs — as *metadata* that federates as ordinary signed claims, dedups
   content across instances, and hands off to a download client the user
   already runs. Owner decisions recorded: the platform is primarily a
-  website; both ed2k and BitTorrent/magnet are supported; acquisition stops
-  at hand-off, so the "not a downloader" non-goal is narrowed rather than
-  deleted (§2) and there is no code path that fetches a file body over a P2P
-  network; and locators are refused on any consent tier that does not permit
-  redistribution (§14.1), with the tier re-checked at the moment of hand-off.
+  website; both ed2k and BitTorrent/magnet are supported; **superseded
+  2026-09-27** — acquisition no longer stops at hand-off, and a full P2P
+  downloader plugin is in scope (§5.18.1.1), so the "not a downloader"
+  non-goal now applies to *core* only; and locators are refused on any consent
+  tier that does not permit redistribution (§14.1), with the tier re-checked at
+  the moment of hand-off.
   Corridates §9.7 dedup, §15.1's `Locator` entity, and §6.1's scan pipeline
   (ed2k MD4 segmentation, infohash computation). New Phase 10, deliberately
   after §14's consent model is proven. The 850-issue corpus contains one

@@ -2736,10 +2736,34 @@ skip-intro-per-source (#634), ratings in the player (#3250).
 (#6526) must assert the control bar is within the viewport at 360×640.
 **Done when:** that assertion exists.
 
+**Done** (2026-09-28). `ui/src/lib/components/Player.svelte` (776 lines) and the
+pure half in `ui/src/lib/player/player.ts`, with 30 unit tests and 19 Playwright
+tests. The Done-when assertion exists: `ui/e2e/player.spec.ts` sets a 360×640
+viewport, hovers to raise the bar, and measures the real box against
+`MAX_BAR_FRACTION` — because `planControlBar` is a pure function over a plan,
+and a plan can be right while the thing it planned overflows.
+
+Every feature the ticket lists is present: proxy fallback via `/caps`, frame-
+accurate seek, deinterlace, crop/pan/flip, custom speed, long-press 2×, A/B loop
+with points on the scrubber, per-source skip-intro, ratings, and a control bar
+that survives fullscreen. Audio-track selection (#1058) is the one item
+**not** here, and it is not claimed — see T-P6-005, which owns the track-selection
+surface. Claiming it inside this ticket would have been the sort of claim
+`plan-status.py` exists to catch.
+
 ### T-P6-002 — Subtitles and captions
 
 **Spec:** §5.10
-**Files:** `commons-media/src/subtitles.rs`, `ui/src/lib/player/SubtitleTrack.svelte`
+**Files:** `crates/commons-media/src/subtitles.rs`, `crates/commons-media/src/extract.rs`,
+`crates/commons-media/src/sidecar.rs`, `crates/commons-store/src/subtitles.rs`,
+`crates/commons-server/src/subtitles.rs`, `ui/src/lib/player/SubtitleControls.svelte`
+
+(The ticket originally named `commons-media/src/subtitles.rs` and
+`ui/src/lib/player/SubtitleTrack.svelte`. The first was right and is now
+qualified; the second never existed under that name, because the component does
+not render a *track* — it renders the *controls*, and a `<track>` is a child of
+the video element where a control cannot go. Renaming the file to match the
+ticket would have made the name wrong, and renaming the ticket is cheaper.)
 
 Sidecar and embedded, ASS/SSA (#3077), SRT, VTT. Cues survive transcode.
 Caption *search* (stash#4985) and multi-language entries (stash#5514). Exposed
@@ -2747,11 +2771,24 @@ over DLNA (#5420) and injected for external players (#2770).
 
 **Accept:** test that a cue survives a transcode round-trip with timestamps
 correct to 40 ms; test an `.ass` file parses and renders.
-**Done when:** both exist.
+**Done when:** both exist. **Both exist** — and the round-trip came in at **0 ms
+worst case** for srt and mov_text, under 1 ms for ass, because milliseconds are
+integers end to end and nothing in the path rounds.
 
-**Progress (2026-09-27).** Parsers, schema and store are in and tested on both
-engines; `extract`, sidecar discovery, the transcode change, and the Svelte
-component are not. The done-when table in
+**Done** (2026-09-28). Both Accept criteria and all nine items of the live
+done-when table in `docs/spec/t-p6-002-subtitles.md` §9. Beyond the ticket: both
+HTTP routes, so a browser can actually reach a cue, and two audits
+(`plan-status.py`'s stub check, `scratch_path_audit.py`).
+
+**Not claimed, deliberately:** caption *search* (#4985), multi-language entries
+(#5514), DLNA exposure (#5420), and external-player injection (#2770). The first
+two are a search feature and a metadata surface that belong with T-P6-004 and
+T-P6-007; the last two need the DLNA surface in T-P6-005. Marking this ticket
+done with four of its own features outstanding would be exactly the false claim
+`plan-status.py` now fails the build over, and it would be harder to see later
+than to write now.
+
+The table in
 `docs/spec/t-p6-002-subtitles.md` §9 is the live one — it is a table because a
 bullet list here reads as "not started" three months from now whether or not it
 is true.

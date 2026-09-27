@@ -2,15 +2,65 @@
 
 Where Commons is, what is verified, and what is deliberately not done.
 
-**As of:** 2026-09-27 · **Branch:** `main` · **Remote:** `origin` =
+**As of:** 2026-09-28 · **Branch:** `main` · **Remote:** `origin` =
 `https://github.com/8ullyMaguire/commons`; every commit is pushed, and every
 milestone carries an annotated `phase-*` tag.
 
 ---
 
-### Subtitles: the parsers, the schema, and three silent bugs
+### Subtitles: complete, and four more bugs that all failed silently
 
-T-P6-002, steps 1–3. Spec `docs/spec/t-p6-002-subtitles.md`.
+T-P6-002, done. Spec `docs/spec/t-p6-002-subtitles.md` — read §9 first, it is
+the live done-when table. The parsers and the schema were steps 1–3; the rest of
+this section is what came after, and every bug in it is one that cost a user a
+subtitle track, a wrong caption, or a silent video **with nothing in the logs**.
+
+**The four that are worth carrying to the next ticket:**
+
+- **WebVTT has no hours field.** The grammar is `MM:SS.mmm`; ffmpeg writes that;
+  and a parser that demanded three fields read *every* cue of a `mov_text` track
+  as 0:00. The whole track fired on the first frame, and the document parsed
+  cleanly, so nothing reported it. The fix is to treat the field *count* as the
+  discriminator — and that has a consequence which is a constraint rather than an
+  accident: in the short form minutes are unbounded, so `90:00.000` is ninety
+  minutes and must parse.
+- **A cue with an unreadable timestamp was being invented.** The parse path
+  pushed `Cue::new(seq, 0, 0, text)`, commented as keeping "a missing caption
+  from being invisible". A zeroed cue exists, is listed, and fires at 0:00 —
+  strictly worse than dropping it. It is an error naming the line now.
+- **`-map 0:<n>` wants ffprobe's ALL-STREAM index, not the ordinal among
+  subtitles.** With a video at 0 and a subtitle at 1, the ordinal is 0, and
+  `-map 0:0` selects the *video*. ffmpeg does not complain; it transcodes the
+  picture as a caption. The acceptance test caught it by probing the OUTPUT — a
+  test asserting exit status would have passed, and been wrong.
+- **A `<track>` is a CHILD of the `<video>`.** A sibling is well-formed markup,
+  renders nothing, is never fetched, and produces no console error: the video
+  plays, the track list populates, and the user has no subtitles. Only the
+  Playwright test that asserts parenthood can see this. The same shape of failure
+  took out a first attempt at the component, which put a `<div>` inside the
+  video element next to the tracks.
+
+**Two decisions that look arbitrary and are not:**
+
+- **A sidecar language is not validated.** `foo.forced.srt` has the language
+  "forced" — wrong as a language, harmless as a label, and better than refusing a
+  file that is sitting right there. Normalising a language is the store's job and
+  happens once; doing it in the discovery layer too would be the second place.
+- **The stem splits on the LAST dot.** `My.Movie.2024.mkv` has the stem
+  `My.Movie.2024`; a first-dot rule gives `My`, which matches `My.srt` and not
+  the real sidecar — so a dotted title finds nothing *and* a neighbouring file
+  gets claimed by something else. Release titles are dotted constantly.
+
+**The measurement.** The ticket's budget was 40 ms of timestamp drift through a
+transcode round-trip. The worst case is **0 ms** for srt and mov_text and under
+1 ms for ass, because milliseconds are integers end to end and nothing in the
+path rounds. The 40 ms was not spent; the reason is worth more than the number.
+
+**Not claimed, on purpose:** caption search (#4985), multi-language entries
+(#5514), DLNA exposure (#5420), external-player injection (#2770). They belong
+with T-P6-004, T-P6-007 and T-P6-005. The plan says so, and the plan's
+`plan-status.py` now fails the build on a claim whose files are absent, so the
+distinction is now enforced rather than merely written down.
 
 **`commons-media/src/subtitles.rs`** — `parse` for srt, vtt, ass/ssa, `to_webvtt`,
 and a pure `Cue`. 35 tests, no file, no process. The separation is the point: a
