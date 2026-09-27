@@ -80,6 +80,40 @@ with tempfile.TemporaryDirectory() as td:
     write(docs, "guide.md", "# Guide\n")
     check("a directory of markdown is a stub", ps.is_stub(docs), True)
 
+    # --- which tickets count as closed ---
+    #
+    # This was untested and the tool was wrong because of it. `plan-status.py`'s
+    # own docstring describes THREE conventions for marking a ticket finished,
+    # and the code implemented two of them. Nine tickets used the third
+    # (`**Status: DONE** (<sha>)`), so the tool reported 32 open tickets when
+    # 23 were open, and would have sent someone to re-implement finished work.
+    #
+    # The test that matters is the LAST one: a ticket with a prose completion
+    # note and no explicit marker is NOT closed. Counting that is the failure
+    # the tool exists to prevent, and a lenient regex would reintroduce it.
+    def claimed(body: str, title: str = "A thing") -> bool:
+        text = f"### T-P1-999 \u2014 {title}\n\n{body}\n"
+        return ps.tickets(text)[0]["claimed"]
+
+    check("a `**Done**` line closes a ticket", claimed("**Done** it is."), True)
+    check("DONE in the heading closes a ticket", claimed("", title="Thing \u2014 DONE"), True)
+    check(
+        "a `**Status: DONE**` line closes a ticket",
+        claimed("**Status: DONE** (abc1234) \u2014 measured and green."),
+        True,
+    )
+    check(
+        "prose that reads like a completion note does NOT close a ticket",
+        claimed("This was implemented and it works and the tests pass."),
+        False,
+    )
+    check("an empty ticket is not closed", claimed(""), False)
+    check(
+        "a plan section that merely mentions DONE is not a ticket claim",
+        claimed("See T-P0-008, which is DONE, for the budget."),
+        False,
+    )
+
     # --- the real repository, as a regression on the case that started this ---
     repo = Path(__file__).resolve().parent.parent
     check(

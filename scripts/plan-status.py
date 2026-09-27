@@ -39,6 +39,13 @@ PLAN = REPO / "docs" / "plans" / "implementation-plan.md"
 
 HEADING = re.compile(r"^### (T-P\d+-\d+) — (.*)$", re.M)
 DONE_LINE = re.compile(r"^\*\*Done\*\*", re.M)
+# The third style, which this script's own docstring already describes as "a
+# paragraph that reads like a completion note with neither". Nine tickets use it
+# in a machine-readable form -- `**Status: DONE** (<sha>)` -- and the script
+# was NOT counting them, so it reported 33 open tickets when 9 fewer were
+# open. A status tool that undercounts its own completions is worse than no
+# tool: it sends you to re-implement finished work.
+STATUS_DONE = re.compile(r"^\*\*Status:\s*DONE\*\*", re.M)
 FILES_LINE = re.compile(r"^\*\*Files:\*\*(.*)$", re.M)
 BACKTICKED = re.compile(r"`([^`]+)`")
 
@@ -55,7 +62,11 @@ def tickets(text: str) -> list[dict]:
                 "id": m.group(1),
                 "title": m.group(2).strip(),
                 "body": body,
-                "claimed": bool(DONE_LINE.search(body)) or "DONE" in m.group(2),
+                "claimed": (
+                    bool(DONE_LINE.search(body))
+                    or bool(STATUS_DONE.search(body))
+                    or "DONE" in m.group(2)
+                ),
             }
         )
     return out

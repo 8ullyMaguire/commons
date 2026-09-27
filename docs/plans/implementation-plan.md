@@ -435,18 +435,37 @@ doing it once, then reverting).
 **Status: DONE** (9f3ef6e) — 11.9 MB median PSS / 0.10s cold start against the 210 MB budget; failure paths exit 1.
 
 **Spec:** §4.3
-**Files:** `crates/commons-server/tests/rss_budget.rs`, `scripts/rss-check.sh`
+**Files:** `scripts/memory-budget.py`
 
-1. `scripts/rss-check.sh` boots `commons-server --mode library --data-dir
+> **Corrected 2026-09-27.** This ticket named
+> `crates/commons-server/tests/rss_budget.rs` and `scripts/rss-check.sh`, and
+> **neither file was ever written.** What shipped in 9f3ef6e is
+> `scripts/memory-budget.py` — a single scenario-driven harness with
+> `--list`, `--json` and a configurable budget, rather than a shell script
+> plus a Rust wrapper.
+>
+> The reason is worth keeping: a Rust test that shells out to a script cannot
+> report *which scenario* failed or be read by anything but `cargo`, and the
+> Tauri-shell budget (item 3) is a second consumer with a different number.
+> One harness with named scenarios and JSON serves both, and `verify.sh` can
+> check it without a compiled test.
+>
+> `plan-status.py` caught this the moment it was taught to count the
+> `**Status: DONE**` marker: it reported `CLAIMED DONE, FILE ABSENT` for this
+> ticket. The claim was true and the **Files** line was stale. That is the
+> tool doing the one job it exists for, and it is why the marker convention
+> and the file list are kept separately.
+
+1. `scripts/memory-budget.py` boots `commons-server --mode library --data-dir
    $TMPDIR/rss` on a seeded 5,000-item fixture library, waits for `/healthz`,
    samples RSS of the server process three times over 10 s, and prints the
    median.
-2. The Rust test shells out to that script and fails if median > 90 MB
-   (server) — the §4.3 number. It is a **budget, not a measurement**: if the
-   real figure must be higher, change the constant here and in the spec
-   together, never silently.
+2. The harness fails if the median exceeds the budget. It is a **budget, not a
+   measurement**: if the real figure must be higher, change the constant here
+   and in the spec together, never silently.
 3. Same for the Tauri shell at 120 MB, added in T-P8-004 when the shell
-   exists.
+   exists — as a second named scenario, which is the reason this is one Python
+   harness and not a shell script with a hardcoded command.
 
 **Accept:** `cargo test -p commons-server rss_budget`.
 **Done when:** it passes on this host, and you have written down the measured
@@ -2800,13 +2819,12 @@ a subtitle document is keyed by **where the track is**
 by `(object_id, sha256)`, a film whose English and forced-signs tracks have
 identical text loses one of them with no error anywhere.
 
-### T-P6-003 — Funscript and interactive playback
+### T-P6-003 — Funscript and interactive playback — DONE
 
 **Spec:** §5.6
 **Files:** `ui/src/lib/player/FunscriptPlayer.svelte`, `ui/src/lib/player/funscript.ts`,
 `commons-scan/src/funscript_timeline.rs`, `commons-store/src/funscript.rs`,
 `commons-server/src/funscript.rs`, `ui/tests/funscript.test.ts`, `ui/e2e/funscript.spec.ts`
-**Status:** DONE
 
 Browser playback with timing sync, token/drm note (#5650), AutoBlow support
 (#6579), manual pause (#2762), and N named action axes with a 2-axis overlay
