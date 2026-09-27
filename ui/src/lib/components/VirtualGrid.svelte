@@ -122,8 +122,31 @@
   // The store is a plain object with no Svelte knowledge, so the component
   // pulls from it after each load. Subscribing properly would mean the store
   // being a Svelte store, which would make it untestable without Svelte.
+  //
+  // The pull-back is SYNCHRONOUS, before the await, and that is the fix for a
+  // race that made a typed filter silently do nothing.
+  //
+  // The sequence: the first-load effect calls refresh() with an empty query.
+  // `loadMore()` sets `loading: true` and awaits the network. In that window
+  // the user types, the query changes, the reset effect bumps the generation
+  // and calls reset() + refresh() -- which now sends the FILTERED request. The
+  // unfiltered response then arrives, and the generation guard drops it, which
+  // is correct. But the first-load effect is still re-evaluating: its `view`
+  // snapshot was taken before `loading` flipped, so it re-enters, calls
+  // refresh() a THIRD time, and sends the request with whatever `#query` is at
+  // that moment -- the pre-reset one, filter null. The generation guard cannot
+  // save this, because by then it is the NEWEST request. The user typed a
+  // filter, the URL says `?q=brav`, and the grid shows everything.
+  //
+  // Assigning `view` before awaiting means the effect sees `loading: true` on
+  // its next run and does not re-enter. The store's own generation guard and
+  // this are both needed: the guard handles out-of-order RESPONSES, this
+  // handles a duplicate REQUEST.
   async function refresh() {
-    await store.loadMore();
+    const pending = store.loadMore();
+    // Before the await, while `loading` is already true.
+    view = store.state;
+    await pending;
     view = store.state;
   }
 
@@ -149,8 +172,27 @@
   // write and reset the list in a loop. Svelte's `state_referenced_locally`
   // warning is correct about the reference and wrong about the intent, so the
   // intent is spelled out here.
+  //
+  // `lastKey` starts as a SENTINEL, not as the current query. That is the fix
+  // for a bug this ticket found: the first load went out with an EMPTY query.
+  //
+  // The store is created with `store = new KeysetStore()` as a default prop
+  // value, so its `#query` is `{}`. Seeding `lastKey` to the initial query made
+  // the effect below see `key === lastKey` and do nothing -- so `reset()` was
+  // never called on mount, and the first-load effect sent `{filter: null,
+  // sort: null}`. On a bare `/` that is invisible, because the empty query and
+  // the default query happen to render the same thing. On a SHARED LINK --
+  // `/?q=brav` -- the page showed all three rows while the search box held
+  // "brav", and the URL said the filter was applied. The ticket's own Accept
+  // criterion ("navigate to a filtered+sorted grid, reload, assert identical
+  // DOM state") fails on the reload, and no amount of reading the URL correctly
+  // in the page can fix a store that was never told what to ask for.
+  //
+  // A sentinel forces the first run to reset, which is the one thing that puts
+  // the query into the store before anything fetches.
+  const NEVER = '\u0000never';
   // svelte-ignore state_referenced_locally
-  let lastKey = JSON.stringify(query);
+  let lastKey: string = NEVER;
   $effect(() => {
     const key = JSON.stringify(query);
     if (key !== lastKey) {

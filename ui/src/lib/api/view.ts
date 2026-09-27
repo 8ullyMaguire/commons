@@ -39,6 +39,25 @@ export interface ViewState extends GridQuery {
   readonly density: number;
 }
 
+/**
+ * The sorts the UI offers.
+ *
+ * Exported rather than inlined at each use, so the `<select>`'s options and
+ * `decodeView`'s validation cannot disagree -- which is the bug this list was
+ * added to fix. `sort` was the ONE view field `decodeView` passed through
+ * unvalidated, so `?sort=nonsense` produced a state the select has no option
+ * for: the control rendered BLANK while the page queried with the nonsense
+ * value. A user who edited a shared link saw an empty sort dropdown and a
+ * grid sorted by nothing in particular. Every other field was already
+ * validated; this one was simply missed.
+ */
+export const SORTS = ['date', 'title', 'rating', 'added'] as const;
+export type Sort = (typeof SORTS)[number];
+
+function isSort(v: unknown): v is Sort {
+  return typeof v === 'string' && (SORTS as readonly string[]).includes(v);
+}
+
 export const defaultView: ViewState = {
   filter: null,
   sort: 'date',
@@ -82,7 +101,7 @@ export function decodeView(search: string): ViewState {
 
   return {
     filter: p.get('q'),
-    sort: p.get('sort') ?? defaultView.sort,
+    sort: isSort(p.get('sort')) ? (p.get('sort') as Sort) : defaultView.sort,
     direction: dir === 'ASC' || dir === 'DESC' ? dir : defaultView.direction,
     tiers: p.get('tiers') ? p.get('tiers')!.split(',').filter(Boolean) : null,
     mode: mode === 'list' || mode === 'grid' ? mode : defaultView.mode,

@@ -14,7 +14,17 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import ImageGrid from '$lib/components/ImageGrid.svelte';
-  import { viewFromLocation, viewToHref, type ViewState } from '$lib/api/view.js';
+  import { SORTS, viewFromLocation, viewToHref, type ViewState } from '$lib/api/view.js';
+
+  // The label for each sort, in the order the options are shown. Keyed by the
+  // value rather than paired with it, so an option cannot exist without a
+  // label and `SORTS` cannot gain a member the dropdown does not offer.
+  const SORT_LABEL: Record<(typeof SORTS)[number], string> = {
+    date: 'Date',
+    title: 'Title',
+    rating: 'Rating',
+    added: 'Date added'
+  };
 
   // The whole view, read from the URL. `$derived` because it must recompute
   // when the URL changes, not when something local does.
@@ -67,10 +77,9 @@
     data-testid="sort"
     aria-label="Sort by"
   >
-    <option value="date">Date</option>
-    <option value="title">Title</option>
-    <option value="rating">Rating</option>
-    <option value="added">Date added</option>
+    {#each SORTS as s (s)}
+      <option value={s}>{SORT_LABEL[s]}</option>
+    {/each}
   </select>
   <button onclick={() => apply({ direction: view.direction === 'DESC' ? 'ASC' : 'DESC' })}>
     {view.direction === 'DESC' ? '↓' : '↑'}
