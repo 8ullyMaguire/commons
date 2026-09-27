@@ -2590,8 +2590,9 @@ first in `crates/commons-store/src/media.rs`, specced in
 and preloading both require and that the spec named as the precondition. Item 10, the two create actions, is in `crates/commons-store/src/create.rs`,
 specced in `docs/spec/t-p5-006-create.md`, with the UI half in
 `ui/src/lib/api/create.ts`, `ui/src/lib/components/CreateFromSubpage.svelte`
-and the `create-from-subpage` route. The server-side GraphQL resolver is not
-built; the UI is proved against a mocked endpoint.
+and the `create-from-subpage` route. The GraphQL server is T-P6-007,
+a later phase, so there is no resolver for these or for `bulkApplyTag`; the UI
+is proved against the same mocked endpoint the bulk tests use.
 
 **Both atomicity gaps the spec named are closed, and neither needed a
 transaction — which is worth recording, because the spec's own conclusion was

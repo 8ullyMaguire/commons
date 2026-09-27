@@ -193,10 +193,12 @@ object they made, so the read *should* be under a stated tier.
   `new_file` path attaches bytes and a `file` row. Coupling them would make a
   create depend on a path existing, and §5.18 is explicit that the operator's
   disk layout is not an API.
-- **No HTTP route for create.** The bulk mutations go through GraphQL and so do
-  these, but the server-side resolver is not built: the UI half below is proved
-  against a mocked endpoint, and a real resolver is the remaining work. Stated
-  plainly because "the client can call it" is not "the server answers it".
+- **No server-side resolver, and that is a phase dependency rather than an
+  omission.** The GraphQL server is T-P6-007, an entire later phase, so no
+  resolver exists for `bulkApplyTag` either. The client half is built against
+  the same mocked endpoint the existing bulk tests use, and adding a resolver
+  for one of the two mutations before the server exists would mean writing it
+  twice.
 - **No CSV parsing.** §7.1's importer is a separate ticket; `dedupe` and
   `redundant_count` are the shape it will need, and nothing here parses a
   delimiter or guesses a column order.
