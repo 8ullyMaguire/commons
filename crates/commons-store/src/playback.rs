@@ -146,6 +146,28 @@ pub enum PlaybackError {
     LoopPastEnd { b_ms: u64, duration_ms: u64 },
 }
 
+impl PlaybackError {
+    /// The wire name of the field this refusal is about.
+    ///
+    /// Returning the name rather than only a message is what lets the route
+    /// answer `{"field": "loop_b_ms"}`, and it is why the variants are named
+    /// after fields instead of after conditions. A client setting these from a
+    /// scrubber can point at the control the user was actually dragging; a
+    /// generic "invalid state" sends them looking for a syntax error instead.
+    ///
+    /// The strings are the *wire* names, chosen to match the JSON body, not
+    /// the Rust variant names — they coincide today, and if they ever diverge
+    /// this function is the single place to fix.
+    pub fn field(&self) -> &'static str {
+        match self {
+            PlaybackError::PositionPastEnd { .. } => "position_ms",
+            PlaybackError::InvertedLoop { .. } => "loop_b_ms",
+            PlaybackError::EmptyLoop => "loop_points",
+            PlaybackError::LoopPastEnd { .. } => "loop_b_ms",
+        }
+    }
+}
+
 impl std::fmt::Display for PlaybackError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -295,4 +317,206 @@ pub fn rung_for(caps: &SourceCaps) -> Option<Rung> {
         // per-field whitelist alone would miss.
         Some(Rung::Highest)
     }
+}
+
+// ---- persistence ------------------------------------------------------
+
+use sqlx::Row;
+
+use crate::db::{Store, StoreError};
+
+/// Why a playback read or write failed.
+#[derive(Debug)]
+pub enum PlaybackStoreError {
+    /// The state is not one the file can be in. See [`PlaybackState::validate`].
+    Invalid(PlaybackError),
+    Query(StoreError),
+}
+
+impl std::fmt::Display for PlaybackStoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlaybackStoreError::Invalid(e) => write!(f, "{e}"),
+            PlaybackStoreError::Query(e) => write!(f, "playback store: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for PlaybackStoreError {}
+
+impl From<StoreError> for PlaybackStoreError {
+    fn from(e: StoreError) -> Self {
+        PlaybackStoreError::Query(e)
+    }
+}
+
+/// Build the placeholder list for a statement of `n` binds.
+///
+/// Postgres takes `$1..$n`; SQLite takes `?`. Sending `?` to Postgres is a
+/// **syntax error at the VALUES list**, not a silent mismatch, and the error
+/// names the statement rather than the dialect -- so it reads as a malformed
+/// migration when it is in fact the wrong placeholder. Every two-engine
+/// statement in this file goes through here rather than hard-coding either.
+fn placeholders(n: usize, numbered: bool) -> String {
+    (1..=n)
+        .map(|i| {
+            if numbered {
+                format!("${i}")
+            } else {
+                "?".to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Read one object's playback state.
+///
+/// **A missing row is a fresh state, not an error.** The player asks for the
+/// state of every object it opens, and "nobody has played this" is the common
+/// case. Answering 404 would make every freshly-opened object look broken and
+/// would be indistinguishable from an object that does not exist -- the player
+/// would need two questions to learn one thing.
+///
+/// Three rules, each learned by fighting the compiler, and all three worth
+/// writing down because the fix is not obvious from the error:
+///
+///  1. The row becomes a plain tuple **inside** each match arm. `fetch_optional`
+///     returns `Option<SqliteRow>` or `Option<PgRow>` -- unrelated Rust types
+///     with no common variant a caller can name -- so letting either escape the
+///     `match` is E0308.
+///  2. A macro used in both arms must not `?` internally. The inner `?`
+///     unwraps the `Result` early, and the caller's `?` then lands on `()`,
+///     which is the `?` operator applied to `()`.
+///  3. Decode `i32`, never `i64`. Postgres `INTEGER` is INT4 and SQLite's is 8
+///     bytes; writes bind `i64` happily because sqlx widens, so the mismatch
+///     appears **only on the read**, as "Rust type i64 (as SQL type INT8) is not
+///     compatible with SQL type INT4".
+pub async fn get_playback(
+    store: &Store,
+    object_id: &str,
+) -> Result<PlaybackState, PlaybackStoreError> {
+    macro_rules! select {
+        ($p:expr, $numbered:literal) => {
+            sqlx::query(&format!(
+                "SELECT position_ms, duration_ms, loop_a_ms, loop_b_ms, completed \
+                 FROM playback_state WHERE object_id = {}",
+                placeholders(1, $numbered)
+            ))
+            .bind(object_id)
+            .fetch_optional($p)
+            .await
+            .map_err(StoreError::Query)
+            .map(|row| {
+                row.map(|r| {
+                    (
+                        r.get::<i32, _>("position_ms"),
+                        r.get::<Option<i32>, _>("duration_ms"),
+                        r.get::<Option<i32>, _>("loop_a_ms"),
+                        r.get::<Option<i32>, _>("loop_b_ms"),
+                        r.get::<i32, _>("completed"),
+                    )
+                })
+            })
+        };
+    }
+    let found = match store {
+        Store::Sqlite(p) => select!(p, false)?,
+        Store::Postgres(p) => select!(p, true)?,
+    };
+
+    let Some((position_ms, duration_ms, a, b, completed)) = found else {
+        return Ok(PlaybackState::fresh(object_id));
+    };
+
+    // Both NULL -> no loop. ONE NULL -> a half-set loop, a real state (the user
+    // dragged one marker off the scrubber) that must survive as such. Deciding
+    // on the PAIR rather than each end independently is what keeps a
+    // genuinely-absent pair distinguishable from a half-set one.
+    let loop_points = match (a, b) {
+        (None, None) => None,
+        (a, b) => Some(LoopPoints {
+            a_ms: a.unwrap_or(0).max(0) as u64,
+            b_ms: b.unwrap_or(0).max(0) as u64,
+        }),
+    };
+
+    Ok(PlaybackState {
+        object_id: object_id.to_string(),
+        // `.max(0)` before the cast: a bare `as u64` on a negative wraps to
+        // something enormous, turning a corrupt row into "resume in 200 years".
+        position_ms: position_ms.max(0) as u64,
+        duration_ms: duration_ms.map(|d| d.max(0) as u64),
+        loop_points,
+        completed: completed != 0,
+    })
+}
+
+/// Write one object's playback state, replacing any previous row.
+///
+/// An **upsert**, and idempotent: the player saves every few seconds and a
+/// second tab saves too, so last-writer-wins is the only rule two writers can
+/// both obey. An append would leave two resume positions for one object and no
+/// way to choose between them.
+///
+/// `ON CONFLICT (object_id) DO UPDATE` rather than `INSERT OR REPLACE`:
+/// REPLACE deletes the row and re-inserts it, firing any future ON DELETE
+/// trigger and resetting any column a later migration adds without naming it.
+/// DO UPDATE names the columns it touches, so a new column keeps its default
+/// instead of silently vanishing.
+///
+/// Validation happens **here** rather than at the route, so every caller is
+/// covered -- an import, a plugin, a future endpoint. The migration's CHECK
+/// would catch the loop cases but not a position past the end, which is a value
+/// no constraint can judge without knowing the duration.
+pub async fn put_playback(store: &Store, state: &PlaybackState) -> Result<(), PlaybackStoreError> {
+    state.validate().map_err(PlaybackStoreError::Invalid)?;
+
+    // A loop end of 0 means "this marker is not set" in the Rust type, and maps
+    // to SQL NULL here. That is the whole reason the schema uses NULL rather
+    // than 0: `LoopPoints::is_armed` treats 0 as unset, so a marker genuinely
+    // dragged to the start of the file and a cleared marker are the same value
+    // in Rust -- and NULL says so in the row too. Storing 0 instead makes the
+    // CHECK's `a < b` false (1500 < 0 is false) and the write is REFUSED, so
+    // the control bar's clear gesture would be a 500. The mapping lives here,
+    // once, in both directions (see `get_playback`).
+    let (a, b) = match state.loop_points {
+        Some(l) => (
+            (l.a_ms != 0).then_some(l.a_ms as i64),
+            (l.b_ms != 0).then_some(l.b_ms as i64),
+        ),
+        None => (None, None),
+    };
+
+    macro_rules! put {
+        ($p:expr, $numbered:literal) => {
+            sqlx::query(&format!(
+                "INSERT INTO playback_state \
+                   (object_id, position_ms, duration_ms, loop_a_ms, loop_b_ms, completed, updated_at) \
+                 VALUES ({}) \
+                 ON CONFLICT (object_id) DO UPDATE SET \
+                   position_ms = excluded.position_ms, \
+                   duration_ms = excluded.duration_ms, \
+                   loop_a_ms   = excluded.loop_a_ms, \
+                   loop_b_ms   = excluded.loop_b_ms, \
+                   completed   = excluded.completed, \
+                   updated_at  = excluded.updated_at",
+                placeholders(7, $numbered)
+            ))
+            .bind(state.object_id.as_str())
+            .bind(state.position_ms as i64)
+            .bind(state.duration_ms.map(|d| d as i64))
+            .bind(a)
+            .bind(b)
+            .bind(i64::from(state.completed))
+            .bind(commons_core::ts::now())
+            .execute($p)
+            .await
+        };
+    }
+    match store {
+        Store::Sqlite(p) => put!(p, false).map(|_| ()).map_err(StoreError::Query)?,
+        Store::Postgres(p) => put!(p, true).map(|_| ()).map_err(StoreError::Query)?,
+    }
+    Ok(())
 }

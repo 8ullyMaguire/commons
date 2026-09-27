@@ -21,6 +21,14 @@
 //! "content type is derived from the extension" test would then be testing
 //! whatever extension the previous test happened to leave behind.
 
+// Each test binary links this module whole but uses a part of it: the media
+// tests use the file fixtures, the playback tests need only `TestApp` and the
+// JSON helpers. Dead-code warnings for the unused remainder are the cost of one
+// shared harness rather than a sign of dead code — duplicating the fixture
+// builders per test file to silence them would be the worse trade, because the
+// two copies would then drift.
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -92,6 +100,34 @@ impl TestApp {
         }
         self.send(builder.body(Body::empty()).expect("a request"))
             .await
+    }
+
+    /// A JSON `GET`, for the routes that answer with an object rather than
+    /// bytes. `/media` needed `get`; the playback pair needs the parsed body
+    /// and nothing else, so this returns the raw bytes and lets the test
+    /// deserialize -- a helper that handed back a typed struct would hide the
+    /// wire format, which is the thing a client actually depends on.
+    pub async fn get_json(&self, path: &str) -> TestResponse {
+        self.send(
+            Request::builder()
+                .uri(path)
+                .body(Body::empty())
+                .expect("a request"),
+        )
+        .await
+    }
+
+    /// A JSON `PUT` with the given body, for the routes that take one.
+    pub async fn put_json(&self, path: &str, body: &str) -> TestResponse {
+        self.send(
+            Request::builder()
+                .method("PUT")
+                .uri(path)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_owned()))
+                .expect("a request"),
+        )
+        .await
     }
 
     /// Any path, for the health-route tests.

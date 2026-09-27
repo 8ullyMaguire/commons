@@ -21,6 +21,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 pub mod config;
 pub mod health;
 pub mod media;
+pub mod playback;
 pub mod range;
 
 pub use config::{Config, RunMode};
@@ -91,6 +92,10 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .merge(health_routes)
         .route("/media/:object_id", get(media::get_media))
+        .route(
+            "/media/:object_id/playback",
+            get(playback::get_playback_route).put(playback::put_playback_route),
+        )
         .layer(TraceLayer::new_for_http())
         .with_state(state)
         .fallback(not_found)
