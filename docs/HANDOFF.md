@@ -28,7 +28,7 @@ nothing. `scripts/verify.sh` runs it, so the claim cannot rot.
 
 | | State |
 |---|---|
-| Rust workspace | 1252 tests, 0 failures; 277 UI unit + 68 Playwright, 0 failures |
+| Rust workspace | 1290 tests, 0 failures; 277 UI unit + 68 Playwright, 0 failures |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | `cargo fmt --all --check` | clean |
 | `scripts/scan-history-secrets.py` | 499 blobs, 0 findings |
@@ -419,6 +419,76 @@ verdict logic grepped for `0 failed`, which Playwright never prints, and read
 the truth for every mutant and looked like four survivors. A harness that
 reports the wrong answer is worse than no harness, because it sends you looking
 for holes that are not there.
+
+### T-P5-006 item 9, part 2 — the media route, and three survivors in a row
+
+The `Range` parser, the `/media/:object_id` route, and the same lesson from a
+third direction. Worth its own heading because every step of it went wrong in a
+way the previous two did not.
+
+**A half-open range and an inclusive header are the same bug twice.** The wire
+form is `bytes=0-99` inclusive; the internal form is `start..end`. The first
+version of `ByteRange` stored the wire value and documented itself as half-open,
+so `len()` was `end - start` and every length was one short. The tests caught it
+-- but only because they asserted `len` and the `Content-Range` string
+separately, which is the shape a range test needs and is not the obvious one to
+write. The conversion now lives in exactly two places (`resolve` and
+`content_range`) and `scripts/mutate-range.sh` kills both directions.
+
+**A mutation survived because every fixture agreed with itself.** Setting the
+route's `account_id` to `None` -- making it ask as a visitor rather than as the
+library owner -- passed all fifteen route tests. Every fixture was seeded at
+`self_published`, which is in `ConsentTiers::PUBLIC`, so "allowed because the
+caller is the owner" and "allowed because everyone is" were indistinguishable.
+The `unverified` fixture kills it, and `unverified` is not exotic: it is what a
+freshly scanned file is, so it is the state every new user's library is in.
+
+The same thing again on the length: resolving a `Range` against the index's
+*recorded* size instead of the on-disk size also survived, because every fixture
+wrote a file whose length matched its row. A file replaced since the last scan is
+the case that matters, and there is now a fixture that is deliberately
+inconsistent.
+
+That is the third time in this repo — after `media-view.test.ts` and the feed's
+preload test — that a fixture whose every element falls inside the filter cannot
+test the filter. It is worth a rule rather than three anecdotes: **when a test
+is about a boundary, the fixture must straddle it.**
+
+**A compiler warning was the only thing that caught a dead security branch.**
+The route resolved the `Range` twice: once against the recorded size, once
+against the file on disk. The first result was assigned to a variable rustc
+reported as unused, so the entire first `match` -- including the 416 arm -- could
+not execute. Every test was green, because the surviving second `resolve`
+returns the same answer for every range a test would send against a
+correctly-sized file. A test cannot find this; the compiler can, and did, in a
+warning that was one line above four other warnings.
+
+**A harness that reports the wrong answer is worse than no harness.** Three
+separate scripts in this item reported mutants incorrectly, each differently:
+
+- `mutate-feed.sh` grepped for `0 failed`, which Playwright never prints, and
+  read `tail -1`, which only ever sees the pass line -- so it reported the
+  inverse of the truth for all five mutants and looked like five survivors.
+- `mutate-range.sh` checked for `error:` before the test result, and cargo
+  prints `error: test failed` at the end of every *failed* run -- so every
+  killed mutant read as "did not compile".
+- `mutate-media-route.sh` printed a bare `no result` for a mutant that neither
+  killed nor compiled, which cost a full manual investigation to trace to a
+  `s.replace` that matched a *prefix* of a `cargo fmt`-reflowed line and spliced
+  half an expression into the file.
+
+The route's mutations are now one file each under `scripts/mutations/`, each
+ending in an `assert` naming the text it could not find. The reason is not
+tidiness: an unquoted shell heredoc eats the backslashes in a regex, so a
+mutation written inline as `\s` arrives at python as `s`, and the failure looks
+like a coverage problem rather than a shell problem.
+
+**And one that is a fact, not a gap.** `scripts/mutate-media.sh` records
+`JOIN consent` -> `LEFT JOIN consent` as a known survivor, with the reason: the
+clause is `c.tier IN (...)`, so under a `LEFT JOIN` a missing consent row yields
+`c.tier = NULL`, the predicate is false, and the mutant returns exactly the
+unmutated answer. There is no test to write, because there is no observable
+difference to observe.
 
 ## Deliberately not done
 

@@ -26,3 +26,11 @@ toml = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 tower = { workspace = true, features = ["util"] }
 tempfile = { workspace = true }
+# To read a response body out of an axum `Response` in a test: `Body` implements
+# no `read_to_end`, and collecting it needs `BodyExt` from this crate. It is a
+# dev-dependency because nothing in the server itself collects a body.
+http-body-util = "0.1"
+# The route tests seed objects and files the way `media_db.rs` does, so they
+# need the same SQL access and the same UUID source.
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "postgres"] }
+uuid = { workspace = true, features = ["v4"] }

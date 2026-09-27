@@ -2585,7 +2585,9 @@ sort and per-user density -- is in `ui/src/lib/api/media-view.ts`,
 `ui/src/lib/api/feed.ts`, `ui/src/lib/components/VerticalFeed.svelte` and
 `ui/src/routes/vertical/+page.svelte`, with the media consent gate it needs
 first in `crates/commons-store/src/media.rs`, specced in
-`docs/spec/t-p5-006-vertical-feed.md`.
+`docs/spec/t-p5-006-vertical-feed.md`, together with the range parser and the
+`GET /media/:object_id` route in `crates/commons-server` that §10.6's autoplay
+and preloading both require and that the spec named as the precondition.
 
 **Both atomicity gaps the spec named are closed, and neither needed a
 transaction — which is worth recording, because the spec's own conclusion was

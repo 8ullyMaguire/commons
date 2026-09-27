@@ -24,8 +24,26 @@ PLANTS = {
     'password = "hunter2hunter2"': "assigned secret",
 }
 
-# Values the scanner is meant to allow: local dev credentials, not leaks.
-ALLOWED = ["smoke_pw", "postgres://postgres:smoke_pw@127.0.0.1/postgres"]
+# Values the scanner is meant to allow.
+#
+# The last two are a PAIR and the pair is the point. `${VAR}` in a URL has the
+# shape of a password and none of the content, so it is allowed. `hunter2${VAR}`
+# is six-plus characters of a real literal with an expansion stuck on the end, and
+# it is NOT -- because the day the scanner accepts that, the exclusion has become
+# a way to stop it finding things, which is the failure mode a scanner exists to
+# prevent. A test that only checks the allowed case would let that happen.
+ALLOWED = [
+    "smoke_pw",
+    "postgres://postgres:smoke_pw@127.0.0.1/postgres",
+    "postgres://postgres:${COMMONS_PGPW:?set it}@127.0.0.1/postgres",
+]
+
+# Values that must still be CAUGHT even though each contains an allowed one, and
+# each resembles an allowed value closely enough to be a plausible refactor.
+MUST_STILL_FIRE = [
+    "postgres://postgres:hunter2${PGPW}@127.0.0.1/postgres",
+    "postgres://postgres:realpassword${X}@127.0.0.1/postgres",
+]
 
 
 def run(repo):
@@ -59,6 +77,11 @@ def main():
     for v in ALLOWED:
         with open(os.path.join(repo, f"allowed{ALLOWED.index(v)}.txt"), "w") as fh:
             fh.write(f"# local only\nDATABASE_URL=postgres://postgres:{v}@127.0.0.1/postgres\n")
+    # Each of these CONTAINS an allowed value, so a filter written too loosely --
+    # "skip the line", "skip anything with a dollar sign" -- stops catching them.
+    for v in MUST_STILL_FIRE:
+        with open(os.path.join(repo, f"mustfire{MUST_STILL_FIRE.index(v)}.txt"), "w") as fh:
+            fh.write(f"# LOOKS allowed, IS NOT\nDATABASE_URL={v}\n")
 
     subprocess.run(["git", "-C", repo, "add", "-A"], check=True)
     subprocess.run(["git", "-C", repo, "commit", "-qm", "probe"], check=True)
@@ -74,7 +97,29 @@ def main():
     if "scanned 0 blobs" in out:
         print("FAIL: the scanner reported scanning nothing")
         return 1
-    print(f"PASS: all {len(PLANTS)} planted patterns caught, allowed values ignored")
+
+    # The near-misses are reported BY NAME. A filter that is one character too
+    # generous shows up here as a missing filename, which says which filter went
+    # wrong -- not just that "something" is wrong.
+    not_fired = [f"mustfire{i}" for i in range(len(MUST_STILL_FIRE)) if f"mustfire{i}" not in out]
+    if not_fired:
+        print(
+            "FAIL: the scanner stopped catching these because it now allows "
+            "shell expansions --", ", ".join(not_fired)
+        )
+        return 1
+
+    # And the allowed ones are genuinely not reported, by name.
+    wrongly = [f"allowed{i}" for i in range(len(ALLOWED)) if f"allowed{i}" in out]
+    if wrongly:
+        print("FAIL: the scanner reported these allowed values:", ", ".join(wrongly))
+        return 1
+
+    print(
+        f"PASS: all {len(PLANTS)} planted patterns caught, "
+        f"{len(ALLOWED)} allowed values ignored, "
+        f"{len(MUST_STILL_FIRE)} near-misses still caught"
+    )
     return 0
 
 

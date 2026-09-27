@@ -41,7 +41,32 @@ PATTERNS = [
 
 # The values that are local-only development credentials, so a hit on them is a
 # decision rather than an accident.
+# The values that are local-only development credentials, so a hit on them is a
+# decision rather than an accident.
 KNOWN_LOCAL = {b"smoke_pw", b"postgres", b"changeme", b"placeholder"}
+
+# A secret that is a SHELL EXPANSION is not a secret in the blob.
+#
+# Found by this scanner flagging `scripts/mutate-media.sh`, which contains
+#
+#     export DATABASE_URL="postgres://postgres:${COMMONS_PGPW:?...}@127.0.0.1/..."
+#
+# The password field is `${COMMONS_PGPW...}` -- fifteen characters with no secret
+# in them -- and the "url with inline password" pattern is six-or-more, so it
+# matched. The finding was correct about the SHAPE and wrong about the CONTENT.
+#
+# Which is the more dangerous direction, and worth being explicit about. The
+# alternative -- teach the scanner to read shell -- invites it to accept
+# `${SECRET}` written where a real password used to be, which is how a scanner
+# learns to shut up. So this is a narrow, syntactic exclusion: the field must be
+# a parameter expansion with no literal characters outside it. A value like
+# `hunter2${VAR}` is still reported, because the literal is still in the blob.
+_EXPANSION_ONLY = re.compile(rb"^\$\{[A-Za-z_][A-Za-z0-9_]*(:[-=+?]?[^}]*)?\}$")
+
+
+def is_expansion(field: bytes) -> bool:
+    """Whether a captured secret field is purely a shell parameter expansion."""
+    return bool(_EXPANSION_ONLY.match(field))
 
 
 def redact(b):
@@ -123,6 +148,8 @@ def main():
             for m in re.finditer(pat, out):
                 val = m.group(m.lastindex or 0)
                 if val.strip().lower() in KNOWN_LOCAL:
+                    continue
+                if is_expansion(val.strip()):
                     continue
                 hits.setdefault((label, path), set()).add(redact(val))
 

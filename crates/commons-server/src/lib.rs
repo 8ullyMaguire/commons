@@ -20,6 +20,8 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 pub mod config;
 pub mod health;
+pub mod media;
+pub mod range;
 
 pub use config::{Config, RunMode};
 pub use health::HealthState;
@@ -73,12 +75,24 @@ pub fn router(state: Arc<AppState>) -> Router {
         ready: true,
     };
 
-    Router::new()
+    // Two states, so two routers nested rather than one. `HealthState` is
+    // `Clone + Send + Sync` with no store behind it and is the whole of the
+    // Phase 0 surface; `AppState` carries the `Store` and is what `/media`
+    // needs. Axum's `with_state` fixes the state type for the router it is
+    // called on, so merging them would mean putting the store in the health
+    // state -- and then `HealthState` would have to construct a store to be
+    // tested, which is the wrong direction for a health check.
+    let health_routes = Router::new()
         .route("/healthz", get(health::healthz))
         .route("/livez", get(health::livez))
         .route("/metrics", get(metrics))
+        .with_state(health);
+
+    Router::new()
+        .merge(health_routes)
+        .route("/media/:object_id", get(media::get_media))
         .layer(TraceLayer::new_for_http())
-        .with_state(health)
+        .with_state(state)
         .fallback(not_found)
 }
 

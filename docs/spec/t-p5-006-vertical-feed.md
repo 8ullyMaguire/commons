@@ -212,11 +212,73 @@ The e2e spec asserts the window bound exactly — 12, from 60 rows — rather th
 `less than 60`, because a `< 60` is satisfied by any window at all and would
 survive a change that doubled it.
 
-## 13. What is deliberately not done
+## 13. Part three: the route, and the layer it turned out to need
 
-- **Range requests and the HTTP route itself.** `Location` is the contract;
-  the route that serves bytes is still to write.
-- **Audio.** The feed is muted by design (§10.8's autoplay constraint), so
-  there is no unmute affordance yet.
-- **Likes, comments, save from within a slide.** The slide is not an item
-  detail page; those are reachable by opening the item.
+`crates/commons-server/src/range.rs` and `src/media.rs`, plus `tests/range.rs`
+(21) and `tests/media_route.rs` (17). `GET /media/:object_id`.
+
+**`range.rs` exists because the parser is where the off-by-one lives.** Not the
+route, not the reading loop: the parser. A range on the wire is *inclusive*
+(`bytes=0-99` is bytes 0 through 99) and everything downstream wants a
+*subtraction*, so one conversion stands between the two and a mistake in it
+produces no error at all — a video that skips its last frame, or a client that
+waits forever for a byte that was never sent. So `ByteRange` is half-open, the
+conversion is in exactly two functions, and `scripts/mutate-range.sh` kills both
+directions of it plus the five other decisions in the parser.
+
+The decisions worth naming, because each is a case where guessing is worse than
+refusing:
+
+- **An end past the body is clamped, not refused** (§14.1.2). A client that does
+  not know the length sends `bytes=0-999999`; answering 416 breaks it. An
+  *unspecified* end is `len`; a *start* past the body is 416.
+- **An unknown range unit is ignored, not refused** (§14.2). `items=0-1` gets a
+  200. The RFC says MUST ignore, and a server that 416s a probe breaks clients
+  that probe.
+- **An empty body refuses every range, including a suffix.** `bytes=-100` on a
+  zero-length file asks for the last 100 bytes of nothing, and a 206 with an
+  empty body makes a seeking client wait for bytes that cannot arrive.
+- **`Malformed` and `Unsatisfiable` are two variants, one status.** A browser
+  cannot tell them apart; the next person debugging a failing seek can, and the
+  distinction is free while it is still a free choice.
+
+**The route's three jobs, in the order they matter.** Consent first — and
+because the gate is `Store::media_path`, which ANDs the clause into its
+`WHERE`, there is nothing for the route to remember to check. 404 rather than 403
+for a denied object, because a 403 confirms the object exists and on a
+consent-first platform that is itself the information §14.1 withholds. And a body
+that matches its own `Content-Range`, which is the one that hangs a client rather
+than failing it.
+
+Two things the route does that the spec did not ask for, both because the
+alternative is a route that is wrong in a way nothing notices:
+
+- **It resolves the range against the on-disk length, not the recorded one.** A
+  file replaced since the last scan has a row saying one size and bytes of
+  another; resolve against the row and the `Content-Range` claims more than the
+  body holds.
+- **It answers 200 with the whole file for a multi-range request.** Not because
+  200 is right — multipart would be — but because a 206 carrying only the first
+  range hands back a body the client cannot align with its request, and the
+  browser's media stack retries forever. `RangeSpec::Multiple` is a separate enum
+  variant for exactly this: the one place that has to handle it is a `match` arm
+  that cannot be forgotten.
+
+**A route reads whole files into memory, and a feed asks for five at once.** So
+there is a `MAX_WHOLE_BODY` of 64 MiB and a 413 above it, with
+`Accept-Ranges: bytes` on the 200 — a client that cannot see the token never
+sends `Range` and so never seeks. A whole-body response for a 4 GB original is
+4 GB of resident memory because a request said "everything", and the feed's own
+preload behaviour is what would trigger it.
+
+## 14. What is deliberately not done
+
+- **Multipart ranges.** Several ranges get the whole file (§13). Every browser
+  media stack sends a single range, so this is a spec feature with no consumer.
+- **Streaming a whole body.** The route buffers up to 64 MiB and refuses above
+  it. A `Body` from a `File` with a `Take` would remove the cap, and the cap is
+  load-bearing until it does.
+- **Audio.** The feed is muted by design (§10.8's autoplay constraint), so there
+  is no unmute affordance yet.
+- **Likes, comments, save from within a slide.** The slide is not an item detail
+  page; those are reachable by opening the item.
