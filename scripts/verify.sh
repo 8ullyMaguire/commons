@@ -255,6 +255,19 @@ else
   fail=1
 fi
 
+# A scratch path keyed on the pid alone is unique only within one run, and pids
+# are reused -- so a later run deletes a stub a still-running sibling is exec'ing
+# and the kernel answers ETXTBSY inside an unrelated test. That is a real flake
+# this repository has already produced, in a test named for a deadlock.
+echo "== scratch path uniqueness"
+if python3 "$REPO/scripts/scratch_path_audit.py" > /tmp/commons-scratch.txt 2>&1; then
+  sed -n '1p' /tmp/commons-scratch.txt | sed 's/^/   /'
+else
+  sed -n '1,10p' /tmp/commons-scratch.txt | sed 's/^/   /'
+  echo "   FAILED: a test scratch path is unique only within a single run"
+  fail=1
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "ALL GREEN"

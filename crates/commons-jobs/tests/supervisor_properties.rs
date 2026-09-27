@@ -71,6 +71,16 @@ fn the_inhibitor_exists_while_there_is_work_and_not_after() {
             ..SupervisorConfig::default()
         },
     );
+    // The supervisor derives this name from the pid, so the test has to predict
+    // it and cannot add a component of its own -- the two must agree exactly,
+    // or the test asserts on a file the supervisor never writes.
+    //
+    // Uniqueness across runs is not this test's problem to solve, and the
+    // reason is structural rather than a promise: the name is *joined onto*
+    // `runtime.path()`, which the test helper already makes unique per call.
+    // A stale inhibitor from an earlier run is in a directory this run never
+    // looks at, so the pid inside the leaf name cannot collide with anything
+    // that matters. `scratch_path_audit.py` understands a join as that proof.
     let inhibitor = runtime
         .path()
         .join(format!("commons-scan-inhibit-{}", std::process::id()));

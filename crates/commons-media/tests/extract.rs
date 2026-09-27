@@ -29,11 +29,31 @@ use std::path::{Path, PathBuf};
 /// on the machine, and a stale file from a killed run is how a test passes once
 /// and fails forever after.
 fn scratch(tag: &str) -> PathBuf {
-    // Unique per PROCESS as well as per test. Cargo runs the tests in this
-    // binary concurrently, and two of them writing the same stub path race into
-    // `ETXTBSY` -- "Text file busy" -- which reads as a spawn failure and has
-    // nothing to do with the code under test.
-    let dir = std::env::temp_dir().join(format!("commons-extract-{tag}-{}", std::process::id()));
+    // Unique per CALL, not per test and not per process, and both of those
+    // narrower keys have already produced a failure.
+    //
+    // Per process (`commons-extract-{tag}-{pid}`) collides because **pids are
+    // reused**: the same test binary run twice, weeks or minutes apart, gets
+    // the same pid and the same directory, and the second run's
+    // `remove_dir_all` deletes the first run's stub while a sibling thread is
+    // still `exec`ing it. That is `ETXTBSY -- "Text file busy"`, which surfaces
+    // as a spawn failure in a test named for a deadlock that never happened.
+    //
+    // A monotonic counter is per-process, so on its own it does not survive the
+    // pid reuse either; the nanosecond timestamp is what makes the name unique
+    // across runs, and the counter is what makes it unique across threads
+    // within one run -- two calls in the same nanosecond are possible on
+    // different cores, and neither key is sufficient alone.
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "commons-extract-{tag}-{}-{n}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch dir");
     dir

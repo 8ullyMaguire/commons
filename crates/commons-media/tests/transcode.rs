@@ -37,8 +37,23 @@ struct Tmp(PathBuf);
 
 impl Tmp {
     fn new(tag: &str) -> Self {
-        let p =
-            std::env::temp_dir().join(format!("commons-transcode-{tag}-{}", std::process::id()));
+        // Unique per CALL. A per-process key is not enough because **pids are
+        // reused**: two runs of this binary weeks apart get the same pid and the
+        // same directory, and the second run's `remove_dir_all` deletes a stub a
+        // sibling thread is still `exec`ing -- `ETXTBSY -- "Text file busy"`,
+        // which surfaces as a spawn failure in an unrelated test. The counter
+        // makes it unique across threads in one run, the timestamp across runs;
+        // neither key is sufficient alone.
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let p = std::env::temp_dir().join(format!(
+            "commons-transcode-{tag}-{}-{n}-{nanos}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).expect("a temp dir");
         Tmp(p)
