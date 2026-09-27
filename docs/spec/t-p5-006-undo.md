@@ -199,10 +199,22 @@ gap section 6 names rather than a property to claim.
 
 Done. `crates/commons-store/src/undo.rs`, migration `0019_undo.sql` (both
 engines), `tests/undo_db.rs` (13 tests, both engines), 7 unit tests,
-`ui/src/lib/api/undo.ts` (11 tests). 1219 Rust, 237 UI. Clippy clean.
+`ui/src/lib/api/undo.ts` (11 tests), the offer in `BulkEditModal.svelte`
+with 3 e2e cases in `ui/e2e/bulk.spec.ts`. 1219 Rust, 237 UI, 56 e2e. Clippy
+clean.
 
-Not done, and named: the atomicity gap in section 6, and the `.svelte`
-component that renders the toast (the model is done and tested, the DOM is not).
+**Where the offer renders, and why it is not a toast.** Inside the bulk modal,
+beside the result line. A floating toast was written first and it cannot work:
+that dialog is `showModal()`, which makes the rest of the page inert, so a toast
+raised while the modal is open cannot be clicked at all. Playwright reported it
+as `bulk-modal intercepts pointer events` — the browser saying the interaction is
+gone, which a user reads as a frozen page. Item 3's own code already states the
+principle one line above where the toast would have gone: a toast that outlives
+a window the user has closed reports a failure against a dialog they are no
+longer in. The component and its three browser tests were deleted and the offer
+moved into `BulkEditModal.svelte`.
+
+Not done, and named: the two atomicity gaps in section 6.
 
 **On the missing route — not this item's gap.** `ui/src/lib/api/client.ts` is
 the only module permitted to name `fetch`, and the whole client is *queries*:

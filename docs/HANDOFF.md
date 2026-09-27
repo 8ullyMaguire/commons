@@ -983,9 +983,12 @@ Four things worth knowing before touching this:
   This is the one claim the first version got wrong in the dangerous direction —
   the doc said all-or-nothing unconditionally, and a two-object stale-record test
   caught it restoring the first object before refusing the second.
-- **No component, and no route — but the route is not this item's gap.** The
-  `.svelte` toast is not written; the client model is complete and tested, ready
-  the moment it is. There is also no GraphQL operation, and that is true of
+- **No route — and that is not this item's gap.** The offer renders in
+  `BulkEditModal.svelte` beside the result line, not in a floating toast: the
+  modal is `showModal()`, so a toast raised while it is open is unclickable, and
+  item 3's own code already says why ("a toast that outlives a window the user
+  has closed reports a failure against a dialog they are no longer in"). There
+  is also no GraphQL operation, and that is true of
   every write in the project: `client.ts` is the only module allowed to name
   `fetch`, the whole client is queries, there is no mutation document in
   `ui/src/lib/api/` at all, and there is no server-side schema in the repo.

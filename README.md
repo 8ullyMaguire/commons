@@ -158,7 +158,7 @@ that is still alive and would recover.
 
 ## Testing
 
-1219 Rust tests across the workspace, plus 237 UI unit tests and 53 Playwright end-to-end tests (11 grid, 5 lightbox, 6 list, 10 bulk, 9 guard, 12 commands). The ones that matter most are the ones that
+1219 Rust tests across the workspace, plus 237 UI unit tests and 56 Playwright end-to-end tests (11 grid, 5 lightbox, 6 list, 13 bulk, 9 guard, 12 commands). The ones that matter most are the ones that
 were verified by breaking the code on purpose:
 
 - **Zip-Slip** (`commons-media`, `archive.rs`) — a comic archive is the most

@@ -360,4 +360,53 @@ test.describe('the bulk modal', () => {
     await expect(page.getByTestId('bulk-modal')).not.toBeVisible();
     expect(sent.target).toBeUndefined();
   });
+
+  // ---- the undo offer (item 7) -------------------------------------------
+  //
+  // These live here rather than in an `undo.spec.ts` because the offer is
+  // rendered INSIDE this dialog, not in a floating toast. A toast was the first
+  // design and it cannot work: this dialog is `showModal()`, which makes the
+  // rest of the page inert, so a toast shown while the modal is open cannot be
+  // clicked at all. Playwright reports that as "bulk-modal intercepts pointer
+  // events", which names the wrong element and reads as a component bug.
+
+  test('offers an undo counting what the write changed', async ({ page }) => {
+    server.bulk = { applied: 2, skipped_invisible: 0, requested: 2 };
+    await selectAndOpen(page, 2);
+    await chooseTag(page, 'tag-beach');
+    // Before the write, nothing is offered.
+    await expect(page.getByTestId('bulk-undo')).toHaveCount(0);
+    await page.getByTestId('bulk-apply').click();
+
+    // The server's count, not the selection's — the two differ whenever a
+    // selected object is not the caller's to see.
+    await expect(page.getByTestId('bulk-undo-line')).toContainText('Undo 2 changes');
+    await expect(page.getByTestId('bulk-undo')).toBeVisible();
+  });
+
+  test('offers nothing when the write changed nothing', async ({ page }) => {
+    // Every selected object was invisible. "Undo 0 changes" with a live button
+    // is a button that restores nothing.
+    server.bulk = { applied: 0, skipped_invisible: 3, requested: 3 };
+    await selectAndOpen(page, 3);
+    await chooseTag(page, 'tag-beach');
+    await page.getByTestId('bulk-apply').click();
+    await expect(page.getByTestId('bulk-result')).toBeVisible();
+    await expect(page.getByTestId('bulk-undo')).toHaveCount(0);
+  });
+
+  test('pressing Undo leaves a failure and the button does not come back', async ({ page }) => {
+    // There is no mutation operation in the client at all, so the undo cannot be
+    // performed. A button still on screen after the user pressed it is how they
+    // press it six times.
+    server.bulk = { applied: 2, skipped_invisible: 0, requested: 2 };
+    await selectAndOpen(page, 2);
+    await chooseTag(page, 'tag-beach');
+    await page.getByTestId('bulk-apply').click();
+    await expect(page.getByTestId('bulk-undo')).toBeVisible();
+
+    await page.getByTestId('bulk-undo').click();
+    await expect(page.getByTestId('bulk-undo-line')).toContainText('Undo failed');
+    await expect(page.getByTestId('bulk-undo')).toHaveCount(0);
+  });
 });

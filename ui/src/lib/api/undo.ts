@@ -1,5 +1,5 @@
 /*
-  The undo toast, as the UI has to present it. Spec 10.7, plan T-P5-006 item 7.
+  The undo offer, as the UI has to present it. Spec 10.7, plan T-P5-006 item 7.
 
   Companion to `bulk.ts`, and it follows the same rule: the client does not
   decide, it classifies. The server decides whether an undo is allowed
@@ -15,7 +15,7 @@
   A refused undo is not a failure the user caused, and treating it as one is
   how "you already changed this, so undo is off" turns into an error dialog.
   The user did nothing wrong; the system changed underneath them. Every refusal
-  below is a *state* the toast renders, not an exception it throws.
+  below is a *state* the view renders, not an exception it throws.
 
   # The one that is a bug, not a state
 

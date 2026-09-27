@@ -14,6 +14,12 @@
   import { page } from '$app/state';
   import ListTable from '$lib/components/ListTable.svelte';
   import BulkEditModal from '$lib/components/BulkEditModal.svelte';
+  import {
+    NO_UNDO,
+    classifyUndo,
+    type UndoOutcome,
+    type UndoState
+  } from '$lib/api/undo.js';
   import { KeysetStore } from '$lib/api/keyset.js';
   import { viewFromLocation, type ViewState } from '$lib/api/view.js';
   import { selectedCount, type Selection } from '$lib/api/selection.js';
@@ -76,6 +82,47 @@
    * `tests/invariants.test.ts` asserts the transport is the only module that
    * names one. That test caught this route's first version.
    */
+  /**
+   * The last write's undo offer, defaulting to "nothing to say".
+   *
+   * `NO_UNDO` rather than a hand-built literal, so the modal's `?? NO_UNDO`
+   * fallback and this default are the same value.
+   */
+  let undoState = $state<UndoState>(NO_UNDO);
+
+  /**
+   * What the write offers to undo.
+   *
+   * A zero-change write offers nothing, and `classifyUndo` has no variant for
+   * that -- a toast reading "Undo 0 changes" with a working button is a button
+   * that restores nothing. The resting state is the honest answer.
+   *
+   * The shape is the one `Store::undo` will return once an operation layer
+   * exists; the count is the write's own `applied`, which is what the server
+   * reports for the write this toast would reverse.
+   */
+  function undoOutcomeFor(applied: { applied: number }): UndoOutcome {
+    return applied.applied > 0
+      ? { kind: 'ok', restored: applied.applied }
+      : { kind: 'no-such-record' };
+  }
+
+  /**
+   * Reverse the last write.
+   *
+   * The transport call does not exist yet -- there is no mutation operation in
+   * the client at all, `bulk_apply_tag` included -- so this reports a failure
+   * rather than pretending. `classifyUndo` maps it to the one state with no
+   * button, so the toast stops offering an action it cannot perform instead of
+   * leaving a live-looking Undo that silently does nothing.
+   */
+  async function undoLastWrite() {
+    undoState = classifyUndo({
+      kind: 'failed',
+      reason: 'the undo operation is not exposed yet'
+    });
+  }
+
   async function applyBulkTag(tagId: string) {
     busy = true;
     bulkError = null;
@@ -86,6 +133,7 @@
         skipped_invisible: res.bulkApplyTag.skippedInvisible,
         requested: res.bulkApplyTag.requested
       };
+      undoState = classifyUndo(undoOutcomeFor(res.bulkApplyTag));
       selection = {};
       await refresh();
     } catch (e) {
@@ -196,6 +244,8 @@
 
   <BulkEditModal
     open={modalOpen}
+    undo={undoState}
+    onundo={undoLastWrite}
     {selection}
     {loadedIds}
     serverCount={state.totalCount}

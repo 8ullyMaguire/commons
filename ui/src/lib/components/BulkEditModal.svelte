@@ -38,6 +38,7 @@
 -->
 <script lang="ts">
   import { commands } from '$lib/api/commands-ui.js';
+  import { NO_UNDO, canUndo, describe, type UndoState } from '$lib/api/undo.js';
   import {
     IDLE,
     canApply,
@@ -75,7 +76,16 @@
     error?: string | null;
     /** In flight: the button is disabled and the scope line is provisional. */
     busy?: boolean;
+    /**
+     * The last write's undo offer, or `NO_UNDO` before one.
+     *
+     * A prop, not local state, for the reason `error` is: the undo is a
+     * round-trip the parent owns, and this component renders what it is told.
+     */
+    undo?: UndoState;
     onapply: (tagId: string) => void;
+    /** Called when the user presses Undo. */
+    onundo?: () => void;
     oncancel: () => void;
   }
 
@@ -100,6 +110,7 @@
   const error = $derived(p.error ?? null);
   const busy = $derived(p.busy ?? false);
   const onapply = $derived(p.onapply);
+  const undo = $derived(p.undo ?? NO_UNDO);
   const oncancel = $derived(p.oncancel);
 
   let chosen = $state<string>('');
@@ -280,6 +291,35 @@
     </p>
   {/if}
 
+  <!--
+    The undo offer, IN the dialog rather than in a floating toast.
+
+    A toast was the first design and it cannot work: this dialog is
+    `showModal()`, which makes everything outside it inert, so a toast shown
+    while the modal is open is unclickable. Playwright reported it as
+    "bulk-modal intercepts pointer events", which is the browser saying the
+    interaction is gone -- a user would call it a frozen page. And the error
+    line above already states the principle: a toast that outlives a window the
+    user has closed reports a failure against a dialog they are no longer in.
+
+    The state and the wording come from `$lib/api/undo.js`; this is the same
+    split as the rest of the file. Only `offerable` renders the button, and
+    there is no undo operation in the client yet, so `onundo` reports a failure
+    and the button does not come back -- see `undoLastWrite` in the page.
+  -->
+  {#if canUndo(undo)}
+    <p data-testid="bulk-undo-line" class="undo-line">
+      {describe(undo)}
+      <button type="button" data-testid="bulk-undo" onclick={() => p.onundo?.()}>
+        Undo
+      </button>
+    </p>
+  {:else if undo.state === 'failed' || undo.state === 'superseded' || undo.state === 'spent'}
+    <p data-testid="bulk-undo-line" class="undo-line undo-line-fail">
+      {describe(undo)}
+    </p>
+  {/if}
+
   <footer>
     <button data-testid="bulk-cancel" onclick={oncancel}>Cancel</button>
     <button
@@ -316,6 +356,17 @@
   }
   [data-testid='bulk-error'] {
     color: var(--error, #d9534f);
+  }
+  .undo-line {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.25rem 0 0;
+  }
+  /* Only a failure is coloured. A superseded undo is the system having moved
+     on, and colouring it would teach users that undo is unreliable. */
+  .undo-line-fail {
+    color: var(--warn, #d8a657);
   }
   footer {
     display: flex;
