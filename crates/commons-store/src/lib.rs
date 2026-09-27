@@ -33,6 +33,7 @@ pub mod playback;
 pub mod query;
 pub mod relations;
 pub mod search;
+pub mod share;
 pub mod sort;
 pub mod subtitles;
 pub mod tags;

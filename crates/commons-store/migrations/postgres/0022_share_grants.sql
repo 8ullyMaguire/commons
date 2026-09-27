@@ -30,8 +30,8 @@
 --
 -- The one decision in this migration that is expensive to reverse.
 --
--- `token_hash` is BLAKE3 of the token, and the token itself exists only in the
--- create response. A database dump, a backup, a log line, or an `EXPLAIN` of
+-- `token_hash` is BLAKE3 of the token, hex-encoded, and the token itself exists
+-- only in the create response. A database dump, a backup, a log line, or an `EXPLAIN` of
 -- the wrong query then yields no working links. Storing the token would make
 -- every copy of the database a copy of every link ever issued, with an expiry
 -- that does not revoke the copy.
@@ -70,7 +70,14 @@
 CREATE TABLE share_grant (
     id            TEXT PRIMARY KEY,
     -- BLAKE3 of the token. See the header: never the token itself.
-    token_hash    BLOB NOT NULL UNIQUE,
+    -- Hex TEXT, not BYTEA/BLOB. Binary columns are the one thing in this schema
+    -- that has no portable spelling (Postgres has BYTEA, SQLite has BLOB, and
+    -- the parity test applies both files to the same Postgres instance), and the
+    -- 32-byte hashes are stored hex-encoded as TEXT for the same reason every
+    -- other hash in this schema is -- see 0021_subtitles.sha256.
+    -- Hex rather than base64 because it is what every existing hash column uses
+    -- and a second encoding in one schema is a thing to notice at 3am.
+    token_hash    TEXT NOT NULL UNIQUE,
     -- 'view' or 'view_download'. A CHECK rather than a convention, because
     -- 'download' read as 'view_download' is the failure this feature must not
     -- have, and a convention is not a constraint.
@@ -79,7 +86,7 @@ CREATE TABLE share_grant (
     target_kind   TEXT NOT NULL,
     target_id     TEXT NOT NULL,
     -- NULL means no password. NOT hashed with a KDF; see the header.
-    password_hash BLOB,
+    password_hash TEXT,
     expires_at    TEXT NOT NULL,
     -- NULL = live. The state, not a boolean: see the header.
     revoked_at    TEXT,
@@ -89,7 +96,13 @@ CREATE TABLE share_grant (
     -- otherwise be a join over the log for every row shown; and a count that is
     -- wrong by one because the log write failed is better than a list view
     -- that fails. `last_accessed_at` is the same fact for display.
-    access_count  INTEGER NOT NULL DEFAULT 0,
+    -- BIGINT, not INTEGER. The Rust side decodes this as `i64`, and a Postgres
+    -- `INTEGER` column read as `i64` is a type error at READ time -- not at
+    -- write time, not at migration time, and not on SQLite at any time. So the
+    -- migration-parity test (which compares column NAMES) passes, and only a
+    -- round-trip test on Postgres catches it. This is the third time this
+    -- repository has hit it; see 0021_subtitles.sql for the same note.
+    access_count  BIGINT NOT NULL DEFAULT 0,
     last_accessed_at TEXT,
     CONSTRAINT share_scope_valid CHECK (scope IN ('view', 'view_download')),
     CONSTRAINT share_target_kind_valid
