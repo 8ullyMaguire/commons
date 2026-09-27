@@ -302,3 +302,49 @@ export interface TagsResult {
 export function fetchTags(signal?: AbortSignal): Promise<TagsResult> {
   return query<TagsResult>(TAGS_QUERY, {}, signal);
 }
+
+// ---------------------------------------------------------------------------
+// The create actions (T-P5-006 item 10, spec 10.10)
+// ---------------------------------------------------------------------------
+
+/**
+ * Create every row that is not already in the library, and report both counts.
+ *
+ * The response asks for `created` AND `existing` because the action exists
+ * *because* "already there" is a common outcome, and a response carrying only a
+ * success count cannot tell a user that 35 of their 40 pasted rows were already
+ * in their library. `ui/src/lib/api/create.ts` renders the two separately, and
+ * it cannot do that if the server does not send them.
+ */
+const CREATE_ALL_MISSING = `
+  mutation CreateAllMissing($rows: [String!]!) {
+    createAllMissing(rows: $rows) {
+      created
+      existing
+      refused
+    }
+  }
+`;
+
+export interface CreateAllMissingResult {
+  readonly createAllMissing: {
+    readonly created: number;
+    readonly existing: number;
+    readonly refused: number;
+  };
+}
+
+/**
+ * Create the rows that are missing, skipping the ones already in the library.
+ *
+ * Idempotent: a second call with the same rows creates nothing and reports them
+ * all as `existing`. The caller does not have to know which they were.
+ *
+ * `rows` are titles, not ids, and deliberately so — the id is derived from the
+ * row's content on the server, so a client that computed it would have a second
+ * implementation of the derivation to keep in step. A title containing a quote
+ * or a newline is data, and the transport's escaping is the transport's job.
+ */
+export function createAllMissing(rows: readonly string[]): Promise<CreateAllMissingResult> {
+  return query<CreateAllMissingResult>(CREATE_ALL_MISSING, { rows });
+}

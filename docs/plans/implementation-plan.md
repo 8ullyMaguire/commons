@@ -2588,8 +2588,10 @@ first in `crates/commons-store/src/media.rs`, specced in
 `docs/spec/t-p5-006-vertical-feed.md`, together with the range parser and the
 `GET /media/:object_id` route in `crates/commons-server` that §10.6's autoplay
 and preloading both require and that the spec named as the precondition. Item 10, the two create actions, is in `crates/commons-store/src/create.rs`,
-specced in `docs/spec/t-p5-006-create.md`; its UI half — the modal's two
-create rows — is not yet built.
+specced in `docs/spec/t-p5-006-create.md`, with the UI half in
+`ui/src/lib/api/create.ts`, `ui/src/lib/components/CreateFromSubpage.svelte`
+and the `create-from-subpage` route. The server-side GraphQL resolver is not
+built; the UI is proved against a mocked endpoint.
 
 **Both atomicity gaps the spec named are closed, and neither needed a
 transaction — which is worth recording, because the spec's own conclusion was

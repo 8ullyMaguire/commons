@@ -193,9 +193,10 @@ object they made, so the read *should* be under a stated tier.
   `new_file` path attaches bytes and a `file` row. Coupling them would make a
   create depend on a path existing, and §5.18 is explicit that the operator's
   disk layout is not an API.
-- **No HTTP route and no UI.** The two actions exist in the data layer. §10.10's
-  surface is the bulk-edit modal, and `ui/src/lib/components/BulkEditModal.svelte`
-  is item 10's remaining half.
+- **No HTTP route for create.** The bulk mutations go through GraphQL and so do
+  these, but the server-side resolver is not built: the UI half below is proved
+  against a mocked endpoint, and a real resolver is the remaining work. Stated
+  plainly because "the client can call it" is not "the server answers it".
 - **No CSV parsing.** §7.1's importer is a separate ticket; `dedupe` and
   `redundant_count` are the shape it will need, and nothing here parses a
   delimiter or guesses a column order.
@@ -203,3 +204,55 @@ object they made, so the read *should* be under a stated tier.
   reversible in the same way, and §10.9's undo scope does not cover creation.
   Adding one would mean deciding what undoing a create does to the consent row,
   which is a spec question this item does not answer.
+
+---
+
+## 12. The UI half
+
+`ui/src/lib/api/create.ts` — pure, no DOM, and the only place the three counts
+become a sentence. `ui/src/lib/components/CreateFromSubpage.svelte` — layout,
+focus, keyboard. `ui/src/routes/create-from-subpage/+page.svelte` — the route,
+which owns the request. `ui/e2e/create-from-subpage.spec.ts` — 7 browser tests.
+
+### Why a route and not two rows in the bulk modal
+
+The bulk modal is *selection*-driven: its scope line is a promise about exactly
+which ids a write will touch. The two create actions have no selection by
+construction — one starts from a single item's subpages, the other from a list
+that is not in the library yet. Forcing them in would mean inventing a fake
+selection or teaching the modal a second notion of scope, and the modal exists
+because its scope line is trustworthy.
+
+The route follows the same rule the feed follows: the rows are in the URL, as
+repeated `?rows=` rather than one joined string. A title containing a `&` or a
+`,` is a title, and a separator a user can type into their own data is a
+separator that eventually splits a row in the wrong place. There is a test
+that pastes `'Two Words'`, `'A & B'` and `'quote " and \\ backslash'` and
+asserts they arrive intact.
+
+### The button names what will be created
+
+`Create 5`, not `Create 40`, when 35 of 40 are already in the library. The count
+is the one the click causes, and a button reading the pasted number is a small
+overstatement that teaches users to stop believing a UI's numbers.
+
+### A hardcoded state literal, caught only by the browser
+
+The route built its result as `{ state: 'done', outcome }` — a literal, rather
+than `classify(outcome)`. The unit tests passed, because they exercise the
+module and the module is correct. A run with `refused > 0` therefore rendered
+`data-state="done"` and no warning styling, which is precisely what
+`classify` exists to prevent.
+
+This is the e2e suite earning its place: the bug is at a *call site*, and no
+test of the module can see a caller that ignores it. The test now asserts
+`data-state="partial"` on a refused row.
+
+### UI results
+
+`ui/tests/create.test.ts` — 29 tests. 7 mutations in
+`scripts/mutate-create-ui.mjs`, **7 killed**: dropping the already-there count,
+rendering an all-duplicates run as a success count, collapsing `blocked` into
+`done`, dropping the refused count from a partial, leaving the button live while
+running, naming the pasted count on the button, and rendering a negative
+duplicate count from a stale distinct count.

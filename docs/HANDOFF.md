@@ -420,6 +420,30 @@ the truth for every mutant and looked like four survivors. A harness that
 reports the wrong answer is worse than no harness, because it sends you looking
 for holes that are not there.
 
+### T-P5-006 item 10, part 2 — the create UI, and a bug only a browser could see
+
+`ui/src/lib/api/create.ts` (pure) turns `CreateOutcome`'s three counts into the
+one sentence a user reads. The button says `Create 5`, not `Create 40`, when 35
+of 40 are already in the library — the count the click actually causes. The rows
+live in the URL as repeated `?rows=` rather than a joined string, so a title
+containing a `&` or a `,` survives; a test pastes `'Two Words'`, `'A & B'` and
+`'quote " and \\ backslash'` and asserts they arrive intact.
+
+A hardcoded state literal at the route's call site: `result = { state: 'done' }`
+instead of `classify(outcome)`. Every unit test passed, because the tests
+exercise the module and the module is correct — a run with `refused > 0`
+rendered `data-state="done"` with no warning styling, which is exactly what
+`classify` exists to prevent. **The e2e suite caught it and nothing else
+could**: the bug is in a caller ignoring a function, and no test of a function
+sees a caller that ignores it. This is the strongest argument yet for running
+the browser suite rather than trusting the unit count.
+
+29 UI tests, 7 mutations, 7 killed. E2E 75 (was 68).
+
+It is a route and not two rows in the bulk modal because the modal is
+*selection*-driven — its scope line is a promise about exactly which ids will be
+touched — and neither create action has a selection by construction.
+
 ### T-P5-006 item 10, part 1 — the create path, and a test that could not tell
 
 `create-from-subpage` (#3694) and `create-all-missing` (#1017, #3122) are the
