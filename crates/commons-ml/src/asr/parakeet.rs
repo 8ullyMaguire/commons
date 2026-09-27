@@ -41,6 +41,12 @@
 //! default.
 
 use std::io::{BufRead, BufReader, Write};
+
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine as _;
+
+use crate::asr::audio;
+#[cfg(test)]
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
@@ -55,6 +61,11 @@ use crate::model::ModelSource;
 #[serde(tag = "cmd", rename_all = "snake_case")]
 enum Request<'a> {
     Load {
+        /// Every request carries an id, including `load`. A protocol where only
+        /// some messages are addressed cannot tell "the reply I am reading
+        /// belongs to the request I just sent" from "a stale line is still
+        /// sitting in the pipe".
+        id: u64,
         model: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         sha256: Option<&'a str>,
@@ -83,6 +94,15 @@ pub struct Reply {
     /// rather than what it asked for.
     #[serde(default)]
     pub sha256: Option<String>,
+    /// `Some(true)` when `words[].text` holds numeric token ids rather than
+    /// words, because no vocabulary was configured.
+    ///
+    /// Surfaced rather than swallowed. The times and the word count are right
+    /// either way, so a caller could store this as a transcript and search it
+    /// for "4" forever; the flag is what makes the difference visible at the
+    /// point where someone decides the transcript is ready.
+    #[serde(default)]
+    pub id_text: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -109,11 +129,52 @@ const SIDECAR: &str = include_str!("parakeet_sidecar.py");
 /// failure, so the kill is unconditional.
 pub struct Parakeet {
     child: Option<Child>,
-    stdin: Option<ChildStdin>,
-    stdout: Option<BufReader<ChildStdout>>,
-    next_id: u64,
+    /// Set by the sidecar's first transcript reply; see `Reply::id_text`.
+    ///
+    /// An atomic because `transcribe_chunk` takes `&self` and the flag is
+    /// written there and read by `words_are_ids`. Once the sidecar has answered
+    /// it never changes, so a relaxed ordering is enough: the only ordering
+    /// that matters is that the flag is set before anyone relies on the words,
+    /// and that is already guaranteed by the request/response round trip.
+    id_text: std::sync::atomic::AtomicBool,
+    /// The pipe, behind a mutex. `AsrEngine::transcribe_chunk` takes `&self`
+    /// because a trait object has to be `Sync`, and a request/response pipe is
+    /// inherently sequential: one line out, one line back, in order. The mutex
+    /// is what makes that safe rather than a data race whose symptom is a
+    /// transcript where one window's words land in another's time range.
+    pipe: std::sync::Mutex<Pipe>,
     model_id: String,
     model_sha256: String,
+}
+
+/// The request/response pipe, and the id counter that goes with it.
+struct Pipe {
+    stdin: Option<ChildStdin>,
+    stdout: Option<BufReader<ChildStdout>>,
+    /// The next request id, handed out in order. Starts at 1, so a reply
+    /// quoting id 0 is a bug rather than a coincidence.
+    next_id: u64,
+}
+
+/// A lock that survives a poisoning panic.
+///
+/// A panicking transcription leaves the pipe's mutex poisoned, and refusing
+/// every later run because of ONE bad chunk would be worse than using a pipe
+/// whose state is only as good as the last completed exchange. The pipe is
+/// reclaimed; the caller finds out about the original panic from the panic
+/// itself, which it has already seen.
+trait LockUnpoisoned<T> {
+    fn lock_unpoisoned(&self) -> std::sync::MutexGuard<'_, T>;
+    fn get_mut_unpoisoned(&mut self) -> &mut T;
+}
+
+impl<T> LockUnpoisoned<T> for std::sync::Mutex<T> {
+    fn lock_unpoisoned(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    fn get_mut_unpoisoned(&mut self) -> &mut T {
+        self.get_mut().unwrap_or_else(|e| e.into_inner())
+    }
 }
 
 impl Parakeet {
@@ -123,6 +184,25 @@ impl Parakeet {
         model: ModelSource,
         model_id: impl Into<String>,
         expected_sha256: Option<&str>,
+    ) -> Result<Self, AsrError> {
+        Self::load_with_env(python, model, model_id, expected_sha256, &[])
+    }
+
+    /// As `load`, with environment for the sidecar.
+    ///
+    /// Passed per-child rather than by setting the process environment, for two
+    /// reasons. In production it is how the sidecar gets `OMP_NUM_THREADS`
+    /// without the embedding program's whole environment deciding it. In tests
+    /// it is the only way to be hermetic: a test binary runs its tests in
+    /// threads, so a sidecar configured by `std::env::set_var` would pick up
+    /// whatever the test next to it had just set, and the failures would
+    /// interleave.
+    pub fn load_with_env(
+        python: &str,
+        model: ModelSource,
+        model_id: impl Into<String>,
+        expected_sha256: Option<&str>,
+        env: &[(&str, &str)],
     ) -> Result<Self, AsrError> {
         let path = model.path().to_path_buf();
         if !path.exists() {
@@ -140,6 +220,7 @@ impl Parakeet {
             // ASR run is exactly the kind of thing that logs a lot. The
             // progress meter belongs on the terminal where it can be seen.
             .stderr(Stdio::inherit())
+            .envs(env.iter().copied())
             .spawn()
             .map_err(|e| AsrError::Spawn {
                 engine: "parakeet",
@@ -147,18 +228,28 @@ impl Parakeet {
             })?;
 
         let mut this = Self {
-            stdin: child.stdin.take(),
-            stdout: child.stdout.take().map(BufReader::new),
+            pipe: std::sync::Mutex::new(Pipe {
+                stdin: child.stdin.take(),
+                stdout: child.stdout.take().map(BufReader::new),
+                next_id: 1,
+            }),
             child: Some(child),
-            next_id: 0,
+            id_text: std::sync::atomic::AtomicBool::new(true),
             model_id: model_id.into(),
             model_sha256: String::new(),
         };
 
-        let reply = this.exchange(&Request::Load {
-            model: path.display().to_string(),
-            sha256: expected_sha256,
-        })?;
+        let pipe = this.pipe.get_mut_unpoisoned();
+        let load_id = pipe.next_id;
+        pipe.next_id += 1;
+        let reply = Self::exchange(
+            &mut *pipe,
+            &Request::Load {
+                id: load_id,
+                model: path.display().to_string(),
+                sha256: expected_sha256,
+            },
+        )?;
         if !reply.ok {
             return Err(AsrError::Spawn {
                 engine: "parakeet",
@@ -191,13 +282,13 @@ impl Parakeet {
     /// stdout by mistake — would otherwise desynchronise the stream silently,
     /// and the symptom is a transcript where one window's words are in
     /// another's time range.
-    fn exchange(&mut self, req: &Request<'_>) -> Result<Reply, AsrError> {
+    fn exchange(pipe: &mut Pipe, req: &Request<'_>) -> Result<Reply, AsrError> {
         let line = serde_json::to_string(req).map_err(|e| AsrError::Parse {
             engine: "parakeet",
             reason: e.to_string(),
         })?;
         {
-            let stdin = self.stdin.as_mut().ok_or_else(|| AsrError::Spawn {
+            let stdin = pipe.stdin.as_mut().ok_or_else(|| AsrError::Spawn {
                 engine: "parakeet",
                 reason: "the sidecar's stdin closed".into(),
             })?;
@@ -216,7 +307,7 @@ impl Parakeet {
             })?;
         }
 
-        let stdout = self.stdout.as_mut().ok_or_else(|| AsrError::Spawn {
+        let stdout = pipe.stdout.as_mut().ok_or_else(|| AsrError::Spawn {
             engine: "parakeet",
             reason: "the sidecar's stdout closed".into(),
         })?;
@@ -244,7 +335,8 @@ impl Drop for Parakeet {
     fn drop(&mut self) {
         // Ask politely, then insist. A polite quit that is ignored is a hung
         // `wait()` forever, so the kill is unconditional and immediate after.
-        if let Some(stdin) = self.stdin.as_mut() {
+        let pipe = self.pipe.get_mut_unpoisoned();
+        if let Some(stdin) = pipe.stdin.as_mut() {
             if serde_json::to_string(&Request::Quit)
                 .map(|l| stdin.write_all(format!("{l}\n").as_bytes()))
                 .unwrap_or(Ok(()))
@@ -282,19 +374,81 @@ impl AsrEngine for Parakeet {
         &self.model_sha256
     }
 
+    /// Whether this engine's words are token ids rather than words.
+    fn words_are_ids(&self) -> bool {
+        self.id_text.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     fn transcribe_chunk(
         &self,
-        _chunk: &Chunk,
-        _sink: &mut dyn FnMut(TimedWord),
+        chunk: &Chunk,
+        sink: &mut dyn FnMut(TimedWord),
     ) -> Result<(), AsrError> {
-        // `AsrEngine::transcribe_chunk` takes `&self` because a trait object
-        // must be shareable, and the sidecar is a mutable resource. The
-        // interior mutability is a `Mutex` rather than a `RefCell` precisely
-        // because the trait requires `Send + Sync`.
-        Err(AsrError::Spawn {
-            engine: "parakeet",
-            reason: "use ParakeetEngine::transcribe, which takes &mut self".into(),
-        })
+        // One lock for the whole request/response. Held across both halves on
+        // purpose: releasing it between "write request" and "read reply" would
+        // let a second caller interleave, and each would read the other's
+        // words.
+        let mut pipe = self.pipe.lock_unpoisoned();
+
+        // The id is handed out under the lock and echoed back, so a reply can be
+        // matched to its request rather than trusted for position.
+        let id = pipe.next_id;
+        pipe.next_id += 1;
+
+        // The samples are already 16-bit signed little-endian mono at 16kHz --
+        // that is what `audio::extract` produces and what the model was trained
+        // on -- so this is base64 of the bytes, not a conversion. Base64 rather
+        // than raw because the framing is line-delimited JSON: raw PCM would put
+        // 0x0A bytes into a line-oriented protocol.
+        let pcm = BASE64_STANDARD.encode(&chunk.samples);
+        let reply = Self::exchange(
+            &mut pipe,
+            &Request::Transcribe {
+                id,
+                pcm,
+                sample_rate: audio::SAMPLE_RATE,
+            },
+        )?;
+        if !reply.ok {
+            return Err(AsrError::Model(
+                reply
+                    .error
+                    .unwrap_or_else(|| "the sidecar failed without saying why".into()),
+            ));
+        }
+        if let Some(got) = reply.id {
+            if got != id {
+                // Not a defensive assertion: a mismatch means the pipe is
+                // delivering replies out of order, and every word after this
+                // point would be stamped with the wrong time.
+                return Err(AsrError::Parse {
+                    engine: "parakeet",
+                    reason: format!("the sidecar replied to request {got}, not {id}"),
+                });
+            }
+        }
+
+        // Chunk-relative, as the contract says. The caller adds the offset, and
+        // the conversion does not live in the backend where it can be got wrong
+        // for one engine and not the other.
+        if let Some(flag) = reply.id_text {
+            self.id_text
+                .store(flag, std::sync::atomic::Ordering::Relaxed);
+        }
+        for w in &reply.words {
+            sink(TimedWord {
+                text: w.text.clone(),
+                start_ms: w.start_ms,
+                end_ms: w.end_ms,
+                confidence: w.confidence,
+                // No speaker: the base model does not diarise, and
+                // defaulting to Speaker 1 would assert that one person said
+                // the whole interview. `None` is the honest answer and the
+                // diarisation proposal in §8.1 is the path to a real one.
+                speaker: None,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -398,6 +552,6 @@ mod tests {
         // Nothing is read from disk at runtime: the program is a &str, and the
         // spawn passes it with `-c`, so a missing file cannot break the engine.
         assert!(!SIDECAR.trim().is_empty());
-        assert!(Path::new("/nonexistent").exists() == false);
+        assert!(!Path::new("/nonexistent").exists());
     }
 }

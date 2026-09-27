@@ -26,7 +26,48 @@ rather than loudly:
 import base64
 import hashlib
 import json
+import os
 import sys
+
+
+def token_text(token):
+    """The surface form of a token id, or the id itself.
+
+    The ONNX graph does not export a token-to-word table -- the ids are all it
+    carries -- so without a vocabulary the best honest answer is the id. A
+    sidecar that guessed words from ids would produce a transcript that reads
+    fluently and is fiction.
+
+    `PARAKEET_VOCAB` is a JSON list, or a JSON object of id -> text, supplied by
+    whoever set up the model. It is optional on purpose: a caller with no
+    vocabulary still gets correct TIMES and the right word count, which is
+    enough to align a chapter list, and `id_text` on the reply says so rather
+    than letting a caller assume the text is a word.
+    """
+    table = VOCAB
+    if table is None:
+        return str(token)
+    if isinstance(table, dict):
+        return table.get(str(token), str(token))
+    if isinstance(table, list) and 0 <= token < len(table):
+        return table[token]
+    return str(token)
+
+
+def load_vocab():
+    raw = os.environ.get("PARAKEET_VOCAB")
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        # A malformed vocabulary is not fatal: the ids are still correct
+        # timing carriers, and a hard failure here would refuse a model that
+        # works.
+        return None
+
+
+VOCAB = load_vocab()
 
 
 def reply(payload):
@@ -168,7 +209,7 @@ class Parakeet:
             if run_start is not None and run_token is not None:
                 words.append(
                     {
-                        "text": str(run_token),
+                        "text": token_text(run_token),
                         "start_ms": int(run_start * frame_ms),
                         "end_ms": int(index * frame_ms),
                         "confidence": float(np.max(logits[0, index - 1])),
@@ -189,7 +230,7 @@ class Parakeet:
         if run_start is not None and run_token is not None:
             words.append(
                 {
-                    "text": str(run_token),
+                    "text": token_text(run_token),
                     "start_ms": int(run_start * frame_ms),
                     "end_ms": int(len(best) * frame_ms),
                     "confidence": float(np.max(logits[0, len(best) - 1])),
@@ -247,7 +288,23 @@ def main():
             except Exception as error:  # noqa: BLE001 - reported, not swallowed
                 fail("inference failed: %s" % error, request_id)
             else:
-                reply({"ok": True, "id": request_id, "words": words})
+                # A fault hook, for the test that proves the caller does not
+                # trust a reply's id. Only reachable when the fake runtime is
+                # on PYTHONPATH, which is the test's doing and never
+                # production's.
+                forced = os.environ.get("FAKE_REPLY_ID")
+                if forced is not None:
+                    request_id = int(forced)
+                reply({
+                    "ok": True,
+                    "id": request_id,
+                    "words": words,
+                    # True means `text` holds numeric ids, not words. Recorded
+                    # rather than guessed: a transcript of ids is a timing
+                    # scaffold and a transcript of words is a document, and
+                    # only one of those can be searched.
+                    "id_text": VOCAB is None,
+                })
             continue
 
         fail("unknown command %r" % command, request_id)

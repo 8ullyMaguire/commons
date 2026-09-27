@@ -29,6 +29,7 @@ pub mod fuzzy;
 pub mod index;
 pub mod interview;
 pub mod locator;
+pub mod marker;
 pub mod media;
 pub mod playback;
 pub mod query;

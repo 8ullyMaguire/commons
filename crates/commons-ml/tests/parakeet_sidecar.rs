@@ -486,3 +486,187 @@ fn a_decoder_told_the_wrong_blank_index_produces_silence_as_words() {
 
     std::fs::remove_file(&path).ok();
 }
+
+// ---------------------------------------------------------------------------
+// The engine, end to end: `load` then `transcribe_chunk` over the real pipe.
+//
+// The tests above drive the PROTOCOL by hand. These drive the ENGINE, which is
+// the thing the rest of the program calls, and they are what would have caught
+// the stub: `AsrEngine::transcribe_chunk` was returning an error and the request
+// id was never incremented, so nothing was exercising either.
+// ---------------------------------------------------------------------------
+
+use commons_ml::asr::chunker::Chunk;
+use commons_ml::asr::parakeet::Parakeet;
+use commons_ml::asr::{AsrEngine, TimedWord};
+use commons_ml::model::ModelSource;
+
+/// A model file that exists, so `Parakeet::load`'s existence check passes.
+///
+/// The sidecar never opens it -- the FAKE runtime ignores its argument. What is
+/// under test is the check that has to fire before any process is spawned.
+fn fake_model() -> PathBuf {
+    let p = support_dir().join("parakeet-test.onnx");
+    std::fs::write(&p, b"not really a model").expect("write the stub model");
+    p
+}
+
+/// An engine on the fake runtime, with the given logits, configured per-child
+/// so these tests do not race each other over the process environment.
+fn engine(frames: &str) -> Parakeet {
+    let support = support_dir();
+    let model = fake_model();
+    Parakeet::load_with_env(
+        &python(),
+        ModelSource::Local(model),
+        "parakeet-tdt-0.6b-test",
+        None,
+        &[
+            ("PYTHONPATH", support.to_str().unwrap()),
+            ("FAKE_LOGITS", frames),
+            ("PARAKEET_VOCAB", r#"["the","dog","cat","a","sat"]"#),
+        ],
+    )
+    .expect("the sidecar loads against the fake runtime")
+}
+
+/// A chunk of `samples` bytes, three seconds long.
+fn chunk(samples: usize) -> Chunk {
+    Chunk {
+        index: 0,
+        start_ms: 0,
+        end_ms: 3_000,
+        samples: vec![0u8; samples],
+    }
+}
+
+fn texts(words: &[TimedWord]) -> Vec<&str> {
+    words.iter().map(|w| w.text.as_str()).collect()
+}
+
+#[test]
+fn the_engine_reports_the_digest_the_sidecar_actually_loaded() {
+    // Provenance: a caller records what RAN, not what it asked for. The
+    // accessor exists so a transcript row can be written without re-reading the
+    // manifest, so it has to be the sidecar's answer.
+    let e = engine("[[0,0,0,0,0,5.0],[0,0,0,0,0,5.0]]");
+    assert_eq!(
+        e.model_sha256().len(),
+        64,
+        "a hex digest, got {:?}",
+        e.model_sha256()
+    );
+    assert_eq!(e.model_id(), "parakeet-tdt-0.6b-test");
+    assert_eq!(e.name(), "parakeet");
+}
+
+// The fixture's vocabulary is 0-indexed, so token 4 is the fifth entry. This
+// was written as "the" once and the engine correctly returned "sat": the
+// pipeline was right and the label was wrong.
+#[test]
+fn a_chunk_comes_back_as_words_through_the_trait() {
+    // The whole point of the seam: the caller holds `&dyn AsrEngine` and gets
+    // words. While this returned an error, the engine existed and compiled and
+    // every test in the repository was green.
+    let e = engine("[[0,0,0,0,5.0,0.0],[0,0,5.0,0,0,0.0],[0,0,0,0,0,5.0]]");
+    let mut got: Vec<TimedWord> = Vec::new();
+    e.transcribe_chunk(&chunk(6_000), &mut |w| got.push(w))
+        .expect("transcribe_chunk must work, not error");
+    assert_eq!(texts(&got), vec!["sat", "cat"], "blank-collapsed");
+    // Chunk-relative, per the trait's contract: the caller adds the offset.
+    //
+    // The frame width comes from the AUDIO, not from a fixed hop: 6,000 bytes
+    // of s16 is 3,000 samples, which is 187.5ms, spread over the three frames
+    // the fake produced -- so the second word, on frame 1, starts at 62ms. An
+    // earlier draft of this test asserted 1,000, having assumed a 1000ms hop,
+    // and the engine was right to disagree: a hard-coded hop would put every
+    // word in the wrong place on any recording whose frames are not 1s wide.
+    assert_eq!(got[0].start_ms, 0);
+    assert_eq!(got[1].start_ms, 62);
+    // No diarisation claim: parakeet does not diarise, and "Speaker 1" for
+    // every word would assert that one person said the whole interview.
+    assert!(got.iter().all(|w| w.speaker.is_none()));
+}
+
+#[test]
+fn several_chunks_in_a_row_stay_separate_and_ordered() {
+    // The regression this exists for. A pipe whose replies are matched by
+    // POSITION rather than by id interleaves two runs, and the symptom is a
+    // transcript where one window's words carry another's times -- which
+    // renders fine and is quietly wrong. Four rounds, because the bug needs a
+    // second reply to mis-assign and one round cannot see it.
+    let e = engine("[[0,0,0,0,5.0,0.0],[0,0,0,0,0,5.0]]");
+    for round in 0..4u32 {
+        let mut got = Vec::new();
+        let mut c = chunk(6_000);
+        c.index = round;
+        e.transcribe_chunk(&c, &mut |w| got.push(w))
+            .unwrap_or_else(|err| panic!("round {round}: {err}"));
+        assert_eq!(texts(&got), vec!["sat"], "round {round}");
+    }
+}
+
+#[test]
+fn a_reply_for_a_different_request_is_refused_rather_than_trusted() {
+    // The id check, exercised by making the sidecar answer with the wrong one.
+    // Trusted-when-mismatched is the failure that produces a transcript with
+    // windows in the wrong order, and it is invisible in the rendered text.
+    let model = fake_model();
+    let support = support_dir();
+    let e = Parakeet::load_with_env(
+        &python(),
+        ModelSource::Local(model),
+        "test",
+        None,
+        &[
+            ("PYTHONPATH", support.to_str().unwrap()),
+            ("FAKE_LOGITS", "[[0,0,0,0,5.0,0.0],[0,0,0,0,0,5.0]]"),
+            ("PARAKEET_VOCAB", r#"["the","dog","cat","a","sat"]"#),
+            // The sidecar echoes this instead of the real id.
+            ("FAKE_REPLY_ID", "999"),
+        ],
+    )
+    .expect("load");
+    let err = e
+        .transcribe_chunk(&chunk(6_000), &mut |_| {})
+        .expect_err("a mismatched id must not be trusted");
+    let text = err.to_string();
+    assert!(
+        text.contains("999"),
+        "the message must name what it got: {text}"
+    );
+}
+
+#[test]
+fn without_a_vocabulary_the_words_are_ids_and_the_engine_says_so() {
+    // The ONNX graph carries ids, not words. A caller that stores them as a
+    // transcript and offers it for search has shipped a document nobody can
+    // search, so the engine reports which kind it is handing over.
+    let model = fake_model();
+    let support = support_dir();
+    let e = Parakeet::load_with_env(
+        &python(),
+        ModelSource::Local(model),
+        "test",
+        None,
+        &[
+            ("PYTHONPATH", support.to_str().unwrap()),
+            ("FAKE_LOGITS", "[[0,0,0,0,5.0,0.0],[0,0,0,0,0,5.0]]"),
+            // No PARAKEET_VOCAB.
+        ],
+    )
+    .expect("load");
+    let mut got = Vec::new();
+    e.transcribe_chunk(&chunk(6_000), &mut |w| got.push(w))
+        .expect("times are right with or without a vocabulary");
+    assert_eq!(texts(&got), vec!["4"], "the id, honestly labelled");
+    assert!(e.words_are_ids(), "and the engine reports it");
+
+    // And with a vocabulary, the same ids are words and it says so too.
+    let e2 = engine("[[0,0,0,0,5.0,0.0],[0,0,0,0,0,5.0]]");
+    let mut got2 = Vec::new();
+    e2.transcribe_chunk(&chunk(6_000), &mut |w| got2.push(w))
+        .expect("load");
+    assert_eq!(texts(&got2), vec!["sat"]);
+    assert!(!e2.words_are_ids(), "a vocabulary means words");
+}

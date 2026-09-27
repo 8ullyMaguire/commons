@@ -140,6 +140,17 @@ pub trait AsrEngine: Send + Sync {
     /// store provenance without re-reading the manifest.
     fn model_sha256(&self) -> &str;
 
+    /// Whether this engine's `text` is a numeric token id rather than a word.
+    ///
+    /// `false` for an engine that ships a vocabulary. It is on the trait rather
+    /// than only on parakeet because the consequence is not parakeet-specific:
+    /// a transcript row has to know which it is holding, and the field is the
+    /// difference between a searchable document and a scaffold of timings that
+    /// renders like a transcript.
+    fn words_are_ids(&self) -> bool {
+        false
+    }
+
     /// Transcribe one chunk, pushing words with times **relative to the chunk
     /// start**. The caller adds the chunk offset and enforces monotonicity.
     ///

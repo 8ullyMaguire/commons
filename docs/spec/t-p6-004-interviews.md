@@ -75,7 +75,24 @@ pub struct TimedWord {
 
 pub trait AsrEngine: Send + Sync {
     fn name(&self) -> &'static str;
-    fn transcribe(&self, audio: &Pcm16kMono, sink: &mut dyn FnMut(TimedWord)) -> Result<()>;
+    /// What was loaded, for the transcript row's provenance columns.
+    fn model_id(&self) -> &str;
+    fn model_sha256(&self) -> &str;
+    /// Whether `text` is a numeric token id rather than a word.
+    ///
+    /// On the trait, not only on parakeet: a transcript row has to know which
+    /// it is holding, and the difference between a searchable document and a
+    /// scaffold of timings that renders like a transcript is not something a
+    /// caller should have to work out per engine.
+    fn words_are_ids(&self) -> bool { false }
+    /// Transcribe ONE chunk, with times relative to the chunk start. The
+    /// caller adds the offset and enforces monotonicity, so a timestamp bug
+    /// cannot live in the backend.
+    fn transcribe_chunk(
+        &self,
+        chunk: &Chunk,
+        sink: &mut dyn FnMut(TimedWord),
+    ) -> Result<()>;
 }
 ```
 
@@ -85,9 +102,21 @@ Two engines, both local, both behind the trait:
   a model for. Invoked as a subprocess with `--output-json`, because binding a
   C library into the workspace for this is a large amount of build complexity for
   one feature.
-- **parakeet** — ONNX, through the existing `ModelError` verification path. Runs
-  in-process, which is what makes it usable for a library scan; whisper.cpp is
-  what makes it usable for a one-off.
+- **parakeet** — ONNX, behind a Python sidecar that speaks newline-delimited
+  JSON over a pipe. Model provenance still goes through the existing
+  `ModelError` verification path before the sidecar is spawned.
+
+**The ONNX graph carries token ids, not words.** An exported parakeet graph has
+no token-to-word table, so without a vocabulary the sidecar returns the numeric
+id as `text`. The times and the word count are still correct, which is what makes
+this easy to ship by accident: a transcript of ids renders, exports, and aligns a
+chapter list perfectly, and is unsearchable.
+
+`PARAKEET_VOCAB` (a JSON list, or an object of id -> text) supplies the table.
+Without it the reply carries `id_text: true` and `AsrEngine::words_are_ids()`
+returns true, so the transcript row records which kind it is holding rather than a
+caller guessing. Guessing is the failure worth naming: a sidecar that invented
+words from ids would produce a transcript that reads fluently and is fiction.
 
 **Why a subprocess for whisper.cpp and in-process for parakeet.**
 
