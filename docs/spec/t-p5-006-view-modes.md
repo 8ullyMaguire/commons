@@ -158,5 +158,45 @@ machine is not a shared link.
 
 ## 8. What the implementation found
 
-To be written once the code lands, in the same voice as the other specs: what was
-assumed, what was measured, and which of the assumptions was wrong.
+**Both first-run test failures were real, and they were the same bug in two
+places: I was reading evidence from one field when the row carried two.**
+
+`kindOf` originally branched on `coverPath` to decide a row was an image. A
+still with measured `width`/`height` but no thumbnail — a cover that has not
+been generated, or a format the thumbnaller skipped — came out `unknown` and fell
+back to the declared ratio as though nothing were known. Dimensions are
+themselves the product of a probe and count as evidence, so the check is now
+either one. The symmetry matters: the function has *two* signals (a cover, a
+duration) plus the dimensions, and treating one as necessary when another
+suffices is the bug both failures were reaching for.
+
+The second failure was mine, and the honest reading is that the test was wrong
+and not the code. `audio` was reachable on `durationMs === 0`, which looks like a
+zero-length audio file and is actually a probe that **failed** — a failed scan
+also reports 0. So a failed video probe rendered as playable audio. The branch is
+gone. Nothing in `ObjectRow` distinguishes an audio file from a video one: `kind`
+is a Scene label, not a container — so any audio handling here would be a guess.
+`audio` stays in the type, unreachable, and the comment says why, because the
+alternative is removing a variant the lightbox will need the moment the row
+carries a container.
+
+**The test I wrote was the thing that was wrong**, twice over: it asserted that a
+zero-duration row with dimensions is `unknown`, when in fact it is a still with
+nothing to play — the failure to measure a duration says nothing about what the
+file *is*. The `unknown` case is narrower than I assumed, and the test now pins
+the real one: no duration, no cover, no dimensions. A test that encodes my
+guess rather than the behaviour is the one that has to change, and the instinct
+to "fix the code to match my test" would have made it worse.
+
+**A dead variant is worse than a missing one.** Leaving `audio` in the union with
+a comment beats deleting it: the next reader sees the gap *and* the reason, and
+adding a variant that the lightbox will need anyway costs one line. A union with
+no unreachable members is a claim that the codebase has no unanswered questions,
+which is not true and is not something a type should assert.
+
+**What this did not need.** No store change, no migration, no API change. The
+spec assumed a media view would need the store to expose media facts; the row
+already carried `kind`, `width`, `height` and `durationMs` from the existing
+GraphQL selection, because the grid needed them for a poster layout. The
+assumption was wrong in the cheap direction — which is the only good direction,
+and is a reminder to check the existing selection before speccing a new one.
