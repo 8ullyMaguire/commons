@@ -1107,6 +1107,7 @@ mod tests {
                 })
                 .unwrap_or_default(),
             audio_streams: Vec::new(),
+            subtitle_streams: Vec::new(),
             chapters: Vec::new(),
             tags: BTreeMap::new(),
             creation_time: None,

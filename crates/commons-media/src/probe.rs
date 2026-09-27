@@ -36,6 +36,12 @@ pub struct MediaInfo {
     pub bit_rate: Option<u64>,
     pub video_streams: Vec<VideoStream>,
     pub audio_streams: Vec<AudioStream>,
+    /// Subtitle streams, in the container's order (§5.10).
+    ///
+    /// An empty vec is the normal case for the great majority of a library's
+    /// files, and it is a vec rather than a count because a caller that wants
+    /// the tracks has to iterate them anyway.
+    pub subtitle_streams: Vec<SubtitleStream>,
     /// Chapters from the container. Titles here become `Marker` seeds (§5.11),
     /// not metadata strings — a chapter is a point in time, not a caption.
     pub chapters: Vec<Chapter>,
@@ -97,6 +103,59 @@ pub struct AudioStream {
     pub is_default: bool,
     /// Replay-gain tags, when the file carries them (§5.4).
     pub replaygain_track_gain: Option<String>,
+}
+
+/// One subtitle stream (§5.10, T-P6-002).
+///
+/// Modelled here rather than in `subtitles.rs` because it comes out of the
+/// *probe*, and the probe is already the thing that knows how to read one of
+/// these. `subtitles.rs` owns the decode; this owns the enumeration. Splitting
+/// it the other way would mean a second reader of the same ffprobe JSON in a
+/// different file, which is a second place for a renamed field to be missed.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SubtitleStream {
+    /// ffprobe's stream index within the file. Every `-map` refers to this, so
+    /// it is the document's `stream_index` and it is not optional.
+    pub index: i64,
+    /// `ass`, `ssa`, `subrip`, `webvtt`, `mov_text`, …
+    ///
+    /// **ffprobe's name, not ours.** `subrip` is what a `.srt` file reports and
+    /// `mov_text` is what an mp4's timed text reports, so mapping to a name of
+    /// our own here would mean a table that has to be maintained against
+    /// ffprobe's. The mapping to our own `Format` happens in
+    /// `subtitles::Format::from_codec`, which is the one place it is tested.
+    pub codec_name: String,
+    /// The BCP-47 tag the container gives, `eng` or NULL.
+    ///
+    /// **Not normalised here.** The spec's §1 measured this: ffprobe reports
+    /// `eng`, a three-letter ISO 639-2 code, and "eng", "en" and "English" are
+    /// three languages unless something normalises them. Normalising in the
+    /// probe would put the rule in a module whose job is reading JSON, and the
+    /// second reader of the same value — the extractor — would not know it had
+    /// happened. So the raw tag is carried, and `normalize_language` is applied
+    /// once, at the edge.
+    pub language: Option<String>,
+    /// The container's `disposition.default`.
+    ///
+    /// A disposition rather than a guess from the filename, which is what
+    /// #4586's "language rulesets" get wrong: the container is authoritative,
+    /// because it is what the muxer wrote.
+    pub is_default: bool,
+    /// The container's `disposition.forced`: "burn this in if the user has no
+    /// preference", which is how a forced-signs track is marked.
+    pub is_forced: bool,
+    /// The container's `disposition.hearing_impaired`. This is how a container
+    /// says "captions" — there is no `caption` disposition in ffmpeg.
+    pub is_hearing_impaired: bool,
+    pub duration_ms: Option<u64>,
+    /// **May be non-zero**, for the same reason a video stream's may be
+    /// (stash#7229): a file that begins partway into a timeline. Carried rather
+    /// than dropped, because a cue extracted without it is offset from the
+    /// video by exactly this amount and nothing else would show it.
+    pub start_time_ms: i64,
+    /// The `TITLE` tag, which is where a sidecar's or an mp4's track name
+    /// lives. `None` for most muxed tracks, and that is normal.
+    pub title: Option<String>,
 }
 
 /// A container chapter (§5.11).
@@ -225,6 +284,26 @@ impl Prober {
 /// Probe with the default binary.
 pub fn probe(path: &Path) -> Result<MediaInfo, ProbeError> {
     Prober::new().probe(path)
+}
+
+/// Turn ffprobe's JSON into a [`MediaInfo`].
+///
+/// Public because it is the only way to test the parse without an ffprobe
+/// process, and the tests that matter here are the ones about a field ffprobe
+/// does not always emit — a missing `disposition`, a stream with no duration, a
+/// start time five seconds in. A test for those has to hand-write the JSON,
+/// because a real file that has the shape is hard to find and harder to keep.
+///
+/// The `FfprobeOutput` type stays private. It is serde's shape of ffprobe, so
+/// making it public would make every field of it part of this crate's API and
+/// every rename of an ffprobe field a breaking change; a `&str` in and a
+/// `MediaInfo` out is the whole of what a caller needs.
+pub fn parse_json(json: &str) -> Result<MediaInfo, ProbeError> {
+    let raw: FfprobeOutput = serde_json::from_str(json).map_err(|e| ProbeError::BadJson {
+        path: "<json>".to_string(),
+        detail: e.to_string(),
+    })?;
+    Ok(raw.into())
 }
 
 /// Is this file an animated image or a short clip? (stash#5111)
@@ -422,6 +501,7 @@ impl From<FfprobeOutput> for MediaInfo {
 
         let mut video_streams = Vec::new();
         let mut audio_streams = Vec::new();
+        let mut subtitles = Vec::new();
         for s in f.streams {
             match s.codec_type.as_str() {
                 "video" => {
@@ -505,9 +585,31 @@ impl From<FfprobeOutput> for MediaInfo {
                         replaygain_track_gain: replaygain,
                     });
                 }
-                // subtitle, data, attachment: not modelled yet. T-P6-002 adds
-                // subtitle streams; ignoring them here is deliberate so they do
-                // not inflate the stream count a caller sees today.
+                // Subtitle streams are enumerated here and DECODED elsewhere:
+                // §1 of the subtitles spec measured that ffprobe's probe output
+                // carries a subtitle stream's timings but not its text, so
+                // reading the list is a probe's job and reading the cues is
+                // `subtitles::extract`'s.
+                "subtitle" => {
+                    let stream_duration_ms = secs_to_ms(s.duration);
+                    subtitles.push(SubtitleStream {
+                        index: s.index,
+                        codec_name: s.codec_name.clone().unwrap_or_default(),
+                        language: tag_string(&s.tags, "language"),
+                        is_default: *s.disposition.get("default").unwrap_or(&0) == 1,
+                        is_forced: *s.disposition.get("forced").unwrap_or(&0) == 1,
+                        is_hearing_impaired: *s.disposition.get("hearing_impaired").unwrap_or(&0)
+                            == 1,
+                        duration_ms: Some(stream_duration_ms).filter(|v| *v > 0),
+                        start_time_ms: (s.start_time.and_then(|n| n.to_f64()).unwrap_or(0.0)
+                            * 1000.0)
+                            .round() as i64,
+                        title: tag_string(&s.tags, "title"),
+                    });
+                }
+                // data, attachment: still not modelled. Deliberately, and for
+                // the reason the subtitle branch above used to give: a stream
+                // type nothing reads inflates the count a caller sees today.
                 _ => {}
             }
         }
@@ -546,6 +648,7 @@ impl From<FfprobeOutput> for MediaInfo {
             bit_rate: format.bit_rate.and_then(|n| n.to_u64()),
             video_streams,
             audio_streams,
+            subtitle_streams: subtitles,
             chapters,
             tags,
             creation_time: tag_string(&format.tags, "creation_time"),
