@@ -25,6 +25,8 @@ use std::path::{Path, PathBuf};
 
 use commons_store::playback::Rung;
 
+use crate::subtitles::Format;
+
 /// Where one rung's encode of one file lives.
 ///
 /// Split out from [`Transcoder`] so the key can be tested without a transcode,
@@ -162,12 +164,129 @@ impl std::fmt::Display for TranscodeError {
 
 impl std::error::Error for TranscodeError {}
 
+/// What to do with the source's subtitle streams when building a proxy.
+///
+/// T-P6-002 §5. The plan states the requirement — "cues survive transcode
+/// (re-muxed or re-derived from transcript)" — and does not answer it. This is
+/// the answer, and the reason it is a *type* rather than a bool is that the two
+/// cases are not symmetric:
+///
+/// * **Carry** (`-c:s copy`) is right when the source codec is one an MP4 can
+///   hold *and* a browser can read: `mov_text` and `webvtt`. Copying is exact
+///   and free.
+/// * **Re-derive** (`-c:s webvtt`) is required for every other text format.
+///   This is the case the plan's phrase "re-muxed" would have missed, because
+///   carrying an `ass` stream into an MP4 *works* and still displays nothing —
+///   a browser never could draw ASS in the first place, so a proxy carrying one
+///   has moved the problem rather than solved it.
+/// * **Drop** (`-sn`) is for image-based codecs, where re-deriving is
+///   impossible. PGS and DVD subtitles are bitmaps. Turning one into text means
+///   OCR, and OCR that is wrong is worse than no subtitle at all: a caption
+///   reading "he sasid" is not a degraded caption, it is a false one.
+///
+/// A proxy exists precisely when the browser cannot play the original, so the
+/// decision is a function of the source's codecs and the output container, not
+/// of whether a transcode is happening.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SubtitlePlan {
+    /// Carried with `-c:s copy`.
+    pub copy: Vec<i64>,
+    /// Re-derived to WebVTT.
+    pub rederive: Vec<i64>,
+    /// Dropped: bitmaps, or codecs with no text form in this build.
+    pub drop: Vec<i64>,
+}
+
+impl SubtitlePlan {
+    /// Whether this plan puts at least one subtitle stream in the output.
+    pub fn carries_any(&self) -> bool {
+        !self.copy.is_empty() || !self.rederive.is_empty()
+    }
+
+    /// Decide from the codecs ffprobe reported, in stream order.
+    ///
+    /// `Format::from_codec` returning `None` is the drop case, and it is the
+    /// image codecs. Deciding in one place means a new codec is classified once
+    /// here rather than at every call site that happens to ask the question.
+    pub fn for_codecs(codecs: &[String]) -> Self {
+        let mut plan = Self::default();
+        for (i, codec) in codecs.iter().enumerate() {
+            let idx = i as i64;
+            match Format::from_codec(codec) {
+                Some(Format::MovText) | Some(Format::WebVtt) => plan.copy.push(idx),
+                Some(_) => plan.rederive.push(idx),
+                None => plan.drop.push(idx),
+            }
+        }
+        plan
+    }
+}
+
+/// The codec flags for a subtitle plan.
+///
+/// Separate from `args_for` so the decision is testable with no probe, no path
+/// and no process — and so the `-sn` that this ticket previously deferred to
+/// T-P6-002 is written in exactly one place.
+pub fn subtitle_args(plan: Option<&SubtitlePlan>) -> Vec<String> {
+    let mut out = Vec::new();
+    let carried = plan.is_some_and(|p| p.carries_any());
+    if !carried {
+        // `-sn` rather than nothing, even when there is no plan at all. Saying
+        // "no subtitles" explicitly is what stops ffmpeg's stream matching from
+        // picking one up on its own, and a proxy that quietly gained a track
+        // nobody asked for is a different file from one that was asked to have
+        // none.
+        out.push("-sn".to_string());
+        return out;
+    }
+    let p = plan.expect("carried implies a plan");
+    if !p.copy.is_empty() {
+        out.push("-c:s".to_string());
+        out.push("copy".to_string());
+    }
+    if !p.rederive.is_empty() {
+        // One encoder setting, applied to whichever streams the maps selected.
+        // An ASS stream converted to WebVTT keeps its text with the styling
+        // tags stripped, which is §6's stated ceiling rather than a loss here:
+        // the styling is preserved as data in the stored document, and the
+        // browser renders flat text by design.
+        out.push("-c:s".to_string());
+        out.push("webvtt".to_string());
+    }
+    out
+}
+
+/// The ffmpeg flags that select the planned streams.
+///
+/// Split from `subtitle_args` because ORDER matters: `-map` is an output option
+/// and belongs with the other maps, while the codec flags that apply to what it
+/// selected come after. Emitting them separately lets `args_for` place each
+/// where ffmpeg needs it.
+pub fn subtitle_map_args(plan: Option<&SubtitlePlan>) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(p) = plan else { return out };
+    let mut selected: Vec<i64> = p.copy.iter().chain(p.rederive.iter()).copied().collect();
+    selected.sort_unstable();
+    for idx in selected {
+        out.push("-map".to_string());
+        // A ffprobe stream index, which is the number `-map 0:<n>` wants. Not
+        // the ordinal among subtitle streams: those differ whenever the file
+        // also has video or audio, and using the wrong one selects a different
+        // stream without complaining.
+        out.push(format!("0:{idx}"));
+    }
+    out
+}
+
 /// Produces one rung of one file, on demand.
 #[derive(Debug, Clone)]
 pub struct Transcoder {
     ffmpeg: PathBuf,
     cache_dir: PathBuf,
     cores: usize,
+    /// How to handle the source's subtitles, T-P6-002 §5. `None` until a
+    /// caller supplies one, and `None` means `-sn`.
+    subtitle_plan: Option<SubtitlePlan>,
 }
 
 impl Transcoder {
@@ -176,7 +295,14 @@ impl Transcoder {
             ffmpeg: PathBuf::from("ffmpeg"),
             cache_dir: cache_dir.into(),
             cores: 1,
+            subtitle_plan: None,
         }
+    }
+
+    /// Set how the source's subtitles are handled, per T-P6-002 §5.
+    pub fn with_subtitles(mut self, plan: SubtitlePlan) -> Self {
+        self.subtitle_plan = Some(plan);
+        self
     }
 
     pub fn with_binary(mut self, binary: impl Into<PathBuf>) -> Self {
@@ -260,7 +386,12 @@ impl Transcoder {
             "0:v:0".to_string(),
             "-map".to_string(),
             "0:a:0?".to_string(),
-            "-sn".to_string(),
+        ];
+        // The subtitle maps join the video and audio maps, because `-map` is an
+        // output option and the codec flags further down apply to whatever the
+        // maps selected. See `subtitle_map_args`.
+        v.extend(subtitle_map_args(self.subtitle_plan.as_ref()));
+        v.extend([
             "-vf".to_string(),
             scale,
             "-c:v".to_string(),
@@ -282,7 +413,13 @@ impl Transcoder {
             "128k".to_string(),
             "-movflags".to_string(),
             "+faststart".to_string(),
-        ];
+        ]);
+        // Subtitles, per T-P6-002 §5. Not a fixed pair of flags: whether a
+        // stream can be carried or has to be re-derived depends on the SOURCE's
+        // codecs, which `args_for` does not know and cannot know -- it is a pure
+        // function of a path and a rung. So the decision is a separate function
+        // that takes the probe, and `args_for` takes the result.
+        v.extend(subtitle_args(self.subtitle_plan.as_ref()));
         if self.cores > 1 {
             v.push("-threads".to_string());
             v.push(self.cores.to_string());
