@@ -2757,7 +2757,7 @@ fetched with its empty query: the URL said `?q=brav` and the request sent
 `filter: null`. It survived a full manual pass because nothing asserted a
 reload.
 
-### T-P5-007 part 2 — spec `docs/spec/t-p5-007-share-links.md`
+### T-P5-007 part 2 — spec `docs/spec/t-p5-007-share-links.md` — DONE
 
 Written before the code, per the standing workflow.
 
@@ -3205,10 +3205,13 @@ asserting a playlist and one segment play in sequence.
 **Done when:** both exist — range requests are trivially broken and invisible
 when broken.
 
-### T-P9-003 — Expiring share links
+### T-P9-003 — Expiring share links — DONE
 
 **Spec:** §12.1.1
 **Files:** `commons-api/src/share.rs`
+**Shipped as:** `commons-consent/src/share.rs` (policy), `commons-store/src/share.rs`
+(migration 0022), `commons-server/src/share.rs` (routes), `ui/src/routes/s/`.
+Named after the crate split, not the plan's guess.
 
 A signed, expiring, optionally password-protected URL granting exactly one
 capability (view, or view-and-download) on one item or one smart collection,
