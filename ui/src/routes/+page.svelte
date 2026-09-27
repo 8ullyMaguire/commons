@@ -14,7 +14,25 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import ImageGrid from '$lib/components/ImageGrid.svelte';
+  import { KeysetStore } from '$lib/api/keyset.js';
   import { SORTS, viewFromLocation, viewToHref, type ViewState } from '$lib/api/view.js';
+
+  /**
+   * The store the grid loads pages into.
+   *
+   * Owned HERE rather than defaulted inside `ImageGrid`. A prop default of
+   * `new KeysetStore()` is re-evaluated whenever the parent re-renders, which
+   * hands the grid a fresh EMPTY store mid-session: `rows` goes to zero, the
+   * lightbox's `{#if open !== null && rows.length > 0}` goes false, and
+   * re-setting `open` to the index it already had is a no-op -- so after
+   * closing the lightbox once, it could never be reopened.
+   *
+   * That is a component-shaped bug with a page-shaped fix. The page is the
+   * thing whose lifetime the store should share, and passing it explicitly
+   * makes the identity a fact of the code rather than an accident of when a
+   * default happens to be re-evaluated.
+   */
+  const store = new KeysetStore();
 
   // The label for each sort, in the order the options are shown. Keyed by the
   // value rather than paired with it, so an option cannot exist without a
@@ -87,7 +105,7 @@
 </div>
 
 <div class="grid-host">
-  <ImageGrid query={view} density={view.density} />
+  <ImageGrid query={view} density={view.density} {store} />
 </div>
 
 <style>

@@ -42,14 +42,14 @@
   interface Props {
     query: GridQuery;
     density?: number;
-    store?: KeysetStore;
+    store: KeysetStore;
     /**
      * Are there unsaved edits? While true, back does not close (spec #7154).
      */
     dirty?: boolean;
   }
 
-  let { query, density = 240, store = new KeysetStore(), dirty = false }: Props = $props();
+  let { query, density = 240, store, dirty = false }: Props = $props();
 
   /**
    * The loaded rows, which the lightbox pages over.
@@ -78,7 +78,26 @@
   role="presentation"
   onclick={(e) => {
     const tile = (e.target as HTMLElement).closest<HTMLElement>('[data-lightbox-index]');
-    if (tile) open = Number(tile.dataset.lightboxIndex);
+    if (!tile) return;
+    // A tile is an `<a href="?id=...">`, so the href is what makes
+    // middle-click "open in new tab", ctrl/cmd-click "open in new tab" and
+    // "copy link address" all work -- which is the point of having it.
+    //
+    // A plain left click, though, is the gesture that opens the lightbox, and
+    // it must NOT also navigate. Both at once is the bug this comment exists
+    // to prevent: the handler set `open`, then the browser followed the href,
+    // the static host reloaded the page, and the lightbox vanished on arrival.
+    // It is invisible with a null item id -- `href="?id=undefined"` resolves to
+    // the page you are already on -- which is exactly why it survived a long
+    // time and then broke the first time a fixture was correct.
+    //
+    // Only the primary, unmodified click is taken over. Everything else keeps
+    // the browser's own meaning, which is the whole reason the href is there.
+    const ev = e as MouseEvent;
+    if (ev.button === 0 && !ev.metaKey && !ev.ctrlKey && !ev.shiftKey && !ev.altKey) {
+      ev.preventDefault();
+    }
+    open = Number(tile.dataset.lightboxIndex);
   }}
 >
   <VirtualGrid {query} {density} {store} />

@@ -46,6 +46,7 @@
   whose state is right while the DOM is stale is exactly the bug being fixed.
 -->
 <script lang="ts">
+  import { trapFocus } from '$lib/theme/trapFocus.js';
   import { classifyDrag, classifyPopstate, classifyWheel, type PointerSample } from '$lib/api/gestures.js';
   import type { ObjectRow } from '$lib/api/client.js';
 
@@ -189,8 +190,24 @@
   handler is the one under test and a test that reads a Svelte store would be
   testing the state rather than what the user sees.
 -->
+<!--
+  `use:trapFocus` and `tabindex="-1"`, together (T-P5-007, spec 10.8).
+
+  `aria-modal="true"` was already here and is NOT enough. It tells a screen
+  reader that the rest of the page is unavailable; it does not stop Tab from
+  walking into the page behind, and it does not move focus in on open. Both of
+  those are what a sighted keyboard user hits first, and both are what the
+  action does.
+
+  The container needs `tabindex="-1"` to be focusable as a fallback: with no
+  tab stops of its own, the action parks focus on the container rather than
+  letting it fall to <body>, which would put the user outside the dialog with
+  the page behind still visible.
+-->
 <div
   class="lightbox"
+  use:trapFocus
+  tabindex="-1"
   data-index={index}
   data-total={rows.length}
   role="dialog"
