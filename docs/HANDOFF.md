@@ -420,6 +420,59 @@ the truth for every mutant and looked like four survivors. A harness that
 reports the wrong answer is worse than no harness, because it sends you looking
 for holes that are not there.
 
+### T-P5-006 item 17 -- the unified media view, and the last item
+
+#1030 asked for a Media tab combining scenes and images. The model turned out to
+be ready: spec 5.3 says "Image is an Object, so it votes like one", `object.kind`
+is an indexed TEXT column on the ONE table, and `CmpOp::In` already compiles a
+value list. So the whole server side is one facet and there is no join.
+
+    ui/src/lib/api/media.ts                    membership, ordering, the facet
+    crates/commons-store/tests/filter_wire_shape.rs   the wire shape, from Rust
+    ui/src/routes/media/+page.svelte           the tab
+    ui/tests/media.test.ts                     65 tests
+    ui/e2e/media.spec.ts                       10 tests
+    scripts/mutate-media.mjs                   29 mutants, all killed
+    docs/spec/t-p5-006-media-view.md           the spec
+
+**All 17 items of T-P5-006 are now implemented.**
+
+The load-bearing finding: `object.kind` is unconstrained TEXT in the database and
+an enum in commons-core, and NOTHING keeps them in sync. So an unknown kind is an
+ordinary event, not corruption -- and a grid that drops those rows looks correct
+and silently loses content. So the tab audits every page and names what it could
+not place, and KINDS is asserted equal to `ObjectKind::as_str` BY READING THE
+RUST FILE. A kind added in Rust and not here is a test failure, not a tile that
+renders as a photograph.
+
+The filter shape is checked rather than assumed. Three details of serde's
+external tagging are invisible if you write the obvious thing -- `field` is
+`{"builtin":"kind"}` not `"kind"`, a value is `{"str":"scene"}` not `"scene"`,
+`op` is `"in"` not `"In"` -- and getting any wrong means the server rejects the
+filter and the tab looks like an empty library. The shape is now emitted as data
+from a Rust test and compared on BOTH sides, so a change to serde's attributes
+fails a test rather than a tab.
+
+Two decisions worth knowing about:
+
+- **`media.ts` is not `media-view.ts`.** Item 8 owns tile SHAPE; item 17 owns
+  MEMBERSHIP and ORDER. A test asserts item 17 exports no ratio function of its
+  own, because two copies of ASPECT_LIMITS disagree within a release and the
+  disagreement is a wall whose images and scenes do not line up. The two
+  `isPlayable` functions disagree about a zero-duration scene ON PURPOSE -- a
+  tile has only the duration to go on, membership has the kind -- and a test
+  names that disagreement so it does not read as a bug.
+- **The tab REPLACES `?q=`, and does not honour it.** The filter is opaque by
+  design ("it is the thing the server parses"), so a kind restriction cannot be
+  ANDed onto a user filter without decoding it. This is a real gap, documented in
+  the route header and the spec, and the first thing to fix when the filter codec
+  moves client-side. It is the honest answer rather than a guess that looks right.
+
+Also: verify.sh now parse-checks every `scripts/mutate-*.mjs`. Three of them
+shipped with a syntax error -- an apostrophe in a single-quoted note, a multi-line
+pattern in a single-quoted string -- and the symptom reads as "the mutation script
+found nothing" rather than "the script never ran".
+
 ### T-P5-006 item 16 -- the folder view
 
 #1586 was filed under C50 and 9.5, which turned out to mean the VIEW, not the

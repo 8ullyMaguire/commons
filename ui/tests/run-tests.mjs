@@ -19,6 +19,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -68,7 +69,16 @@ try {
     process.exit(1);
   }
   run(process.execPath, ['--test', ...entries], {
-    env: { ...process.env, COMMONS_UI_SRC: join(root, 'src') }
+    env: {
+      ...process.env,
+      COMMONS_UI_SRC: join(root, 'src'),
+      // A test that reads a file OUTSIDE ui/ as its specification needs the
+      // repo root, and there was no way to get it before. `media.test.ts` reads
+      // `crates/commons-core/src/enums.rs` to assert the TS kind list matches
+      // the Rust enum, which is the only thing that makes "add a kind to
+      // ObjectKind" a test failure instead of a tile that renders as a photo.
+      COMMONS_REPO_ROOT: resolve(root, '..')
+    }
   });
 } finally {
   rmSync(out, { recursive: true, force: true });

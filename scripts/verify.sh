@@ -143,7 +143,24 @@ if [ "${COMMONS_SKIP_UI:-0}" != "1" ] && [ -d "$REPO/ui/node_modules" ]; then
     fail=1
   fi
 
-  echo "== ui: unit tests"
+# Every scripts/mutate-*.mjs must at least PARSE. Three of them shipped with a
+# syntax error (an apostrophe inside a single-quoted note: string, and a
+# multi-line pattern inside one), and the symptom reads as the mutation script
+# finding nothing rather than the script never running. One line here makes that
+# class impossible to miss.
+echo "== mutation scripts parse"
+for m in "$REPO"/scripts/mutate-*.mjs; do
+  [ -e "$m" ] || continue
+  if node --check "$m" >/dev/null 2>&1; then
+    echo "   ok: $(basename "$m")"
+  else
+    echo "   PARSE ERROR: $(basename "$m")"
+    node --check "$m" 2>&1 | head -4 | sed 's/^/      /'
+    fail=1
+  fi
+done
+
+echo "== ui: unit tests"
   if (cd "$REPO/ui" && node ./tests/run-tests.mjs) > /tmp/commons-ui-unit.txt 2>&1; then
     grep -E '^. (tests|pass|fail) ' /tmp/commons-ui-unit.txt | sed 's/^/   /'
   else

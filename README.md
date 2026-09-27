@@ -236,6 +236,40 @@ The spec is the authority. Where the code and the spec disagree, that is a bug
 in the code, and the test names and comments here say which rule they are
 enforcing so the intent is not lost.
 
+## View modes
+
+Every list surface in `ui/` reads its state from the URL and nothing else, and
+every one of them is virtualized (§4.2). The grid keeps a window of rows rather
+than the rows themselves, so a scroll offset or a filter held in component state
+has nowhere reliable to live.
+
+| Route | What it is | Spec |
+|---|---|---|
+| `/wall?group=<key>` | The wall: a virtualized grid in labelled sections, with auto-scroll and a per-group row window. | §10.4, #6544, #6955 |
+| `/folders?folder=<id>` | The folder view. A folder is a **query, not a container** — it holds no objects, and opening one replaces the filter rather than narrowing it. | §5.14, §9.5, #1586, #1723 |
+| `/media` | The unified media view: scenes and images in one list, one `kind IN (...)` facet, since `Image` is an `Object` and votes like one. | §5.17, §10.4, #1030 |
+
+Three things these have in common, and all three are decisions rather than
+accidents:
+
+**A tab is a URL.** View state is in the query string and nowhere else, so every
+one of them survives a reload, a bookmark, a shared link, and the back button.
+The scroll offset and loaded-page count are deliberately *not* in the URL: two
+people opening the same link should both start at the top.
+
+**Broken data is reported, not swallowed.** A folder with a deleted parent, a
+parent cycle, a row of a kind this build does not recognise — each is a status
+line naming the thing, because a row that silently never appears is the one
+failure a user cannot diagnose from the screen in front of them. `object.kind` is
+unconstrained `TEXT` in the database and an enum in `commons-core`, with nothing
+at the boundary keeping them in sync, so an unknown kind is an ordinary event
+rather than corruption.
+
+**A missing number is not a zero.** Where a value is not known — a folder's
+membership count, a scene whose probe has not reported a length — the UI shows a
+dash. A column of zeroes before the counts land looks like an empty library, and
+that is a worse lie than "I do not know yet".
+
 ## Progress
 
 | Phase | Status | What it delivers |

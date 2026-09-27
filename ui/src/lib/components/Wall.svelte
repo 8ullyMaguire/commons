@@ -51,6 +51,16 @@
     groupBy?: GroupKey;
     /** Injectable store, for tests. */
     store?: KeysetStore;
+    /**
+     * Called with the loaded rows after every page.
+     *
+     * For a consumer that needs to look AT the rows rather than draw them — the
+     * Media tab's `auditMedia`, which reports rows of a kind it cannot place. The
+     * alternative would be a second store subscription in the route, and two
+     * subscriptions to the same keyset store means two cursors and two chances to
+     * disagree about what has been loaded.
+     */
+    onrows?: (rows: readonly ObjectRow[]) => void;
   }
 
   const p: Props = $props();
@@ -124,6 +134,10 @@
   async function loadMore(): Promise<void> {
     await own.loadMore();
     state = own.state;
+    // After the mirror, so the consumer sees the rows that are actually drawn.
+    // The whole point of the callback is to report on what rendered; handing
+    // over the pre-mirror state would report the previous page.
+    p.onrows?.(own.state.rows);
   }
 
   $effect(() => {
