@@ -371,7 +371,24 @@
     encoding, so a `.txt` with commas in it imports correctly and a `.csv` that
     is really tab-separated still works.
   -->
+  <!--
+    The label is the button that opens the picker, and the association is
+    explicit because the association a sighted user gets is a position, which
+    is not a relationship a screen reader can compute. axe flagged this as
+    `label` (critical) on /tags: an unlabelled file input is announced as
+    "file upload, button" and nothing else, so a user cannot tell what it
+    imports or which field it belongs to.
+
+    The id is derived from the field's own label rather than written out, and
+    that is a correctness requirement rather than tidiness: /tags has TWO of
+    these on one page, and a literal id would give both the same one. A
+    duplicate id is not a lint warning here, it is a label that points at the
+    wrong field -- which is worse than no label, because it is confidently
+    wrong.
+  -->
+  <label class="visually-hidden" for="file-{p.label}">Import a delimited list</label>
   <input
+    id="file-{p.label}"
     type="file"
     class="visually-hidden"
     data-testid="multi-file-input"

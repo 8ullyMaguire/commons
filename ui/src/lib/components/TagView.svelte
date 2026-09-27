@@ -117,10 +117,10 @@
   }
   .tag-count {
     font-size: 0.7rem;
-    color: #999;
+    color: var(--muted);
     font-variant-numeric: tabular-nums;
   }
   .tag-empty {
-    color: #999;
+    color: var(--muted);
   }
 </style>

@@ -178,7 +178,7 @@
        frame of arbitrary video, and no fixed colour is readable over all of
        them. */
     background: linear-gradient(transparent, rgb(0 0 0 / 0.75));
-    color: #fff;
+    color: var(--fg);
     font-size: 0.9375rem;
   }
 </style>

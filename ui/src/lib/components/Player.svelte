@@ -854,7 +854,7 @@
     align-items: center;
     justify-content: center;
     background: #000;
-    color: #eee;
+    color: var(--fg);
     min-height: 60vh;
     outline: none;
   }
@@ -889,7 +889,7 @@
   }
   button {
     background: #222;
-    color: #eee;
+    color: var(--fg);
     border: 1px solid #444;
     border-radius: 4px;
     padding: 0.35rem 0.6rem;

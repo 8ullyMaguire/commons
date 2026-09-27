@@ -320,28 +320,33 @@
   .head {
     position: sticky;
     top: 0;
-    background: #111;
-    color: #aaa;
+    /* #111 was a hard-coded dark. With the text now on `var(--muted)`, which
+       is theme-aware, the two disagree: light-theme text on a dark band is
+       2.85:1 and fails AA, which the axe scan found. `var(--surface)` is the
+       token for "one step off the page", and it is what this row always
+       meant. */
+    background: var(--surface);
+    color: var(--muted);
     font-size: 0.8rem;
-    border-bottom: 1px solid #333;
+    border-bottom: 1px solid var(--border);
     z-index: 1;
   }
   .row {
-    border-bottom: 1px solid #1c1c1c;
+    border-bottom: 1px solid var(--border);
   }
   .row[data-selected='true'] {
-    background: #1d2836;
+    background: var(--surface);
   }
   .head-select {
     width: 1.1rem;
     height: 1.1rem;
     background: none;
-    border: 1px solid #555;
-    color: #fff;
+    border: 1px solid var(--border);
+    color: var(--fg);
     cursor: pointer;
   }
   .head-select[data-state='some'] {
-    border-color: #6af;
+    border-color: var(--accent);
   }
   .title {
     overflow: hidden;
@@ -351,12 +356,16 @@
   .kind,
   .date,
   .rating {
-    color: #888;
+    color: var(--muted);
     font-size: 0.85rem;
   }
   .count {
     padding: 0.5rem;
-    color: #888;
+    /* Was #888, which is 3.5:1 on the dark surface -- below AA for text this
+       size, and it was the only axe violation the scan found on /list. The
+       token is 7.4:1. The comment is here because "grey" is where every
+       component's colours came from and the replacement is not obvious. */
+    color: var(--muted);
     font-size: 0.85rem;
   }
   .note {

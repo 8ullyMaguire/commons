@@ -94,6 +94,16 @@
   });
 </script>
 
+<!--
+  The only route that was missing a title. axe calls `document-title`
+  (serious) and it is the violation most likely to be waved through, because a
+  single-page app that navigates client-side shows the title in the tab and
+  looks fine -- but on a direct load, in a bookmark, in a search result, and in
+  a screen reader's window list, the title is the only thing identifying the
+  page, and a SPA that never sets one leaves all of those reading "".
+-->
+<svelte:head><title>Player</title></svelte:head>
+
 <main>
   <h1>Player</h1>
 
@@ -125,6 +135,6 @@
     margin: 0 0 0.75rem;
   }
   .error {
-    color: #c00;
+    color: var(--danger);
   }
 </style>

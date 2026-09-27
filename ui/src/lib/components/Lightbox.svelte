@@ -293,18 +293,18 @@
     line-height: 1;
     background: none;
     border: none;
-    color: #fff;
+    color: var(--fg);
     cursor: pointer;
   }
   .nav {
     display: flex;
     gap: 1rem;
     align-items: center;
-    color: #fff;
+    color: var(--fg);
     padding: 1rem;
   }
   .empty {
-    color: #666;
+    color: var(--muted);
     padding: 4rem;
   }
 </style>

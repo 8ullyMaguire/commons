@@ -468,7 +468,7 @@
   .tile-placeholder {
     display: grid;
     place-items: center;
-    color: #888;
+    color: var(--muted);
     font-size: 0.8rem;
   }
   .tile-title {
@@ -487,9 +487,9 @@
     left: 0;
     right: 0;
     text-align: center;
-    color: #999;
+    color: var(--muted);
   }
   .grid-error {
-    color: #d66;
+    color: var(--danger);
   }
 </style>

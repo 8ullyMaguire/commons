@@ -302,7 +302,7 @@
     font: 11px/1.6 system-ui, sans-serif;
     padding: 2px 4px;
     background: #000a;
-    color: #fff;
+    color: var(--fg);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
