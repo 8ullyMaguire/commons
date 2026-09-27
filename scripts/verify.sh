@@ -236,10 +236,22 @@ fi
 
 echo "== plan status"
 if python3 "$REPO/scripts/plan-status.py" > /tmp/commons-plan.txt 2>&1; then
-  sed -n '3,6p' /tmp/commons-plan.txt | sed 's/^/   /'
+  sed -n '3,8p' /tmp/commons-plan.txt | sed 's/^/   /'
 else
   sed -n '/CLAIMED DONE/,$p' /tmp/commons-plan.txt | sed 's/^/   /'
-  echo "   FAILED: the plan claims a ticket is done and its file is absent"
+  echo "   FAILED: the plan claims a ticket is done and its file is absent or a stub"
+  fail=1
+fi
+
+# The check `plan-status.py` makes is only worth anything if `is_stub` behaves,
+# and `is_stub` is the function that decides whether a file counts as built. A
+# test for the gate, run by the gate, so the gate cannot rot into a rubber stamp.
+echo "== plan-status self-test"
+if python3 "$REPO/scripts/plan_status_test.py" > /tmp/commons-plan-test.txt 2>&1; then
+  sed -n '1p' /tmp/commons-plan-test.txt | sed 's/^/   /'
+else
+  sed -n '1,8p' /tmp/commons-plan-test.txt | sed 's/^/   /'
+  echo "   FAILED: is_stub no longer distinguishes a placeholder from real work"
   fail=1
 fi
 

@@ -2965,6 +2965,22 @@ common failure, so test it.
 **Spec:** §3.4, §4.3
 **Files:** `desktop/` (Tauri v2), `crates/commons-client/`
 
+**Not started, and one named file is a placeholder.** `crates/commons-client/`
+exists as a workspace member whose `lib.rs` is a single `//!` line. It compiles
+and it passes the suite, which is why it needs saying here: `plan-status.py`
+reported it as "built but unmarked" until it learned to tell a file that exists
+from a file that holds work. Nothing is claimed done, which is correct — this is
+a Phase 8 ticket and Phases 6–8 are open.
+
+**Item 2 needs a decision before it is built, because as written it cannot
+hold.** It says the shell uses `commons-client`, "the same typed client the UI
+uses" — but the UI's client is TypeScript (`ui/src/lib/api/`, ~6,600 lines) and
+`commons-client` is a Rust crate. A Tauri shell renders a webview, so its
+frontend *is* the UI and it already has a typed client; what it needs from Rust
+is a thin, typed, testable binding over the HTTP surface so that the shell has
+no hand-written `reqwest` calls. That is the reading that makes item 2 true, and
+it is a smaller crate than the wording implies.
+
 1. The shell points at `http://127.0.0.1:<port>` by default and can point at a
    **remote hosted instance** — it is a client, not a private build.
 2. It uses `commons-client`, the same typed client the UI uses. No private API.
