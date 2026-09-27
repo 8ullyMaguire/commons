@@ -23,6 +23,7 @@ pub mod folders;
 pub mod fuzzy;
 pub mod index;
 pub mod locator;
+pub mod media;
 pub mod query;
 pub mod relations;
 pub mod search;
