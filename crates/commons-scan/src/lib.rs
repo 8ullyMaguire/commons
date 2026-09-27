@@ -9,6 +9,10 @@ pub mod budget;
 pub mod dedup;
 pub mod detect;
 pub mod funscript;
+// T-P6-003: the sampling timeline a player reads, beside the parser it
+// samples rather than above it. See the module doc for why this is here
+// rather than in `commons-media`.
+pub mod funscript_timeline;
 pub mod hashing;
 pub mod pipeline;
 pub mod progress;
