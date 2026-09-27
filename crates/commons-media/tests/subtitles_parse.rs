@@ -669,3 +669,171 @@ fn an_empty_document_is_empty_and_not_an_error() {
     assert_eq!(to_webvtt(&doc.cues), "WEBVTT\n\n");
     assert_eq!(cue_at(&doc.cues, 0), None);
 }
+
+// --- Format::from_codec: the second vocabulary -----------------------------
+//
+// A sidecar is identified by its EXTENSION and an embedded track by the CODEC
+// ffprobe reports, so there are two name vocabularies and they are not the
+// same: `subrip` is what a `.srt` file reports, and `mov_text` is what an
+// mp4's timed text reports. These tests exist because the probe's doc comment
+// promises this function -- and a doc comment naming a function that does not
+// exist is the "referenced but never built" failure, which is what this file
+// is for elsewhere too.
+
+#[test]
+fn every_codec_a_text_subtitle_track_reports_maps_to_a_format() {
+    // The five from the probe's own fixture list, so the two files cannot
+    // disagree about what a library contains.
+    for (codec, want) in [
+        ("ass", Format::Ass),
+        ("ssa", Format::Ass),
+        ("subrip", Format::SubRip),
+        ("webvtt", Format::WebVtt),
+        ("mov_text", Format::MovText),
+    ] {
+        assert_eq!(Some(want), Format::from_codec(codec), "{codec}");
+    }
+}
+
+#[test]
+fn the_codec_name_is_matched_case_insensitively_and_trimmed() {
+    // ffprobe's names are lowercase, but a hand-written JSON fixture or a
+    // container that reports differently should not decide whether a track is
+    // supported. Cheap to accept, and the failure without it is a track that
+    // silently disappears.
+    assert_eq!(Some(Format::Ass), Format::from_codec("ASS"));
+    assert_eq!(Some(Format::Ass), Format::from_codec("  ass  "));
+    assert_eq!(Some(Format::SubRip), Format::from_codec("SubRip"));
+}
+
+#[test]
+fn an_image_based_subtitle_codec_is_reported_unsupported_rather_than_guessed() {
+    // The load-bearing case, and the reason `from_codec` returns `Option` at
+    // all. PGS and VOBSUB are bitmaps: they are not text, and there is no
+    // parser for them in this crate. Defaulting to SRT would turn a PGS track
+    // into a file of garbage cues that renders as mojibake -- which is worse
+    // than an absent track, because the user sees subtitles that are wrong
+    // rather than subtitles that are missing.
+    for codec in [
+        "hdmv_pgs_subtitle",
+        "dvd_subtitle",
+        "dvb_subtitle",
+        "dvb_teletext",
+        "xsub",
+    ] {
+        assert_eq!(
+            None,
+            Format::from_codec(codec),
+            "{codec} must be unsupported"
+        );
+    }
+}
+
+#[test]
+fn an_unknown_codec_is_none_and_never_a_default() {
+    // Same rule as `from_extension`: unknown is `None`, and a caller that gets
+    // `None` skips the track. This is the assertion that would fail if someone
+    // "fixed" the missing arm by returning `Some(Format::SubRip)`.
+    assert_eq!(None, Format::from_codec("some_codec_from_the_future"));
+    assert_eq!(None, Format::from_codec(""));
+}
+
+#[test]
+fn an_extension_and_a_codec_agree_where_they_overlap() {
+    // The two vocabularies are separate but not contradictory: a `.srt` file
+    // and a `subrip` stream are the same format under two names, and a
+    // mismatch between `from_extension` and `from_codec` on the same format
+    // would mean one of them is wrong about a name ffmpeg actually uses.
+    for (ext, codec) in [
+        ("srt", "subrip"),
+        ("vtt", "webvtt"),
+        ("ass", "ass"),
+        ("ssa", "ssa"),
+    ] {
+        assert_eq!(
+            Format::from_extension(ext),
+            Format::from_codec(codec),
+            "{ext} and {codec} are the same format"
+        );
+    }
+}
+
+// --- The two-field WebVTT timestamp, and the cue it used to lose -------------
+
+#[test]
+fn a_two_field_webvtt_timestamp_is_minutes_and_seconds() {
+    // The bug this test was written for, found by extracting a `mov_text`
+    // track: ffmpeg's WebVTT muxer writes `MM:SS.mmm`, the short form with no
+    // hours field, and `parse_timestamp` demanded three fields. Two fields were
+    // read as hours-and-minutes with the seconds undefined, which produced
+    // `None` -- and `parse_vtt` turned that `None` into a cue at 0:00. So every
+    // cue in every VTT file ffmpeg produced landed on the first frame, the
+    // document parsed cleanly, and the document was a lie.
+    //
+    // This is the shape ffmpeg actually writes, copied from its output.
+    let vtt = "WEBVTT\n\n00:01.337 --> 00:02.500\nan odd millisecond\n\n\
+               00:03.333 --> 00:04.711\nthirds do not divide\n";
+    let doc = parse(vtt, Format::WebVtt).expect("the short form is valid WebVTT");
+    assert_eq!(2, doc.cues.len());
+    assert_eq!(1_337, doc.cues[0].start_ms, "MM:SS read as minutes:seconds");
+    assert_eq!(2_500, doc.cues[0].end_ms);
+    assert_eq!(3_333, doc.cues[1].start_ms);
+    assert_eq!(4_711, doc.cues[1].end_ms);
+}
+
+#[test]
+fn a_three_field_timestamp_is_still_hours_minutes_seconds() {
+    // The other half of the same change. SRT keeps its hours field, and the two
+    // forms must not be confused -- an SRT written by the same ffmpeg still
+    // uses `HH:MM:SS,mmm`.
+    assert_eq!(Some(1_337), parse_timestamp("00:00:01,337"), "SRT");
+    assert_eq!(Some(1_337), parse_timestamp("00:01.337"), "WebVTT");
+    assert_eq!(
+        Some(3_723_337),
+        parse_timestamp("01:02:03,337"),
+        "SRT with hours"
+    );
+}
+
+#[test]
+fn minutes_above_sixty_are_legal_in_the_short_form_and_nowhere_else() {
+    // WebVTT's grammar has no hours field, so `90:00.000` is ninety minutes
+    // and must be accepted. It is the one place a two-digit minutes value
+    // above 59 is meaningful, and getting this wrong caps every long video at
+    // an hour.
+    assert_eq!(
+        Some(5_400_000),
+        parse_timestamp("90:00.000"),
+        "ninety minutes, not an error"
+    );
+    // And the SRT form still refuses it: there, the field is minutes and 90 is
+    // genuinely malformed.
+    assert_eq!(None, parse_timestamp("00:90:00,000"), "SRT minutes > 59");
+}
+
+#[test]
+fn a_cue_whose_timestamp_cannot_be_read_is_an_error_not_a_cue_at_zero() {
+    // The second half of the same bug, and the part that made it invisible. The
+    // unusable timestamp used to become `Cue::new(seq, 0, 0, text)` with a
+    // comment saying that keeps "a missing caption from being invisible".
+    //
+    // It made it worse. A zeroed cue is a caption that EXISTS, is listed in
+    // the track, and fires at 0:00 -- so a file whose timestamps are all
+    // unreadable renders as a stack of subtitles on the first frame, and since
+    // the document parsed cleanly nothing reports a problem. Erroring is the
+    // only option that is both honest and recoverable.
+    let vtt = "WEBVTT\n\n00:00.000 --> 00:01.000\nfine\n\n\
+               not-a-timestamp --> also-not\nbroken\n";
+    let err = parse(vtt, Format::WebVtt).expect_err("a bad timestamp is an error");
+    assert!(
+        matches!(err, ParseError::BadTimestamp { .. }),
+        "expected BadTimestamp, got {err:?}"
+    );
+    // And the error names the line, because "bad timestamp" in a 4000-line
+    // file is not a thing anyone can find by hand.
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not-a-timestamp"),
+        "the message quotes the offending text: {msg}"
+    );
+}

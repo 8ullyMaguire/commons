@@ -173,6 +173,48 @@ impl Format {
         }
     }
 
+    /// Map **ffprobe's** codec name to a format.
+    ///
+    /// The counterpart to [`Format::from_extension`], and it exists because
+    /// there are two vocabularies: a sidecar file is identified by its
+    /// extension, and an embedded track by the codec ffprobe reports for it.
+    /// `subrip` is what a `.srt` file reports and `mov_text` is what an mp4's
+    /// timed text reports, so neither extension nor codec name is the other.
+    ///
+    /// **Unknown is `None`, not a default.** The same rule as
+    /// [`from_extension`](Format::from_extension): a codec we have no parser for
+    /// must be reported as unsupported, because defaulting to SRT turns a PGS
+    /// bitmap subtitle into a file of garbage cues that renders as mojibake
+    /// rather than as an absent track. A caller that gets `None` skips the
+    /// track; a caller that gets a wrong format shows the user garbage.
+    ///
+    /// The names are ffprobe's, and are listed rather than derived, because a
+    /// derived rule ("strip a prefix") is right until ffmpeg adds a codec that
+    /// breaks it, and a list is a diff when that happens.
+    pub fn from_codec(codec: &str) -> Option<Format> {
+        match codec.trim().to_ascii_lowercase().as_str() {
+            // `subrip` is ffmpeg's name; `srt` is not a codec it reports, but
+            // accepting it costs nothing and a hand-written JSON fixture is a
+            // thing people make.
+            "subrip" | "srt" => Some(Format::SubRip),
+            "webvtt" => Some(Format::WebVtt),
+            // SSA and ASS share a parser, so both map to `Ass`. The direction is
+            // lossy in the sense that an `.ssa` file is recorded as ASS — which
+            // is why `Document::format` is the *parser* to use and not a claim
+            // about the file's provenance.
+            "ass" | "ssa" => Some(Format::Ass),
+            // The one with no pure parser. Named rather than `None` so the
+            // caller routes it to ffmpeg deliberately.
+            "mov_text" | "tx3g" => Some(Format::MovText),
+            // PGS, VOBSUB, DVB, teletext and the image-based formats are
+            // deliberately absent: Commons does not render them, and a
+            // `Format` that claims to would be a promise about an OCR pass
+            // that does not exist. `None` is the honest answer and the caller
+            // hides the track.
+            _ => None,
+        }
+    }
+
     /// The canonical name, for storage and for an HTTP content type.
     pub fn name(&self) -> &'static str {
         match self {
@@ -266,13 +308,46 @@ pub fn parse_timestamp(s: &str) -> Option<i64> {
     // Only the timestamp proper is wanted, and a settings tail never contains a
     // colon-digit pattern, so splitting on the first space is correct.
     let s = s.split_whitespace().next()?;
-    // Tolerate a WebVTT hour field of more than two digits ("0:00:01.000").
+
+    // **Two fields means minutes and seconds, not hours and a missing value.**
+    //
+    // WebVTT's timestamp grammar is `MM:SS.mmm` -- no hours field. SRT's is
+    // `HH:MM:SS,mmm`. ffmpeg's WebVTT muxer writes the short form, so a cue
+    // extracted from a `mov_text` track arrives as `00:01.337`, and reading
+    // that as `H:M` (hours=0, minutes=1, seconds=undefined) is how a 1.337s cue
+    // becomes a 0.000s one. Every cue in the file lands at 0:00, the document
+    // parses cleanly, and the document is a lie.
+    //
+    // So the field COUNT is what distinguishes the two, not a flag: two fields
+    // are MM:SS, three are HH:MM:SS. `parse_timestamp` is shared by both formats
+    // precisely because they differ only in that count.
     let mut parts = s.split(':');
-    let h = parts.next()?.trim().parse::<i64>().ok()?;
-    let m = parts.next()?.trim().parse::<i64>().ok()?;
-    let sec = parts.next()?.trim();
-    if parts.next().is_some() {
-        return None;
+    let first = parts.next()?.trim().parse::<i64>().ok()?;
+    let (h, sec, m): (i64, &str, i64);
+    // Which of the two grammars this turned out to be. Only it can say whether
+    // minutes are bounded.
+    let mut had_hours = true;
+    match (parts.next(), parts.next()) {
+        (Some(minutes), Some(seconds)) => {
+            // HH:MM:SS, the SRT form.
+            h = first;
+            m = minutes.trim().parse::<i64>().ok()?;
+            sec = seconds.trim();
+            if parts.next().is_some() {
+                return None;
+            }
+        }
+        (Some(seconds), None) => {
+            // MM:SS, the WebVTT form. The first field is minutes, so there are
+            // no hours at all and a value of more than 59 is legal here -- and
+            // only here. ffmpeg writes `00:01.337`, not `0:00:01.337`.
+            h = 0;
+            m = first;
+            sec = seconds.trim();
+            had_hours = false;
+        }
+        // A bare number, or nothing. Not a timestamp in either format.
+        (None, _) => return None,
     }
     // The fraction is after the LAST '.' or ',' in the seconds field.
     //
@@ -304,7 +379,11 @@ pub fn parse_timestamp(s: &str) -> Option<i64> {
     if !frac.is_empty() && frac.len() != 3 {
         return None;
     }
-    if !(0..60).contains(&m) || !(0..60).contains(&s_val) {
+    // Minutes are bounded at 59 in the SRT form and unbounded in the WebVTT
+    // one, because only the SRT form has an hours field for the excess to live
+    // in. `90:00.000` is ninety minutes of video, not a malformed timestamp --
+    // and refusing it caps every file over an hour at the hour.
+    if !(0..60).contains(&s_val) || (had_hours && !(0..60).contains(&m)) {
         return None;
     }
     let ms: i64 = if frac.is_empty() {
@@ -604,15 +683,22 @@ fn is_index_line(s: &str) -> bool {
 pub fn parse_vtt(text: &str) -> Result<Document> {
     let mut doc = Document::default();
     let mut lines = text.lines().peekable();
+    // The line the current block STARTS on, for the error message.
+    let mut lineno = 0usize;
+    // How many lines the header consumed, so the counter below stays in step
+    // with the file as it is written rather than with the iterator.
+    let mut header_lines = 0usize;
 
     // The signature, allowing a BOM and a leading blank line.
     let mut saw_header = false;
     for line in lines.by_ref() {
         let t = line.trim_start_matches('\u{feff}').trim();
         if t.is_empty() {
+            header_lines += 1;
             continue;
         }
         if let Some(rest) = t.strip_prefix("WEBVTT") {
+            header_lines += 1;
             saw_header = true;
             // `WEBVTT - Some title` and `WEBVTT Some title` are both valid, and
             // the `-` is a separator the spec writes there rather than part of
@@ -637,15 +723,15 @@ pub fn parse_vtt(text: &str) -> Result<Document> {
 
     // Blank-line-separated blocks.
     let mut block: Vec<String> = Vec::new();
-    let flush = |block: &mut Vec<String>, doc: &mut Document| {
+    let flush = |block: &mut Vec<String>, doc: &mut Document, lineno: usize| -> Result<()> {
         if block.is_empty() {
-            return;
+            return Ok(());
         }
         let timing_idx = block.iter().position(|l| l.contains("-->"));
         let Some(ti) = timing_idx else {
             // NOTE / STYLE, or a stray block. Not a cue.
             block.clear();
-            return;
+            return Ok(());
         };
         let ts = &block[ti];
         let arrow = ts.find("-->").unwrap_or(0);
@@ -659,27 +745,42 @@ pub fn parse_vtt(text: &str) -> Result<Document> {
                 doc.cues.push(cue);
             }
             _ => {
-                // A cue with an unusable timestamp is reported, not dropped: a
-                // missing caption is invisible and unreportable.
-                doc.cues.push(Cue::new(
-                    doc.cues.len() as u32,
-                    0,
-                    0,
-                    block[ti + 1..].join("\n"),
-                ));
+                // A cue with an unusable timestamp is an ERROR, not a zeroed
+                // cue and not a dropped one.
+                //
+                // It used to be pushed as `Cue::new(seq, 0, 0, text)` "so a
+                // missing caption is not invisible". That is worse than both
+                // alternatives: it is a caption that EXISTS, is listed, and
+                // shows up at 0:00. Every one of them does, so a file whose
+                // timestamps are all unreadable plays as a stack of subtitles
+                // on the first frame -- and because the document parsed
+                // cleanly, nothing anywhere reports a problem. Dropping the cue
+                // would at least be a visible gap; inventing one is a silence.
+                //
+                // Erroring is the only option that is both honest and
+                // recoverable: the caller learns the file is malformed and can
+                // say so, rather than storing a document that looks fine.
+                return Err(ParseError::BadTimestamp {
+                    line: lineno,
+                    got: ts.trim().to_string(),
+                });
             }
         }
         block.clear();
+        Ok(())
     };
 
-    for line in lines {
+    for (n, line) in lines.enumerate() {
+        // 1-based, and the header has already been consumed, so the count
+        // tracks the file as a person reading it would number it.
+        lineno = n + 1 + header_lines;
         if line.trim().is_empty() {
-            flush(&mut block, &mut doc);
+            flush(&mut block, &mut doc, lineno)?;
         } else {
             block.push(line.to_string());
         }
     }
-    flush(&mut block, &mut doc);
+    flush(&mut block, &mut doc, lineno)?;
     Ok(doc)
 }
 

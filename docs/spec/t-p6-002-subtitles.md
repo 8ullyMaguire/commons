@@ -2,8 +2,8 @@
 
 **Plan entry:** `docs/plans/implementation-plan.md` §T-P6-002
 **Spec:** §5.10 (C10), §11.1
-**Status:** §1–§3 implemented (parsers, schema, store, both engines). §4–§7
-not started.
+**Status:** §1–§4 implemented (parsers, schema, store, both engines, probe,
+extractor, sidecar reading). §5–§7 not started.
 
 ---
 
@@ -15,9 +15,11 @@ measured about it, and what is missing.
 | Piece | State |
 |---|---|
 | `ffprobe -show_streams` | **returns subtitle streams** — measured, see below |
-| `commons-media::probe` | **parses and discards them** — `_ => {}` at `probe.rs:509` |
-| `commons-media::probe` subtitle model | **does not exist** — no `SubtitleStream` |
-| sidecar discovery (`.srt` beside the video) | **does not exist** |
+| `commons-media::probe` | **enumerates them** — `SubtitleStream` in `MediaInfo` |
+| `commons-media::probe` subtitle model | **done** — index, codec, language, size, start |
+| sidecar reading (`.srt` beside the video) | **done** — `Extractor::read_sidecar`, no process |
+| sidecar *discovery* (finding the file) | **does not exist** — §5 |
+| extraction (ffmpeg → cues) | **done** — `Extractor::extract_stream` |
 | `commons-media::transcode` | **`-sn`, deliberately.** `transcode.rs:232` defers to this ticket |
 | ffmpeg `ass` filter | **present** |
 | ffmpeg `subtitles` filter | **present** |
@@ -246,9 +248,10 @@ that moved is the one a user notices.
 something:
 
 - **`mov_text` and `webvtt` round-trip through a time base.** ffmpeg's
-  `webvtt` muxer writes milliseconds; a source in 90 kHz ticks needs a rescale,
-  and a rescale is where the sub-40 ms error lives. Storing milliseconds as
-  integers is what keeps it bounded — a float would accumulate.
+  `webvtt` muxer writes milliseconds; a source in 90 kHz ticks needs a
+  rescale, and a rescale is where the sub-40 ms error lives. Storing
+  milliseconds as integers is what keeps it bounded — a float would
+  accumulate.
 - **ASS times are `H:MM:SS.cc`, centiseconds.** Round to ms, and the error is
   at most 0.5 ms, which is not the problem.
 - **The end timestamp is the one that drifts**, because files disagree about
@@ -256,6 +259,77 @@ something:
   makes "does this cue contain time t" answerable at all, and it is the same
   convention `commons-media::range` already uses — so the two agree by
   construction rather than by luck.
+
+### What implementing it found
+
+Three things the analysis above did not say, each measured rather than
+assumed, and each now pinned by a test.
+
+**The WebVTT timestamp has no hours field, and the parser insisted on one.**
+WebVTT's grammar is `MM:SS.mmm`; SRT's is `HH:MM:SS,mmm`. ffmpeg's `webvtt`
+muxer writes the short form, so a cue extracted from a `mov_text` track
+arrives as `00:01.337` — and a three-field parser read that as hours=0,
+minutes=1, seconds=undefined. The result was not an error but a cue at
+**0:00**, and since *every* cue took that path, a file extracted from
+`mov_text` produced a document in which the entire track fires on the first
+frame. The document parsed cleanly. Nothing anywhere reported a problem.
+
+Fixed by reading the field **count** as the discriminator rather than a flag:
+two fields are `MM:SS`, three are `HH:MM:SS`. A side effect worth stating,
+because it is a constraint rather than an accident: in the short form minutes
+are unbounded, because there is no hours field for the excess to live in.
+`90:00.000` is ninety minutes and must parse. The SRT form still refuses it.
+
+**A cue whose timestamp cannot be read was being invented, not reported.**
+`parse_vtt` pushed `Cue::new(seq, 0, 0, text)` on an unusable timestamp, with
+a comment saying this keeps "a missing caption from being invisible". It made
+it worse: a zeroed cue is a caption that *exists*, is listed in the track, and
+fires at 0:00, so a file whose timestamps were all unreadable rendered as a
+stack of subtitles on frame one — and the parse still succeeded. Dropping the
+cue would at least leave a visible gap. Now it is `ParseError::BadTimestamp`,
+naming the line, because "bad timestamp" in a 4000-line file is not something
+anyone can find by hand.
+
+**A non-empty output that parses to zero cues is a failure.** Every parser here
+returns `Ok` with no cues for input it does not recognise — `parse_ass` on an
+SRT file finds no `[Events]` section and returns an empty document rather than
+an error — so a format mismatch is silent by construction. `extract_stream`
+now rejects that case. Without it, a track muxed in the wrong format produces
+a subtitle track that is listed, selectable, and empty, which is the reading a
+user takes: *this video has no subtitles*. The check is in the extractor
+rather than the parsers, because a zero-cue document is a legitimate result
+for a genuinely empty file and a parser that refused to produce one would make
+"this file has no subtitles" unexpressible.
+
+**Two smaller ones, recorded because both are the kind that look right:**
+
+- `mov_text` is the one format that is **not** `-c copy`. It is a QuickTime
+  timecode atom, and the WebVTT muxer refuses it outright — `supports only
+  codec webvtt for type subtitle`, exit 234. It has to be transcoded with
+  `-c:s webvtt`. The codec flags are a parameter for exactly this reason.
+- `mov_text` **cannot represent overlapping cues**, because a track is a
+  timeline. ffmpeg resolves an overlap by clamping the earlier cue's *end* to
+  the later one's start, so an end of 61000 next to a start of 60500 comes
+  back as 60500. This is a property of the format, not a bug: no
+  implementation can meet a 40 ms budget for an overlapping cue, because the
+  data is not there. The round-trip fixture therefore contains no overlapping
+  cues, and the clamping is asserted separately rather than left implicit in a
+  drift number.
+
+**Measured drift, on this machine, 2026-09-27, ffmpeg 9.0.1.** Every cue,
+each of the ten-fixture files, worst case in the set:
+
+| Format | Worst drift | Note |
+|---|---|---|
+| `subrip` (MKV) | 0 ms | `-c copy`, nothing to rescale |
+| `ass` (MKV) | ≤ 1 ms | centisecond source, rounds to 10 ms |
+| `mov_text` (MP4) | 0 ms | the time-base case, and it is exact |
+
+The `mov_text` result is the one worth noting. §4 predicted the sub-40 ms error
+would live in a time-base rescale; on this machine there is none, because
+milliseconds are integers end to end and the only rescale is exact. The 40 ms
+budget is therefore not currently being spent, and the tolerance stays as a
+regression guard against a build where it is.
 
 ---
 
