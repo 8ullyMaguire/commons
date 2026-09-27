@@ -42,7 +42,28 @@ use crate::AppState;
 /// exactly when both loop ends are non-zero — and sending it would put a
 /// redundancy in the API that a client could cache and then disagree with.
 /// Deriving it on read is one comparison and cannot go stale.
+///
+/// ## Why `deny_unknown_fields`
+///
+/// Because the failure without it is a **silently dropped write**, which is the
+/// worst kind: the server answers 200, the client's loop never takes effect, and
+/// nothing anywhere says so.
+///
+/// It is not hypothetical here — it was found by writing a test with `"loop"`
+/// instead of `"loop_points"`. The response came back 200, and the body was
+/// `{"position_ms":1000,"duration_ms":90000,"completed":false}`: the loop
+/// vanished, with no error on either side. A client that misspells a field, or
+/// that is a version behind or ahead of the server, gets a success and a wrong
+/// result, and will report "the loop marker doesn't stick" rather than "you sent
+/// the wrong field name". Rejecting the request turns that into a 400 that names
+/// the unknown field, and it is the difference between a one-line client fix
+/// and an afternoon of reading the wrong code.
+///
+/// The cost is a redeploy for a field rename, which is the point: a rename that
+/// cannot be deployed in step with every client is better left until the
+/// alternative is a write that disappears.
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlaybackBody {
     pub position_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]

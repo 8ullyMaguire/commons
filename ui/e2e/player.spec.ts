@@ -492,6 +492,42 @@ test.describe('saving', () => {
   });
 });
 
+test.describe('seeking', () => {
+  test('a seek is frame-accurate, not a keyframe jump', async ({ page }) => {
+    // The SETTING, not the landing.
+    //
+    // `video.fastSeek = false` makes the browser seek to the nearest *frame*
+    // rather than the nearest keyframe. It is the browser default, so the
+    // behaviour is already correct -- which is precisely why it needs a test: an
+    // inherited default is one line of unrelated code away from being changed,
+    // and the result looks fine on a long clip and wrong on a music video or a
+    // frame-accurate edit point.
+    //
+    // What is asserted is the flag, not the resulting `currentTime`, because this
+    // environment's browser will not seek a paused, never-played video at all
+    // (see the `resuming` block). Asserting the landing position here would
+    // produce a test that passes because the seek never happened.
+    await seed(page, {
+      playback: {
+        position_ms: 0,
+        duration_ms: 5_000,
+        loop_a_ms: null,
+        loop_b_ms: null,
+        completed: false,
+        updated_at: '2026-09-27T00:00:00Z'
+      }
+    });
+    await page.goto('/play?o=obj-1');
+    const video = page.getByTestId('player-video');
+    await expect(video).toBeAttached();
+    await expect
+      .poll(async () =>
+        video.evaluate((v: HTMLVideoElement) => (v.readyState >= 1 ? v.fastSeek : null))
+      )
+      .toBe(false);
+  });
+});
+
 test.describe('a file that will not play', () => {
   test('an unplayable source says so rather than showing a black rectangle', async ({ page }) => {
     await seed(page);

@@ -1745,3 +1745,60 @@ synthetic blob, because Chromium here has no VP8-in-MSE and a fixture the browse
 rejects produces a player that never leaves its loading state, which then fails
 as a broken resume, a broken scrubber, or a broken control bar: all three of the
 things being tested.
+
+## Two defects found by writing the tests the spec asked for
+
+T-P6-001's spec §7 listed "a Playwright test per feature in the ticket's list"
+and "the A/B loop test must exercise the `a < b` CHECK". Writing those exact
+tests turned up two bugs that no existing test had any reason to look at, which
+is the argument for the spec naming tests rather than features.
+
+**A misspelled JSON field was silently dropped, with a 200.** The zero-length
+loop test was written with `"loop"` where the API says `"loop_points"`. The
+server answered **200** and returned `{"position_ms":1000,"duration_ms":90000,
+"completed":false}` — the loop gone, no error on either side. A client that
+misspells a field, or that is a version behind the server, gets a success and a
+wrong result, and reports "the loop marker doesn't stick" rather than "you sent
+the wrong field name". `PlaybackBody` now carries `deny_unknown_fields`, and
+`an_unknown_field_is_400_rather_than_a_silently_dropped_write` holds it — naming
+the unknown field, and asserting nothing was written. The cost is a redeploy on a
+field rename, which is the right trade: a rename that cannot be deployed in step
+with every client is better left undone than shipped as a write that disappears.
+
+**`completed` never reached the client, so completed videos resumed at their
+last frame.** The store has it, `resumePosition` honours it, and the component
+kept only `position_ms` and the loop. `a completed video starts again` caught it
+by asserting the resume *decision* — the file's own clock was the thing being
+wrong, so an assertion on the clock could not have found it. `duration_ms` was
+dropped the same way in the same place, which is why `saved` now carries all four
+fields with a comment on each.
+
+And the loop-order test the spec asked for turned out to need a neighbour:
+`a_zero_length_loop_is_refused_by_the_check` also stores a **one-millisecond**
+loop and asserts it is accepted, because a test that only proves the check
+refuses things passes just as well for a check that refuses everything. Its
+sibling `a_loop_from_zero_is_stored_and_reads_back_as_zero` covers `a_ms: 0`,
+which the DB allows and which is a *position*, not an absence — the store-side
+twin of the client-side `isLoopArmed` bug, and the round trip is what stops that
+mistake reappearing on both sides of the wire.
+
+## What the spec now says is NOT done
+
+Marking T-P6-001 *implemented* would have been wrong, and the spec's own Done
+-when is what stopped it. Built and tested: playback state on both engines, the
+on-demand proxy, the codec decision, A/B loop, the control bar including the
+360×640 fullscreen-clipping assertion, and the unplayable-source path.
+
+**Not built:** deinterlacing (#5313), crop/pan/flip (#5312, #2160), custom speed
+and long-press 2× (#2645, #6982), audio-track selection (#1058), skip-intro
+(#634), and ratings in the player (#3250). Six of those need a server-side filter
+or a table that belongs to a later ticket, which is why they were sequenced
+after the core rather than skipped quietly. Subtitles are T-P6-002's, and the
+spec said so from the start.
+
+**One item is blocked rather than unstarted:** the *landing* of a frame-accurate
+seek. The setting (`fastSeek = false`) is now explicit and asserted — it was
+inherited and invisible, which is a default one line away from changing under
+you. The landing is not asserted because this browser will not seek a paused
+video at all, so such a test would pass because the seek never happened. §8.2 of
+the spec records it, and says what the test is on a machine that can run it.

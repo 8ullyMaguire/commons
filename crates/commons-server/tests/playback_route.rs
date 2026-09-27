@@ -244,3 +244,143 @@ async fn a_three_hour_position_is_not_truncated() {
         10_800_000
     );
 }
+
+/// The spec's own Done-when: "the A/B loop test must exercise the `a < b` CHECK
+/// by trying to store a zero-length loop."
+///
+/// Which is the case a client produces by accident rather than on purpose, and
+/// the reason it is worth a test of its own. A user who drags marker A and marker
+/// B to the same instant -- or a client that sends `0` for a marker it meant as
+/// "unset" -- produces `a == b`, which is a loop of no length. Stored, it is
+/// drawn on the scrubber as armed and loops for zero milliseconds, which looks
+/// like the player has hung. Refused, it is a 422 naming the field.
+#[tokio::test]
+async fn a_zero_length_loop_is_refused_by_the_check() {
+    let app = TestApp::new().await;
+
+    // Exactly equal: a loop of no length.
+    let put = app
+        .put_json(
+            "/media/obj_loop_zero/playback",
+            r#"{"position_ms":1000,"duration_ms":90000,"loop_points":{"a_ms":5000,"b_ms":5000}}"#,
+        )
+        .await;
+    assert_eq!(
+        put.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a zero-length loop must be refused, not stored: {:?}",
+        String::from_utf8_lossy(&put.body)
+    );
+    // And the refusal NAMES the field. A 422 that says "invalid" sends a
+    // developer looking at the wrong half of the request.
+    let b = body_of(&put);
+    let msg = b["message"].as_str().unwrap_or_default().to_lowercase();
+    assert!(
+        msg.contains("loop") || b["field"].as_str().unwrap_or_default().contains("loop"),
+        "the refusal must name the loop: {b}"
+    );
+
+    // Nothing was written. A refused write that still left a row behind is a
+    // worse bug than the one being refused: the next GET would report a loop
+    // the user never set.
+    let got = body_of(&app.get_json("/media/obj_loop_zero/playback").await);
+    assert!(
+        got["loop_points"].is_null(),
+        "a refused loop must leave no loop stored: {got}"
+    );
+    assert_eq!(
+        got["position_ms"], 0,
+        "and must not write the position either"
+    );
+
+    // The neighbour, so the check is not refusing everything: a one-millisecond
+    // loop is ordered, and is stored.
+    let ok = app
+        .put_json(
+            "/media/obj_loop_tiny/playback",
+            r#"{"position_ms":1000,"duration_ms":90000,"loop_points":{"a_ms":5000,"b_ms":5001}}"#,
+        )
+        .await;
+    assert_eq!(
+        ok.status,
+        StatusCode::OK,
+        "a_ms < b_ms is ordered, however short: {:?}",
+        String::from_utf8_lossy(&ok.body)
+    );
+    let got = body_of(&app.get_json("/media/obj_loop_tiny/playback").await);
+    assert_eq!(got["loop_points"]["a_ms"], 5000);
+    assert_eq!(got["loop_points"]["b_ms"], 5001);
+}
+
+/// A misspelled field is refused, not dropped.
+///
+/// The test that found `deny_unknown_fields` missing, and the reason it is
+/// worth a permanent one. Written with `"loop"` where the API says
+/// `"loop_points"`, the server answered **200** and returned
+/// `{"position_ms":1000,"duration_ms":90000,"completed":false}` — the loop gone,
+/// with no error anywhere. A client that misspells a field, or that is a
+/// version behind the server, gets a success and a wrong result.
+///
+/// So this asserts 400 rather than 200-plus-a-dropped-field, and asserts the
+/// refusal actually mentions the field that was not expected: a 400 that says
+/// "malformed" sends a developer hunting for a JSON syntax error that is not
+/// there.
+#[tokio::test]
+async fn an_unknown_field_is_400_rather_than_a_silently_dropped_write() {
+    let app = TestApp::new().await;
+
+    // `"loop"` instead of `"loop_points"` — the exact typo that started this.
+    let put = app
+        .put_json(
+            "/media/obj_unknown_field/playback",
+            r#"{"position_ms":1000,"duration_ms":90000,"loop":{"a_ms":1000,"b_ms":4000}}"#,
+        )
+        .await;
+    assert_eq!(
+        put.status,
+        StatusCode::BAD_REQUEST,
+        "an unrecognised field must be refused: {:?}",
+        String::from_utf8_lossy(&put.body)
+    );
+    let said = String::from_utf8_lossy(&put.body).to_lowercase();
+    assert!(
+        said.contains("loop") || said.contains("unknown"),
+        "the refusal must name the unknown field: {}",
+        String::from_utf8_lossy(&put.body)
+    );
+
+    // And nothing was written. A 400 with a partial write is the same silent
+    // failure wearing a different hat.
+    let got = body_of(&app.get_json("/media/obj_unknown_field/playback").await);
+    assert_eq!(got["position_ms"], 0, "a refused write must store nothing");
+}
+
+/// A loop from the very start is a loop, and the CHECK allows it.
+///
+/// The companion to the test above and to a client bug worth naming: a UI that
+/// spells "unset" as `0` produces `a_ms: 0`, and a client that then *reads* the
+/// stored `0` back as "unset" silently drops a loop the user really set. So the
+/// round trip has to preserve a zero A, and the client has to be able to tell it
+/// from absent.
+#[tokio::test]
+async fn a_loop_from_zero_is_stored_and_reads_back_as_zero() {
+    let app = TestApp::new().await;
+    let put = app
+        .put_json(
+            "/media/obj_loop_from_zero/playback",
+            r#"{"position_ms":1000,"duration_ms":90000,"loop_points":{"a_ms":0,"b_ms":5000}}"#,
+        )
+        .await;
+    assert_eq!(
+        put.status,
+        StatusCode::OK,
+        "a loop over the first five seconds is ordered: {:?}",
+        String::from_utf8_lossy(&put.body)
+    );
+    let got = body_of(&app.get_json("/media/obj_loop_from_zero/playback").await);
+    assert_eq!(
+        got["loop_points"]["a_ms"], 0,
+        "a zero A is a POSITION, not an absence: {got}"
+    );
+    assert_eq!(got["loop_points"]["b_ms"], 5000);
+}

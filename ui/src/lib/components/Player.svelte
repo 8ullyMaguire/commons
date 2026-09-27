@@ -299,6 +299,15 @@
   }
 
   function onLoadedMetadata() {
+    // The browser's default is `false`, so a seek lands on a frame rather than
+    // on a keyframe. That default is exactly right and it is also invisible, and
+    // an invisible default is one line of unrelated code away from being turned
+    // off -- and `fastSeek = true` produces a seek that is *close enough*, which
+    // looks fine on a long clip and is visibly wrong on a music video or a
+    // frame-accurate edit point. So the frame-accurate behaviour is stated here
+    // rather than inherited: if the default ever changes, this fails visibly
+    // rather than quietly.
+    if (video) video.fastSeek = false;
     duration = Number.isFinite(video.duration) ? video.duration * 1000 : 0;
     fps = source.fps ?? null;
     // The resume is NOT applied here. `loadedmetadata` means the browser has
