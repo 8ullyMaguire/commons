@@ -82,8 +82,22 @@
   import { commands, handleKey } from '$lib/api/commands-ui.js';
   import { registerAppCommands, CMD } from '$lib/api/command-bindings.js';
   import type { Command } from '$lib/api/commands.js';
+  import ThemeControl from '$lib/theme/ThemeControl.svelte';
+  import { theme } from '$lib/theme/theme-store.svelte.js';
 
   let { children } = $props();
+
+  // Adopt the theme the inline script in app.html already applied, and start
+  // following the OS. Paired with a destroy so the media-query listener does
+  // not accumulate across a client-side navigation: the layout is not remounted
+  // on every navigation, but it IS remounted when the app is, and an effect
+  // that subscribes without a teardown leaks one listener per mount. A theme
+  // that leaks listeners still works, which is why this would not be caught by
+  // looking at the page.
+  $effect(() => {
+    theme.init();
+    return () => theme.destroy();
+  });
 
   // Capture phase on the document, so it runs before the browser follows the
   // link and before SvelteKit's own router handler. A bubble-phase listener on
@@ -486,6 +500,14 @@
         Unsaved changes
       </span>
     {/if}
+    <!--
+      The theme control (T-P5-007). It is here, in the one component mounted
+      for every route and not remounted across a navigation, for the same
+      reason the unsaved guard is: a control in a page component is destroyed
+      and rebuilt on every navigation, and a theme that follows the OS would
+      resubscribe and repaint each time.
+    -->
+    <ThemeControl />
   </nav>
   <main>
     {@render children()}

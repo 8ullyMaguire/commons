@@ -4,6 +4,51 @@
     <meta charset="utf-8" />
     <link rel="icon" href="%sveltekit.assets%/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!--
+      The theme, applied before first paint. T-P5-007, spec 10.8.
+
+      This script is in the HEAD and it is INLINE on purpose, and both matter.
+      A stylesheet cannot do it: the choice is in localStorage, and reading
+      storage is JavaScript, so a CSS-only solution paints the default theme
+      first and corrects itself. A user whose choice is light sees a white
+      flash on every navigation -- which reads as a broken app, and is the
+      reason some people turn off dark mode entirely rather than use a toggle
+      that flickers.
+
+      It has to be inline, not a module: a `<script type="module">` is
+      deferred until after the document is parsed, and by then the browser has
+      already painted. So: no `type`, no `defer`, no `src`. The duplication of
+      STORAGE_KEY and the two theme names is deliberate -- this runs before any
+      module could, so it cannot import the constants, and a copy that drifts
+      is covered by an e2e assertion on the applied attribute.
+
+      `documentElement` rather than `body`: `body` does not exist yet at head
+      parse time.
+    -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('commons.theme');
+          var osDark =
+            typeof matchMedia === 'function' &&
+            matchMedia('(prefers-color-scheme: dark)').matches;
+          // Same precedence as ui/src/lib/theme/theme.ts: an explicit choice
+          // beats the OS, and the OS is consulted only for 'system'.
+          var resolved =
+            stored === 'light' || stored === 'dark'
+              ? stored
+              : osDark
+                ? 'dark'
+                : 'light';
+          document.documentElement.setAttribute('data-theme', resolved);
+        } catch (e) {
+          // Private mode throws on localStorage. Dark is the app's history, so
+          // a failure here must not leave the attribute unset and let the
+          // stylesheet's :root decide -- which it will, and which is dark.
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">
