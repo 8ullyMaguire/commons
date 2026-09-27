@@ -2,9 +2,10 @@
 
 **Plan entry:** `docs/plans/implementation-plan.md` §T-P6-002
 **Spec:** §5.10 (C10), §11.1
-**Status:** §1–§5 implemented (parsers, schema, store, both engines, probe,
-extractor, sidecar reading and discovery, transcode plan). §6 has its client
-logic and needs its component; §7 is a deliberate scope statement.
+**Status:** §1–§5 and the server half of §6 implemented (parsers, schema, store,
+both engines, probe, extractor, sidecar reading and discovery, transcode plan,
+`GET /media/:id/subtitles` and `GET /media/:id/subtitles/:doc.vtt`). §6 still
+needs its Svelte component; §7 is a deliberate scope statement.
 
 ---
 
@@ -28,6 +29,9 @@ measured about it, and what is missing.
 | ffmpeg `ass`/`ssa`/`subrip` decoders | **present** |
 | ffmpeg `webvtt` encoder + muxer | **present** |
 | ffmpeg `srt` muxer | **present** |
+| `GET /media/:id/subtitles` (track list) | **done** — `commons-server/src/subtitles.rs` |
+| `GET /media/:id/subtitles/:doc.vtt` (WebVTT bytes) | **done** — same |
+| the player component (§6) | **not started** — the client logic is done |
 | `SubtitleTrack.svelte` | **does not exist** |
 | caption text in any index | **does not exist** — so #4985 search has nothing to search |
 | caption tables | **does not exist** |

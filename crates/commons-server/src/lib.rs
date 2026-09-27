@@ -24,6 +24,7 @@ pub mod media;
 pub mod playback;
 pub mod proxy;
 pub mod range;
+pub mod subtitles;
 
 pub use config::{Config, RunMode};
 pub use health::HealthState;
@@ -98,6 +99,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/media/:object_id/playback",
             get(playback::get_playback_route).put(playback::put_playback_route),
+        )
+        .route("/media/:object_id/subtitles", get(subtitles::list_tracks))
+        .route(
+            "/media/:object_id/subtitles/:document_id.vtt",
+            get(subtitles::get_vtt),
         )
         .layer(TraceLayer::new_for_http())
         .with_state(state)
