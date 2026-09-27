@@ -200,7 +200,7 @@ gap section 6 names rather than a property to claim.
 Done. `crates/commons-store/src/undo.rs`, migration `0019_undo.sql` (both
 engines), `tests/undo_db.rs` (13 tests, both engines), 7 unit tests,
 `ui/src/lib/api/undo.ts` (11 tests), the offer in `BulkEditModal.svelte`
-with 3 e2e cases in `ui/e2e/bulk.spec.ts`. 1219 Rust, 237 UI, 56 e2e. Clippy
+with 3 e2e cases in `ui/e2e/bulk.spec.ts`. 1221 Rust, 237 UI, 56 e2e. Clippy
 clean.
 
 **Where the offer renders, and why it is not a toast.** Inside the bulk modal,
@@ -214,7 +214,32 @@ a window the user has closed reports a failure against a dialog they are no
 longer in. The component and its three browser tests were deleted and the offer
 moved into `BulkEditModal.svelte`.
 
-Not done, and named: the two atomicity gaps in section 6.
+**The atomicity gap in section 6 is closed.** The restore is one statement per
+shape over a `VALUES` block, and a statement is atomic, so a record restores
+entirely or not at all — no transaction needed, which is what makes it possible
+in a store whose error type has no transaction variant. Two tests pin it: one
+where a stale object mid-record leaves every other object untouched, one where a
+four-object record mixing both shapes restores all four with each updated object
+getting its *own* prior values. Restoring the loop kills both, plus six others.
+
+Three things about that statement were measured rather than assumed, and all
+three failed differently:
+
+- `UPDATE … FROM (VALUES …)` is a **syntax error on SQLite** (`near "("`): there
+  is no `VALUES` table form in a `FROM` clause. A CTE works on both engines, and
+  the `FROM e` is required — SQLite says `no such column: e.b` without it, Postgres
+  says `missing FROM-clause entry`.
+- The flag columns must be bound as **booleans**. A `VALUES` list takes one type
+  per column across all rows, so a bound integer becomes a column the engine may
+  type as anything, and `= 1` then fails *quietly*: SQLite returns fewer rows than
+  the data contains, and Postgres refuses with `VALUES types bigint and text
+  cannot be matched`. Casting does not rescue it — Postgres rejects
+  `CAST(? AS BOOLEAN)` on a bigint, and `IS TRUE` on an integer column. Binding
+  the right type is the only spelling that survives.
+- The `?` bind order follows the **textual** order of the placeholders, so the
+  `VALUES` block owns the low-numbered ones. Getting it backwards shifts every
+  entry by one and the join matches nothing: an `UPDATE … FROM` that affects
+  zero rows with no error to notice.
 
 **On the missing route — not this item's gap.** `ui/src/lib/api/client.ts` is
 the only module permitted to name `fetch`, and the whole client is *queries*:

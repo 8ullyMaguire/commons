@@ -55,6 +55,8 @@
 //! losing it. An expired record is invisible and inert, not gone.
 
 use serde::{Deserialize, Serialize};
+use sqlx::postgres::{PgArguments, Postgres};
+use sqlx::sqlite::{Sqlite, SqliteArguments};
 
 use crate::db::{Store, StoreError};
 
@@ -353,41 +355,6 @@ macro_rules! undo_exec {
     }};
 }
 
-/// As `undo_exec!`, but returning how many rows the statement touched.
-///
-/// The row count *is* the staleness check: a restore whose WHERE carried the
-/// expected state matches one row or none, so `0` means the object moved and
-/// must not be overwritten. That is what removes the check-then-write window —
-/// the condition and the write are one statement, so nothing can commit
-/// between them.
-///
-/// `IS NOT DISTINCT FROM` rather than `=`, because a NULL never equals a NULL
-/// under `=` and every value column here is nullable. A row of three NULLs
-/// would fail its own equality test and be reported as superseded, which is the
-/// exact false refusal the row_existed column exists to prevent.
-macro_rules! undo_affected {
-    ($store:expr, $sql:expr, $($v:expr),* $(,)?) => {{
-        let sql: &str = $sql;
-        macro_rules! go {
-            ($p:expr, $q:expr) => {{
-                let mut qb = sqlx::query($q);
-                $( qb = qb.bind($v); )*
-                qb.execute($p)
-                    .await
-                    .map_err(StoreError::Query)?
-                    .rows_affected() as usize
-            }};
-        }
-        match $store {
-            Store::Sqlite(p) => go!(p, sql),
-            Store::Postgres(p) => {
-                let bound = Store::bind_sql(sql);
-                go!(p, &bound)
-            }
-        }
-    }};
-}
-
 /// `expires_at` for a record created at `created`.
 ///
 /// Written out rather than computed by a database function because the two
@@ -465,6 +432,262 @@ pub async fn tag_state(
         }
     };
     Ok(state.unwrap_or_else(TagState::absent))
+}
+
+/// One bound parameter.
+///
+/// A `Vec<Box<dyn Encode>>` is the general answer and is wrong here: SQLite's and
+/// Postgres's `Encode` impls are unrelated traits, so a list of them could only
+/// be bound by one engine. An entry has four kinds of column, so this is a
+/// four-variant enum, and the same list is bound to either engine.
+///
+/// `Null` binds a typed NULL rather than an untyped one. `confidence` is
+/// `REAL` and `source` is `TEXT`; an untyped NULL in a `VALUES` row leaves the
+/// column type to the engine, and Postgres rejects an untyped NULL in a
+/// multi-row `VALUES` list outright.
+#[derive(Clone, Debug)]
+enum P {
+    Text(Option<String>),
+    Real(Option<f64>),
+    Bool(bool),
+}
+
+impl P {
+    fn bind_sqlite<'q>(
+        &self,
+        qb: sqlx::query::Query<'q, Sqlite, SqliteArguments<'q>>,
+    ) -> sqlx::query::Query<'q, Sqlite, SqliteArguments<'q>> {
+        match self {
+            P::Text(v) => qb.bind(v.clone()),
+            P::Real(v) => qb.bind(*v),
+            P::Bool(v) => qb.bind(*v),
+        }
+    }
+
+    fn bind_pg<'q>(
+        &self,
+        qb: sqlx::query::Query<'q, Postgres, PgArguments>,
+    ) -> sqlx::query::Query<'q, Postgres, PgArguments> {
+        match self {
+            P::Text(v) => qb.bind(v.clone()),
+            P::Real(v) => qb.bind(*v),
+            P::Bool(v) => qb.bind(*v),
+        }
+    }
+}
+
+/// Nine columns per entry, in a fixed order.
+///
+/// The order is load-bearing: the same bind list feeds the staleness check, the
+/// update and the delete, so a column reordered in one statement's SQL without
+/// being reordered here writes one entry's `confidence` into another's `source`
+/// — silently, and only on a record of two or more objects.
+const ENTRY_COLS: usize = 9;
+
+/// `(?, ?, …), (?, ?, …), …` — `n` entries of [`ENTRY_COLS`] columns.
+fn values_list(n: usize) -> String {
+    let one = (0..ENTRY_COLS).map(|_| "?").collect::<Vec<_>>().join(", ");
+    (0..n)
+        .map(|_| format!("({one})"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The bind list for a record's entries, in [`ENTRY_COLS`] order.
+fn entry_binds(record: &UndoRecord) -> Vec<P> {
+    let mut out = Vec::with_capacity(record.entries.len() * ENTRY_COLS);
+    for e in &record.entries {
+        out.push(P::Text(Some(e.object_id.clone())));
+        out.push(P::Bool(e.before.row_existed));
+        out.push(P::Bool(e.after.row_existed));
+        out.push(P::Real(e.before.confidence));
+        out.push(P::Text(e.before.source.clone()));
+        out.push(P::Text(e.before.created_at.clone()));
+        out.push(P::Real(e.after.confidence));
+        out.push(P::Text(e.after.source.clone()));
+        out.push(P::Text(e.after.created_at.clone()));
+    }
+    out
+}
+
+/// A statement bound to `binds`, on either engine, returning rows affected.
+async fn affected(store: &Store, sql: &str, binds: &[P]) -> Result<usize, UndoError> {
+    macro_rules! go {
+        ($p:expr, $q:expr, $bind:ident) => {{
+            let mut qb = sqlx::query($q);
+            for b in binds {
+                qb = b.$bind(qb);
+            }
+            qb.execute($p)
+                .await
+                .map_err(StoreError::Query)?
+                .rows_affected() as usize
+        }};
+    }
+    match store {
+        Store::Sqlite(p) => Ok(go!(p, sql, bind_sqlite)),
+        Store::Postgres(p) => {
+            let bound = Store::bind_sql(sql);
+            Ok(go!(p, &bound, bind_pg))
+        }
+    }
+}
+
+/// The entries whose current state is not the record's `after` state.
+///
+/// The join IS the check: a row matches only when all three value columns are
+/// what the record says they were. A `SELECT`, so it writes nothing and is safe
+/// to run against a stale record.
+///
+/// The `aex = 0` arm tests the *absence* of a matching row, which is the case a
+/// per-column comparison cannot express: an entry whose `after` was a real row
+/// and whose row is now gone has no columns left to compare, and a
+/// `LEFT JOIN … IS NULL` is how that absence is spelled.
+///
+/// # The flags are booleans, not integers
+///
+/// Measured, and the failure is quiet. A `VALUES` list takes one type per
+/// column across all rows, so a flag bound as an integer is a column the
+/// engine may type as anything. Comparing it to `1` then goes wrong in the way
+/// that is hardest to notice: SQLite returns fewer rows than the data actually
+/// contains — a `COUNT(*)` that looks correct and is simply too small — and
+/// Postgres refuses outright with `VALUES types bigint and text cannot be
+/// matched`. Neither engine reports a problem, so the only way to find this is
+/// to write a test that puts two different rows through the same statement.
+///
+/// The fix is upstream of the SQL: the flag is bound as a `bool`, so the CTE
+/// column is a real boolean in both engines and `e.bex` is a plain boolean
+/// comparison. Casting the integer instead does not work — Postgres rejects
+/// `CAST(? AS BOOLEAN)` on a bigint with `cannot cast type bigint to boolean`,
+/// and `IS TRUE` on an integer column with `argument of IS TRUE must be type
+/// boolean, not type bigint` — so there is no spelling of this that survives
+/// except binding the right type.
+async fn undo_stale(store: &Store, record: &UndoRecord) -> Result<Vec<String>, UndoError> {
+    use sqlx::Row;
+    let n = record.entries.len();
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    let sql = format!(
+        "WITH e(object_id, bex, aex, bc, bs, ba, ac, as_, aa) AS (VALUES {}) \
+         SELECT e.object_id FROM e \
+         LEFT JOIN object_tag t \
+           ON t.object_id = e.object_id AND t.tag_id = ? \
+          AND t.confidence IS NOT DISTINCT FROM e.ac \
+          AND t.source     IS NOT DISTINCT FROM e.as_ \
+          AND t.created_at IS NOT DISTINCT FROM e.aa \
+         WHERE (e.aex AND t.object_id IS NULL) \
+            OR (NOT e.aex AND t.object_id IS NOT NULL) \
+         ORDER BY e.object_id",
+        values_list(n)
+    );
+    // The tag id binds AFTER the entries: the `VALUES` block owns the first
+    // `n * ENTRY_COLS` placeholders, and the `?` in the join clause is the next.
+    let mut binds = entry_binds(record);
+    binds.push(P::Text(Some(record.tag_id.clone())));
+
+    macro_rules! go {
+        ($p:expr, $q:expr, $bind:ident) => {{
+            let mut qb = sqlx::query($q);
+            for b in &binds {
+                qb = b.$bind(qb);
+            }
+            qb.fetch_all($p)
+                .await
+                .map_err(StoreError::Query)?
+                .into_iter()
+                .map(|r| {
+                    r.try_get::<String, _>(0)
+                        .map_err(|e| UndoError::Store(StoreError::Query(e)))
+                })
+                .collect::<Result<Vec<String>, UndoError>>()
+        }};
+    }
+    match store {
+        Store::Sqlite(p) => go!(p, &sql, bind_sqlite),
+        Store::Postgres(p) => {
+            let bound = Store::bind_sql(&sql);
+            go!(p, &bound, bind_pg)
+        }
+    }
+}
+
+/// Restore every entry, returning how many rows were touched.
+///
+/// Two statements, not one: entries whose `before` said the row existed are
+/// updated, and the rest have the row deleted. The sets are disjoint, and
+/// merging them into one statement would need a `CASE` per column — exactly the
+/// cleverness that misplaces a NULL.
+///
+/// Each is ONE statement, and that is the property that matters. A statement is
+/// atomic, so the restore lands entirely or not at all. A loop of per-object
+/// statements is a loop of partial outcomes: a failure on the third leaves the
+/// first two applied with the record still un-consumed, and the retry then
+/// refuses the whole undo as superseded, leaving the user with no way forward.
+/// This needs no transaction, which is the only reason it is possible in a store
+/// whose error type has no transaction variant.
+///
+/// # The shape is `WITH e(...) AS (VALUES ...) UPDATE ... FROM e`
+///
+/// Measured, not assumed. `UPDATE … FROM (VALUES …)` — the obvious spelling —
+/// is a syntax error on SQLite (`near "(": syntax error`): SQLite has no
+/// `VALUES` table form in a `FROM` clause. A CTE is accepted by both, as is the
+/// same statement with the condition in the `WHERE`. Both ways of using the CTE
+/// *without* naming it fail — SQLite says `no such column: e.b`, Postgres says
+/// `missing FROM-clause entry for table "e"` — so the `FROM e` is required
+/// rather than stylistic.
+async fn undo_restore(store: &Store, record: &UndoRecord) -> Result<usize, UndoError> {
+    let n = record.entries.len();
+    if n == 0 {
+        return Ok(0);
+    }
+    let values = values_list(n);
+
+    // Update: the tag id binds LAST. The `VALUES` block is textually first in
+    // the statement, so it owns the low-numbered placeholders; binding the tag
+    // first shifted every entry by one, and the join then matched nothing --
+    // an `UPDATE ... FROM` that silently affects zero rows, with no error to
+    // notice.
+    let update = format!(
+        "WITH e(object_id, bex, aex, bc, bs, ba, ac, as_, aa) AS (VALUES {values}) \
+         UPDATE object_tag SET confidence = e.bc, source = e.bs, created_at = e.ba \
+         FROM e \
+         WHERE object_tag.object_id = e.object_id AND object_tag.tag_id = ? \
+           AND e.bex \
+           AND object_tag.confidence IS NOT DISTINCT FROM e.ac \
+           AND object_tag.source     IS NOT DISTINCT FROM e.as_ \
+           AND object_tag.created_at IS NOT DISTINCT FROM e.aa"
+    );
+    let mut upd = entry_binds(record);
+    upd.push(P::Text(Some(record.tag_id.clone())));
+    let updated = affected(store, &update, &upd).await?;
+
+    // Delete: the entries lead, and the tag id binds twice after, because it is
+    // both the tuple's second element and the subquery's parameter.
+    //
+    // The `EXISTS` is the staleness condition, not a precondition somebody else
+    // checked: the row must still be in the entry's `after` state to be
+    // deleted. Written as `NOT EXISTS` -- which is the tempting reading, "undo
+    // the add, so remove it" -- the statement matches nothing at all and the
+    // whole undo silently restores nothing.
+    let delete = format!(
+        "WITH e(object_id, bex, aex, bc, bs, ba, ac, as_, aa) AS (VALUES {values}) \
+         DELETE FROM object_tag \
+         WHERE (object_tag.object_id, object_tag.tag_id) IN (\
+           SELECT e.object_id, ? FROM e \
+           WHERE NOT e.bex \
+             AND EXISTS (SELECT 1 FROM object_tag t \
+                         WHERE t.object_id = e.object_id AND t.tag_id = ? \
+                           AND t.confidence IS NOT DISTINCT FROM e.ac \
+                           AND t.source     IS NOT DISTINCT FROM e.as_ \
+                           AND t.created_at IS NOT DISTINCT FROM e.aa))"
+    );
+    let mut del = entry_binds(record);
+    del.push(P::Text(Some(record.tag_id.clone())));
+    del.push(P::Text(Some(record.tag_id.clone())));
+    let deleted = affected(store, &delete, &del).await?;
+
+    Ok(updated + deleted)
 }
 
 impl Store {
@@ -744,86 +967,43 @@ impl Store {
             return Err(UndoError::Expired);
         }
 
-        // `tag_id` is the record's own, which is what makes the check
-        // meaningful: `after` was recorded against this tag, so it has to be
-        // compared against this tag.
-        let tag_id = &record.tag_id;
-
-        // Pass one: is every object still in the state the record says? A stale
-        // record is the common refusal, and refusing it before any write is
-        // what makes the all-or-nothing hold for it.
-        //
-        // This reads rather than writes, so it is a plain read and the cost is
-        // one query per object in the record. Pass two re-checks the same
-        // condition inside each write, which is what closes the window a read
-        // cannot: a concurrent commit between here and there is caught by the
-        // row count rather than by this loop.
-        for e in &record.entries {
-            let now_state = tag_state(self, &e.object_id, tag_id).await?;
-            if !e.after.matches(&now_state) {
-                return Err(UndoError::Superseded {
-                    object_id: e.object_id.clone(),
-                });
-            }
+        // Pass one: is every object still in the state the record says? The
+        // check is a `SELECT` that names every object that moved, so the error
+        // says which one rather than that some object did.
+        let stale = undo_stale(self, &record).await?;
+        if let Some(object_id) = stale.into_iter().next() {
+            return Err(UndoError::Superseded { object_id });
         }
 
-        // Pass two: write, each statement conditional on the same expected
-        // state. A 0 here means somebody committed between the two passes, and
-        // it is reported as superseded rather than silently overwriting them.
+        // Pass two: restore, one statement per shape over the whole record, so
+        // it is atomic across objects and a partial restore is not expressible.
         //
-        // NOT atomic across objects: this is a loop of separate statements and
-        // a 0 on the third leaves the first two applied. That is the known gap,
-        // and it is named in `docs/plans/implementation-plan.md` rather than
-        // left to be discovered -- closing it needs a transaction, which this
-        // store's error type has no variant for.
-        for e in &record.entries {
-            let affected = if e.before.row_existed {
-                undo_affected!(
-                    self,
-                    "UPDATE object_tag
-                     SET confidence = ?, source = ?, created_at = ?
-                     WHERE object_id = ? AND tag_id = ?
-                       AND confidence IS NOT DISTINCT FROM ?
-                       AND source     IS NOT DISTINCT FROM ?
-                       AND created_at IS NOT DISTINCT FROM ?",
-                    e.before.confidence,
-                    e.before.source.clone(),
-                    e.before.created_at.clone(),
-                    e.object_id.clone(),
-                    tag_id.clone(),
-                    e.after.confidence,
-                    e.after.source.clone(),
-                    e.after.created_at.clone(),
-                )
-            } else {
-                undo_affected!(
-                    self,
-                    "DELETE FROM object_tag
-                     WHERE object_id = ? AND tag_id = ?
-                       AND confidence IS NOT DISTINCT FROM ?
-                       AND source     IS NOT DISTINCT FROM ?
-                       AND created_at IS NOT DISTINCT FROM ?",
-                    e.object_id.clone(),
-                    tag_id.clone(),
-                    e.after.confidence,
-                    e.after.source.clone(),
-                    e.after.created_at.clone(),
-                )
-            };
-
-            if affected == 0 {
-                return Err(UndoError::Superseded {
-                    object_id: e.object_id.clone(),
-                });
-            }
+        // The staleness check is re-expressed inside both statements rather than
+        // trusted from pass one, because a check-then-write is a race: between
+        // the two, somebody else commits. The condition is the same comparison
+        // in both, and the row count says how many actually moved, so a
+        // concurrent writer surfaces as a short count instead of silently
+        // overwriting their write.
+        let restored = undo_restore(self, &record).await?;
+        if restored < record.entries.len() {
+            // Nothing is half-written -- both statements are atomic -- so the
+            // record is untouched and the object that moved is still findable.
+            let object_id = undo_stale(self, &record)
+                .await?
+                .into_iter()
+                .next()
+                .unwrap_or_default();
+            return Err(UndoError::Superseded { object_id });
         }
 
-        undo_exec!(
+        // The record is consumed only after a complete restore, so a refused
+        // undo stays retryable and a successful one cannot be replayed.
+        affected(
             self,
             "UPDATE undo_record SET undone_at = ? WHERE id = ? AND undone_at IS NULL",
-            now,
-            id.to_string(),
-        );
+            &[P::Text(Some(now)), P::Text(Some(id.to_string()))],
+        )
+        .await?;
 
         Ok(record.entries.len())
     }

@@ -719,3 +719,166 @@ async fn a_refusal_names_the_object_rather_than_failing_opaquely() {
         }
     });
 }
+
+/// The claim the set-based restore exists to make: a record spanning both
+/// shapes restores entirely, or not at all.
+///
+/// Three objects, and the record mixes the two shapes a real write produces --
+/// one object that already had the tag (an UPDATE) and two that did not (a
+/// DELETE). Then the second object's row is changed behind the undo's back, so
+/// the record goes stale. The undo must restore NOTHING: not the first object's
+/// update, not the third object's delete.
+///
+/// This is the case a loop cannot get right. The loop restores what it has
+/// already walked past before it reaches the stale object, leaving the user with
+/// a half-undone write and a refusal -- and the refusal tells them to pick a
+/// different action when the action is the one they just pressed.
+#[tokio::test]
+async fn a_stale_object_stops_every_object_in_the_record_not_just_its_own() {
+    on_each_store!(|store| {
+        let (tag, a) = tag_and_object(&store, "mix-a").await;
+        let (_, b) = tag_and_object(&store, "mix-b").await;
+        let (_, c) = tag_and_object(&store, "mix-c").await;
+
+        // `a` already has the tag, so undoing it is an UPDATE.
+        put_tag_row(&store, &a, &tag, Some(0.3), Some("manual")).await;
+
+        // The write, which is the state every entry's `after` describes. `b` and
+        // `c` had no row before it, so undoing them is a DELETE. Without this
+        // step the record is stale the moment it is written, and the undo
+        // refusing it would be the module working rather than failing.
+        for o in [&a, &b, &c] {
+            put_tag_row(&store, o, &tag, Some(0.9), Some("bulk")).await;
+        }
+
+        let over = UndoEntry {
+            object_id: a.clone(),
+            before: TagState {
+                row_existed: true,
+                confidence: Some(0.3),
+                source: Some("manual".into()),
+                created_at: None,
+            },
+            after: TagState {
+                row_existed: true,
+                confidence: Some(0.9),
+                source: Some("bulk".into()),
+                created_at: None,
+            },
+        };
+        store
+            .record_undo(&Write {
+                id: "r-mix".into(),
+                caller: "me".into(),
+                action: "bulk.tag.add".into(),
+                tag_id: tag.clone(),
+                requested: 3,
+                matched: 3,
+                entries: vec![over, created_entry(&b), created_entry(&c)],
+            })
+            .await
+            .expect("record");
+
+        // Somebody edits `b` after the write. The record is stale, and `b` is the
+        // object that moved.
+        put_tag_row(&store, &b, &tag, Some(0.7), Some("other")).await;
+
+        let err = store
+            .undo("r-mix", "me")
+            .await
+            .expect_err("a stale object refuses the whole record");
+        assert_eq!(
+            err,
+            UndoError::Superseded {
+                object_id: b.clone()
+            },
+            "the refusal names the object that moved"
+        );
+
+        // The point. `a` still carries exactly what the write left, and `c`'s
+        // row still exists. A loop would have restored both before reaching `b`.
+        let a_now = undo::tag_state(&store, &a, &tag).await.expect("read a");
+        assert_eq!(
+            a_now.confidence,
+            Some(0.9),
+            "a is untouched: the update half of the record did not apply"
+        );
+        assert_eq!(a_now.source, Some("bulk".into()));
+        assert_eq!(
+            tag_row_count(&store, &c, &tag).await,
+            1,
+            "c is untouched: the delete half of the record did not apply"
+        );
+    });
+}
+
+/// The other half of the claim: with nothing stale, a record spanning both
+/// shapes restores all of them, and the two shapes do not interfere.
+///
+/// An UPDATE and a DELETE over a shared `VALUES` block is where a bind-order or
+/// column-order slip shows up: the wrong column written, or one entry's values
+/// landing on another's row. The two updating objects therefore carry DIFFERENT
+/// prior values, so a slip is visible rather than merely possible.
+#[tokio::test]
+async fn a_record_mixing_both_shapes_restores_every_object() {
+    on_each_store!(|store| {
+        let (tag, a) = tag_and_object(&store, "both-a").await;
+        let (_, b) = tag_and_object(&store, "both-b").await;
+        let (_, c) = tag_and_object(&store, "both-c").await;
+        let (_, d) = tag_and_object(&store, "both-d").await;
+
+        put_tag_row(&store, &a, &tag, Some(0.11), Some("import")).await;
+        put_tag_row(&store, &d, &tag, Some(0.77), Some("import")).await;
+        for o in [&a, &b, &c, &d] {
+            put_tag_row(&store, o, &tag, Some(0.9), Some("bulk")).await;
+        }
+
+        let over = |object_id: &str, before_conf: f64| UndoEntry {
+            object_id: object_id.to_string(),
+            before: TagState {
+                row_existed: true,
+                confidence: Some(before_conf),
+                source: Some("import".into()),
+                created_at: None,
+            },
+            after: TagState {
+                row_existed: true,
+                confidence: Some(0.9),
+                source: Some("bulk".into()),
+                created_at: None,
+            },
+        };
+        store
+            .record_undo(&Write {
+                id: "r-both".into(),
+                caller: "me".into(),
+                action: "bulk.tag.add".into(),
+                tag_id: tag.clone(),
+                requested: 4,
+                matched: 4,
+                entries: vec![
+                    over(&a, 0.11),
+                    over(&d, 0.77),
+                    created_entry(&b),
+                    created_entry(&c),
+                ],
+            })
+            .await
+            .expect("record");
+
+        let n = store.undo("r-both", "me").await.expect("the undo applies");
+        assert_eq!(n, 4, "every entry in the record is restored");
+
+        // Each updated object comes back carrying ITS OWN prior values.
+        let a_now = undo::tag_state(&store, &a, &tag).await.expect("read a");
+        assert_eq!(a_now.confidence, Some(0.11), "a's own value, not d's");
+        assert_eq!(a_now.source, Some("import".into()));
+        let d_now = undo::tag_state(&store, &d, &tag).await.expect("read d");
+        assert_eq!(d_now.confidence, Some(0.77), "d's own value, not a's");
+        assert_eq!(d_now.source, Some("import".into()));
+
+        // And both deleted rows are gone rather than blanked.
+        assert_eq!(tag_row_count(&store, &b, &tag).await, 0, "b's row is gone");
+        assert_eq!(tag_row_count(&store, &c, &tag).await, 0, "c's row is gone");
+    });
+}

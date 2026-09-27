@@ -998,3 +998,26 @@ Four things worth knowing before touching this:
 Expiry is enforced **on read** (`undoable()` and `undo()`), never by a sweeper —
 a sweeper is a second thing to run, schedule, and notice has stopped. Rows are
 never deleted: an expired record is invisible and inert, not gone.
+
+**The restore is atomic across objects**, and this took three measurements to
+get right. It is one statement per shape over a `VALUES` CTE, and a statement is
+atomic — so no transaction, which matters because `StoreError` has no
+transaction variant and adding one is a change to shared infrastructure. Three
+things had to be measured rather than assumed, and each fails *quietly* rather
+than loudly:
+
+- `UPDATE … FROM (VALUES …)` is a syntax error on SQLite. Only the CTE form
+  works on both, and the `FROM e` is mandatory.
+- The two flag columns are bound as **booleans**, never integers. A `VALUES`
+  list fixes one type per column across all rows, so an integer flag becomes a
+  column the engine may type as anything — and `= 1` then matches *too few*
+  rows on SQLite and errors on Postgres. Casting does not fix it; binding the
+  right type is the only spelling that survives.
+- The `?` bind order follows the placeholders' **textual** order, so the
+  `VALUES` block owns the low-numbered ones. Reversed, every entry shifts by
+  one and the statement reports zero rows affected with no error.
+
+This is the kind of code where a passing test suite is not evidence. The bug
+that started this was a loop that wrote the first object before discovering the
+third was stale; the tests all passed until one was written that put *different
+rows* through the *same statement*.
