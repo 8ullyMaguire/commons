@@ -14,7 +14,11 @@
 //!   parsed.
 //! * [`face`] — detection and embedding (§7.1 steps 1 and 2).
 //! * [`sidecar`] — the on-disk vector index, deliberately not a SQL table.
+//! * [`asr`] — local speech recognition (§5.8). Behind an engine trait, so
+//!   whisper.cpp and an ONNX model are interchangeable, and so the timing
+//!   arithmetic in [`asr::chunker`] is testable without either one installed.
 
+pub mod asr;
 pub mod face;
 pub mod model;
 pub mod sidecar;
