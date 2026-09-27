@@ -2908,6 +2908,13 @@ monotonic and within 200 ms of a hand-checked transcript. Assert a corrected
 word becomes a proposal, not a silent overwrite.
 **Done when:** both exist.
 
+**Spec:** `docs/spec/t-p6-004-interviews.md`.
+
+**Split out of this ticket:** the *Q&A search* page. The deliverable that makes
+it possible is a searchable word-level transcript, and a search UI built before
+any transcript exists would be speculative. Recorded here so it is a named
+follow-on rather than a silently dropped half of the ticket.
+
 ### T-P6-005 — Cast, DLNA, external players
 
 **Spec:** §11.2, §11.3
