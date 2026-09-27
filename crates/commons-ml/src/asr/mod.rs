@@ -22,6 +22,7 @@
 pub mod audio;
 pub mod chunker;
 pub mod engine;
+pub mod whisper_cpp;
 
 pub use audio::{AudioError, Pcm16kMono, SAMPLE_RATE};
 pub use chunker::{Chunk, Chunker, Stamped, CHUNK_MS, MIN_AUDIO_MS};
