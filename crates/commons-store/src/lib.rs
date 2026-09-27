@@ -27,6 +27,7 @@ pub mod query;
 pub mod relations;
 pub mod search;
 pub mod tags;
+pub mod undo;
 
 pub use db::{
     artifact_kinds, clear_jobs, file_path_and_state, file_rows, insert_artifact, insert_file,
