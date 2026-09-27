@@ -29,12 +29,16 @@
   import {
     fetchMediaCaps,
     fetchPlayback,
+    fetchFunscriptTimeline,
+    fetchFunscripts,
     fetchSubtitleTracks,
     savePlayback,
     type MediaCaps,
     type SubtitleTrack
   } from '$lib/api/client.js';
   import SubtitleControls from '$lib/player/SubtitleControls.svelte';
+  import FunscriptPlayer from '$lib/player/FunscriptPlayer.svelte';
+  import type { FunscriptTimeline } from '$lib/player/funscript.js';
   import {
     NO_SUBTITLES,
     subtitleLabel,
@@ -111,6 +115,23 @@
    * property of this viewing, not of the file.
    */
   let subOffset = $state<number | null>(null);
+
+  // ---- funscripts (T-P6-003) ----
+  //
+  // `null` is BOTH "no script" and "the request failed", deliberately: a
+  // timeline is a nice-to-have on a video, and a player that refuses to play
+  // because a sidecar is unhappy would be a far worse outcome than a video
+  // with no interactive track. The reason it is fetched here rather than by
+  // the component is the same as the subtitles: the whole path -- fetch,
+  // parse, shape -- is real, and a hand-built prop would skip the part that
+  // can be wrong.
+  let funTimeline = $state<FunscriptTimeline | null>(null);
+  /**
+   * The user's own pause (#2762): a pause that stops the DEVICE as well as
+   * the video. Separate from `paused`, which is what the transport says, or
+   // the component would stop the device every time the browser buffered.
+   */
+  let funManualPause = $state(false);
 
   /**
    * Take the list route's answer and turn it into what the component renders.
@@ -592,6 +613,21 @@
       fetchSubtitleTracks(objectId)
         .then((list) => applyTracks(list))
         .catch(() => applyTracks(null));
+      // Funscripts (T-P6-003). Two requests, because a 404 on the LIST means
+      // there is no script and there is nothing to ask for, while a list that
+      // succeeds and a timeline that 404s means the file was deleted between
+      // the two -- a state a player should not render as an empty ruler.
+      fetchFunscripts(objectId)
+        .then((list) => {
+          if (!list || list.length === 0) {
+            funTimeline = null;
+            return;
+          }
+          return fetchFunscriptTimeline(objectId, list[0].id, { interpolation: 'linear' })
+            .then((t) => (funTimeline = t))
+            .catch(() => (funTimeline = null));
+        })
+        .catch(() => (funTimeline = null));
     }
     const tick = setInterval(() => save('tick'), 1000);
     // The resume retry's driver. `canplay` fires once; a seek it could not
@@ -661,7 +697,7 @@
     on:loadedmetadata={onLoadedMetadata}
     on:canplay={onCanPlay}
     on:error={onError}
-    on:play={() => ((playing = true), poke())}
+    on:play={() => ((playing = true), (paused = false), poke())}
     on:pause={() => ((playing = false), (paused = true), poke())}
     on:pointerdown={onHoldStart}
     on:pointermove={onHoldMove}
@@ -704,6 +740,21 @@
         which track starts visible -- live in `player.ts` and are shared with the
         <track label> attributes above, so the menu and the track cannot drift.
       -->
+      <!--
+        The funscript player (T-P6-003). It reads the media element's own clock
+        every frame rather than integrating one of its own, which is what makes
+        it drift-free; `manualPause` is the user's pause and is separate from
+        `paused`, which is only what the transport says.
+      -->
+      <FunscriptPlayer
+        timeline={funTimeline}
+        {video}
+        interpolation="linear"
+        manualPause={funManualPause}
+        transportPaused={paused}
+        onmanualpausechange={(on) => (funManualPause = on)}
+      />
+
       <SubtitleControls
         tracks={subTracks}
         selected={subSelected}

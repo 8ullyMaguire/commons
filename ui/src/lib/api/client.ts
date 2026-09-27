@@ -462,6 +462,37 @@ export interface SubtitleTrack {
   readonly format: string;
 }
 
+export interface FunscriptSummary {
+  id: string;
+  path: string;
+  axis_count: number;
+  metadata?: FunscriptMetadata | null;
+}
+
+export interface FunscriptMetadata {
+  title?: string | null;
+  author?: string | null;
+  version?: string | null;
+  source?: string | null;
+}
+
+export interface FunscriptActionWire {
+  at_ms: number;
+  position: number;
+}
+
+export interface FunscriptAxisWire {
+  name: string;
+  actions: FunscriptActionWire[];
+}
+
+export interface FunscriptTimeline {
+  axes: FunscriptAxisWire[];
+  source: string;
+  warnings: string[];
+  span_ms: number;
+}
+
 export interface SubtitleTrackList {
   readonly tracks: readonly SubtitleTrack[];
 }
@@ -486,6 +517,56 @@ export async function fetchSubtitleTracks(
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`subtitles: ${res.status}`);
   return (await res.json()) as SubtitleTrackList;
+}
+
+/**
+ * The funscripts recorded for an object, or null when it has none.
+ *
+ * A 404 is `null` for the same reason it is for subtitles: absent and denied
+ * answer identically (the server folds them together deliberately), and a
+ * player must not be able to tell them apart.
+ */
+export async function fetchFunscripts(
+  objectId: string,
+  signal?: AbortSignal
+): Promise<FunscriptSummary[] | null> {
+  const res = await fetch(mediaPath(objectId, '/funscripts'), { signal });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`funscripts: ${res.status}`);
+  return (await res.json()) as FunscriptSummary[];
+}
+
+/**
+ * One script's timeline: every axis, every action.
+ *
+ * `interpolation` and `durationMs` are query parameters rather than client-side
+ * options on purpose. The server already has the parsed script and already
+ * knows how to read the space between two actions, and a client that
+ * re-interpolated would be a second implementation of the same rule that could
+ * disagree with the first at an action -- the one place where the two answers
+ * are required to be identical.
+ *
+ * A 422 is thrown rather than returned: the file is there and will not parse,
+ * which is a different thing from there being no script, and the detail says
+ * why.
+ */
+export async function fetchFunscriptTimeline(
+  objectId: string,
+  funscriptId: string,
+  opts: { interpolation?: Interpolation; durationMs?: number; signal?: AbortSignal } = {}
+): Promise<FunscriptTimeline> {
+  const q = new URLSearchParams();
+  if (opts.interpolation) q.set('interpolation', opts.interpolation);
+  // Absent rather than zero: the server reads a zero duration as "not asked
+  // for" and clamping to it would erase every action.
+  if (opts.durationMs) q.set('duration_ms', String(opts.durationMs));
+  const qs = q.toString();
+  const res = await fetch(
+    mediaPath(objectId, `/funscripts/${funscriptId}`) + (qs ? `?${qs}` : ''),
+    { signal: opts.signal }
+  );
+  if (!res.ok) throw new Error(`funscript: ${res.status}`);
+  return (await res.json()) as FunscriptTimeline;
 }
 
 /**
