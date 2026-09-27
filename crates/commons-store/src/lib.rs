@@ -17,6 +17,7 @@
 //! caller and there is no way to compile an object query without it.
 
 pub mod bulk;
+pub mod create;
 pub mod db;
 pub mod filter_ast;
 pub mod folders;

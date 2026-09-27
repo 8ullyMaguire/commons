@@ -420,6 +420,45 @@ the truth for every mutant and looked like four survivors. A harness that
 reports the wrong answer is worse than no harness, because it sends you looking
 for holes that are not there.
 
+### T-P5-006 item 10, part 1 — the create path, and a test that could not tell
+
+`create-from-subpage` (#3694) and `create-all-missing` (#1017, #3122) are the
+only two actions in §10.10 with **no object to operate on**, which is why they
+are a module (`create.rs`) rather than two more methods on `Store`. The id is
+derived, not generated, so re-running an import is a no-op; it covers only what
+the object *is*, because an id covering `organized` would rename the object on
+every review and dangle every tag and relation pointing at it. A new object
+gets an `unverified` consent row in the same batch: without one it matches no
+tier list anywhere and is created and then **unfindable**, including by the
+person who made it. 20 tests on both engines, 5 mutations killed.
+
+Three findings worth keeping.
+
+**A test that named a boundary but did not straddle it.** The first
+boundary test asserted `("ab","c")` and `("a","bc")` must hash differently. They
+do — and it could not tell a correct implementation from a comma-joined one,
+because `"scene,ab,c,,"` and `"scene,a,bc,,"` are different strings. The
+mutation survived. The real collision needs a separator *inside* a field:
+`title="a", date="b,c"` and `title="a,b", date="c"` both join to
+`scene,a,b,c,,`. A test that names a boundary must be built from the boundary's
+actual arithmetic, not from a pair that merely looks adjacent. This is the
+fourth time this shape has appeared in this repo, and the rule is now in the
+`codebase-invariant-testing` skill.
+
+**Two engines, two behaviours, and only one of them loud.** Binding
+`organized` as `COALESCE(?, organized)` to let `None` take the schema default
+works in neither engine: inside an INSERT's VALUES list there is no `organized`
+row in scope, so SQLite fails the statement outright and Postgres treats it as a
+column reference and never substitutes anything. The default now lives in Rust,
+and because that duplicates the migration, a test reads the default out of the
+live schema on both engines and asserts the two agree.
+
+**A repo-wide invariant caught the new tests, and was right to.** The
+`consent_filter` scan fails on any test file that reads `object` without a tier
+predicate — including mine. The fix was to make the reads carry the predicate,
+not to add an allowlist entry: these tests assert the consent tier of the object
+they made, so the read should be under a stated tier.
+
 ### T-P5-006 item 9, part 2 — the media route, and three survivors in a row
 
 The `Range` parser, the `/media/:object_id` route, and the same lesson from a
