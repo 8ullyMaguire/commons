@@ -619,3 +619,93 @@ export function savePlayback(
     if (!res.ok) throw new Error(`playback: ${res.status}`);
   });
 }
+
+
+/*
+ * Share links. Spec §9.5 (#5612), plan T-P5-007 part 2B.
+ *
+ * These live here rather than in `share.ts` because this file is the only place
+ * in the UI allowed to call `fetch` — see `tests/invariants.test.ts`. The
+ * alternative was to widen that allowlist, and widening it for one feature is
+ * how the rule stops meaning anything: the invariant exists precisely because
+ * adding a `fetch('/api/thumbs')` to a component is a two-line change that
+ * nothing else complains about. So `share.ts` holds the types and the
+ * classification, and this holds the three verbs.
+ *
+ * The token path encodes its argument. A link pasted with a stray character
+ * must not become a path that addresses a different route, and `/api/s/` is a
+ * prefix that a `/` in the token would otherwise walk straight out of.
+ */
+function sharePath(token: string, suffix = ''): string {
+  return `/api/s/${encodeURIComponent(token)}${suffix}`;
+}
+
+/** Read a JSON body, tolerating one that is not JSON. */
+async function readShareJson(res: Response): Promise<Record<string, unknown>> {
+  try {
+    return (await res.json()) as Record<string, unknown>;
+  } catch {
+    // An HTML error page from a proxy in front of the server is the common
+    // case, and throwing here would turn "the link did not open" into "the app
+    // is broken".
+    return {};
+  }
+}
+
+export interface ShareWire {
+  /** Present on a denial. Mirrors Rust's `DeniedReason`. */
+  readonly error?: string;
+  readonly target_kind?: string;
+  readonly target_id?: string;
+  readonly can_download?: boolean;
+  readonly needs_password?: boolean;
+}
+
+/** `GET /api/s/:token`. Returns the raw wire body; `share.ts` classifies it. */
+export async function fetchShare(
+  token: string,
+  signal?: AbortSignal
+): Promise<{ status: number; body: ShareWire }> {
+  const res = await fetch(sharePath(token), { signal });
+  if (res.status === 403) {
+    return { status: 403, body: await readShareJson(res) };
+  }
+  if (!res.ok) throw new Error(`share: ${res.status}`);
+  return { status: res.status, body: await readShareJson(res) };
+}
+
+export async function fetchShares(signal?: AbortSignal): Promise<unknown> {
+  const res = await fetch('/api/share', { signal });
+  if (!res.ok) throw new Error(`share list: ${res.status}`);
+  return res.json();
+}
+
+export async function postShare(
+  body: Record<string, unknown>,
+  signal?: AbortSignal
+): Promise<{ status: number; body: ShareWire & Record<string, unknown> }> {
+  const res = await fetch('/api/share', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    signal
+  });
+  const parsed = await readShareJson(res);
+  if (!res.ok) {
+    // A 422 names the field. Passing the message through verbatim is the
+    // difference between "expires_in_hours must be between 1 and 2160" in the
+    // UI and "could not create link", which is a bug report instead of a fix.
+    throw new Error(
+      typeof parsed.error === 'string' ? parsed.error : `share: ${res.status}`
+    );
+  }
+  return { status: res.status, body: parsed as ShareWire & Record<string, unknown> };
+}
+
+export async function deleteShare(id: string, signal?: AbortSignal): Promise<void> {
+  const res = await fetch(`/api/share/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    signal
+  });
+  if (!res.ok) throw new Error(`share revoke: ${res.status}`);
+}

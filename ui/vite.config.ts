@@ -44,7 +44,21 @@ const kit: KitConfig = {
    * bundle rather than the prerendered HTML.
    */
   prerender: {
-    entries: ['*']
+    entries: ['*'],
+    /**
+     * A share token is unguessable, so `/s/[token]` can never be reached by
+     * crawling and must not be prerendered -- there is no page to write and no
+     * filename to write it to. It is served by the `200.html` SPA fallback
+     * like any other deep link, which is why it needs nothing from the build.
+     *
+     * 'ignore' is the choice rather than 'warn' or 'fail': 'fail' breaks the
+     * build for a route that is correct, and 'warn' prints a line that is
+     * expected every single time, which trains the reader to ignore warnings.
+     * The one thing that would be wrong here is prerendering it, and that is
+     * what 'ignore' prevents -- the route is skipped, not silently rendered
+     * with a missing parameter.
+     */
+    handleUnseenRoutes: 'ignore'
   },
   adapter: adapter({
     pages: 'build',
