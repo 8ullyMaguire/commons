@@ -2577,10 +2577,44 @@ palette, is in `ui/src/lib/api/keys.ts`, `commands.ts`, `commands-ui.ts` and
 specced in `docs/spec/t-p5-006-folders.md`. Item 7, undo for destructive
 actions, is in `crates/commons-store/src/undo.rs` with migration
 `0019_undo.sql` and the client model in `ui/src/lib/api/undo.ts`, specced in
-`docs/spec/t-p5-006-undo.md`. Two atomicity gaps are named there and left open,
-both needing a transaction `StoreError` has no variant for: the bulk write is
-not atomic with its undo record, and `undo`'s write loop is not atomic across
-objects.
+`docs/spec/t-p5-006-undo.md`.
+
+**Both atomicity gaps the spec named are closed, and neither needed a
+transaction — which is worth recording, because the spec's own conclusion was
+that they did.** A statement is atomic, so making `undo`'s restore one
+statement per shape over a `VALUES` set buys all-or-nothing across objects with
+no transaction at all, and `StoreError` still has no transaction variant. The
+portable shape is `WITH e(...) AS (VALUES ...) UPDATE ... FROM e`; three things
+about it had to be measured rather than read, and all three fail *quietly*:
+
+- `UPDATE ... FROM (VALUES ...)` is a syntax error on SQLite, so only the CTE
+  form works on both — and the `FROM e` is mandatory, not stylistic.
+- The flag columns must be bound as **booleans**. A `VALUES` list takes one type
+  per column across all rows, so an integer flag becomes a column the engine may
+  type as anything, and `= 1` returns *fewer rows than the data contains* on
+  SQLite while Postgres refuses outright. Casting does not rescue it.
+- The `?` bind order follows the placeholders' **textual** order, so the
+  `VALUES` block owns the low-numbered ones; reversed, every entry shifts by one
+  and the statement reports zero rows affected with no error.
+
+Every one of these was invisible while the tests restored a single entry: with
+one row there is nothing to disagree about a column type. That is the lesson
+worth carrying, and it is the same shape as the T-P5-003 lesson above — a
+fixture with one of everything cannot test a filter, and a test with one row in a
+set statement cannot test a set.
+
+The second gap — the bulk write not being atomic with its undo record — cannot
+be closed with a statement either, and the measurement says so: a
+data-modifying CTE (`WITH rec AS (INSERT ...) INSERT ... SELECT ... FROM rec`) is
+Postgres-only, and SQLite rejects it with `near "INSERT": syntax error`. So the
+**ordering** carries the safety instead, and it is the opposite of the obvious
+one. `Store::prepare_undo` writes the record *before* the write it reverses: a
+crash between the two leaves a record describing a write that never happened,
+which the staleness check refuses and which expires on its own. The other order
+leaves a write the user cannot reverse. This works only because the check is a
+statement about the *row* rather than about the record — so a test now builds
+that residue directly and requires the press to be refused, which makes the
+check load-bearing for a second unrelated reason.
 
 **The "done when" for this item was wrong, and the gap it hid is worth more
 than the item.** "That test exists" is satisfied by a guard that prompts on
