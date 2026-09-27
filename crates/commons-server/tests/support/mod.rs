@@ -88,7 +88,7 @@ impl TestApp {
         Self { state, _dir: dir }
     }
 
-    fn store(&self) -> &commons_store::Store {
+    pub fn store(&self) -> &commons_store::Store {
         &self.state.store
     }
 
@@ -136,6 +136,15 @@ impl TestApp {
             .uri(path)
             .body(Body::empty())
             .expect("a request");
+        self.send(request).await
+    }
+
+    /// An arbitrary request, for the tests that need their own headers.
+    ///
+    /// `get` and `put_json` cover most cases; this exists for `Range`, which
+    /// needs a header on a path that is not `/media/:id` and a body assertion
+    /// the convenience helpers do not return.
+    pub async fn send_raw(&self, request: Request<Body>) -> TestResponse {
         self.send(request).await
     }
 
@@ -305,4 +314,95 @@ async fn seed(app: &TestApp, path: &Path, size: i64, tier: &str, state: &str) ->
     }
 
     object_id
+}
+
+/// Write a real video a browser CANNOT play, and seed it as an object.
+///
+/// The proxy's whole reason to exist is a codec no browser decodes, so a
+/// fixture of random bytes would pass every route test while exercising
+/// nothing: ffprobe would fail on it, the route would answer 422 "cannot read
+/// the source", and a green suite would say the transcode path works. So this
+/// generates a genuine Matroska file with an MPEG-4 Part 2 video stream --
+/// a codec that exists, that ffmpeg reads, and that no browser plays.
+///
+/// Returns the object id. Skips (returning `None`) when ffmpeg is absent, so a
+/// machine without it does not fail the suite; the tests that need it assert on
+/// the `None` case rather than silently passing.
+pub async fn unplayable_video_fixture(app: &TestApp) -> Option<String> {
+    if !ffmpeg_available() {
+        return None;
+    }
+    let name = format!("{}.mkv", uuid::Uuid::new_v4().simple());
+    let path = app._dir.path().join(&name);
+    let made = std::process::Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=1:size=320x240:rate=10",
+            "-c:v",
+            "mpeg4",
+            "-an",
+        ])
+        .arg(&path)
+        .output()
+        .expect("ffmpeg runs");
+    if !made.status.success() {
+        return None;
+    }
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) as i64;
+    Some(seed(app, &path, size, "self_published", "present").await)
+}
+
+/// A browser-playable video: h264 in mp4, which the ladder passes through.
+pub async fn playable_video_fixture(app: &TestApp) -> Option<String> {
+    if !ffmpeg_available() {
+        return None;
+    }
+    let name = format!("{}.mp4", uuid::Uuid::new_v4().simple());
+    let path = app._dir.path().join(&name);
+    let made = std::process::Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=1:size=320x240:rate=10",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-an",
+        ])
+        .arg(&path)
+        .output()
+        .expect("ffmpeg runs");
+    if !made.status.success() {
+        return None;
+    }
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) as i64;
+    Some(seed(app, &path, size, "self_published", "present").await)
+}
+
+fn ffmpeg_available() -> bool {
+    std::process::Command::new("ffmpeg")
+        .arg("-version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Record a content hash on an object's file, as the index would.
+///
+/// Without this the proxy falls back to a `size-mtime` digest, which works and
+/// is tested -- but the *hash* path is the one that runs in production, and a
+/// test that only ever exercises the fallback leaves the real path unproven.
+pub async fn set_content_hash(app: &TestApp, object_id: &str, hash: &str) {
+    sqlx::query("UPDATE file SET hash_blake3 = ? WHERE object_id = ?")
+        .bind(hash)
+        .bind(object_id)
+        .execute(app.store().pool())
+        .await
+        .expect("the hash is recorded");
 }

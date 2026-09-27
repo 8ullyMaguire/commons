@@ -127,8 +127,18 @@ Four, and no more. Each one exists because a named feature in §11.1 needs it.
 |---|---|---|
 | `/media/:object_id/playback` | GET | resume position, A/B loop points, completed |
 | `/media/:object_id/playback` | PUT | save the above |
-| `/media/:object_id/subtitles` | GET | list embedded tracks + discovered sidecars |
 | `/media/:id/proxy.m3u8` | GET | on-demand proxy, §11.5 |
+
+**Three, not four.** An earlier draft of this spec listed
+`/media/:object_id/subtitles` here as well, on the reasoning that §6 warns
+about `TextTrack`'s ceiling. That was wrong, and the plan already says so:
+**T-P6-002 owns subtitles outright** — `commons-media/src/subtitles.rs`,
+`ui/src/lib/player/SubtitleTrack.svelte`, ASS/SSA, SRT, VTT, and the
+sidecar scan. Building the route here would have split one feature across two
+tickets and left the harder half (parsing, cue survival across a transcode) with
+no owner. The ticket's "subtitle toggle" line means the *toggle* appears in the
+control bar here and it calls a route that exists by the time it is wired; the
+route itself is T-P6-002.
 
 **`playback` GET returns 200 with the default state for an unknown object**, not
 404. The player asks every object it opens, and a not-yet-played object is the
@@ -177,19 +187,33 @@ claim frame accuracy it does not have when `fps` is absent from the probe. When
 `fps` is missing, fall back to time-seek and say so in the control bar — a
 "frame accurate" label on a time seek is a lie the user can see.
 
+**ffprobe's `format_name` is a LIST, and matching it as one name is a silent
+cost.** An mp4 file reports `mov,mp4,m4a,3gp,3g2,mj2`; a matroska file reports
+`matroska,webm`. Comparing that whole string against `"mp4"` never matches, so
+*every file in the library* is judged unplayable and proxied — minutes of CPU and
+a disk per file, for files that needed nothing. The proxy still works, so nothing
+looks broken. The same trap has a second form: a **silent** file has an empty
+`audio_codec`, which matches no codec whitelist either, so every clip with the
+audio stripped is proxied for the same non-reason. Both are membership tests
+("is `mp4` one of these comma-separated names", "is the audio codec absent *or*
+recognised") and both are now pinned by tests that use ffprobe's real strings
+rather than a tidy single name.
+
 **Codec fallback needs a *decision*, and a silent one is the failure.** If
 `MediaInfo` says the browser cannot play the container, the player must either
 use the proxy or refuse with a named reason. It must not construct a `<video>`
 that never fires `canplay` and leave the user on a black rectangle with a
 spinner. The refusal names the codec and offers the proxy.
 
-**Subtitles: embedded tracks are a browser API with a hard ceiling, and sidecars
-are a filesystem convention.** `TextTrack` cannot carry SSA/ASS styling, and the
-list of embedded tracks the browser reports is not the list the file contains.
-So the server reports both (from `MediaInfo` for embedded, from a sidecar scan
-for external) and the client attaches what it can, naming what it dropped. A
-subtitle toggle that silently shows nothing is the same failure as the black
-rectangle.
+**Subtitles are T-P6-002, and the ceiling is a browser API rather than ours.**
+`TextTrack` cannot carry SSA/ASS styling, and the list of embedded tracks the
+browser reports is not the list the file contains. Both are true here and both
+belong to the next ticket, so the *only* thing this ticket owes them is the
+toggle's position in the control bar and a client that does not lie about it: a
+track the browser refused to attach must be shown as unavailable rather than
+offered and silently doing nothing. A subtitle toggle that silently shows nothing
+is the same failure as the black rectangle. The route and the parsing are
+T-P6-002's.
 
 ---
 

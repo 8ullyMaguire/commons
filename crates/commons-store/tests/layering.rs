@@ -126,6 +126,20 @@ fn allowed_edges() -> BTreeMap<&'static str, &'static [&'static str]> {
             "commons-store",
             "commons-consent",
             "commons-plugin",
+            // T-P6-001. The player needs an on-demand proxy (§11.5), and
+            // transcoding lives in `commons-media` with no other home: the
+            // store must not depend on it (the store is the database layer and
+            // `commons-media` already depends on the store, so that edge would
+            // be a cycle), and `commons-api` cannot be depended on for it
+            // without this route living behind a second router that does not
+            // exist yet. So the server is the one crate that sees both, and the
+            // table says so here rather than being amended silently.
+            //
+            // The route calls `Transcoder` and probes; it does not reimplement
+            // either. What it owns is the consent gate, the rung choice, and the
+            // status codes -- and the consent gate is `Store::media_path`, the
+            // same call `/media/:id` makes, so there is one gate rather than two.
+            "commons-media",
         ],
     );
     // The Tauri shell. It is a client of the server, so it depends on the

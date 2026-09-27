@@ -74,6 +74,33 @@ pub fn xdg_cache_dir() -> PathBuf {
     base("XDG_CACHE_HOME", ".cache")
 }
 
+impl Config {
+    /// Where derived data lives: transcodes, and anything else recomputable.
+    ///
+    /// **Not `data_dir`.** The distinction is the whole reason XDG has three
+    /// directories, and putting a proxy cache beside the library means a user
+    /// who clears "cached data" to reclaim disk has to decide whether they are
+    /// deleting their index. Derived data is safe to delete and expensive to
+    /// rebuild, which is the definition of a cache.
+    ///
+    /// **But under `data_dir` when one is set**, and that is not a convenience.
+    /// A test harness gives each test its own `data_dir` precisely so tests
+    /// cannot see each other's files; a cache keyed off a global XDG path
+    /// ignores that and writes into the developer's real
+    /// `~/.cache/commons/proxy`. That is not only untidy: parallel tests then
+    /// share one cache, so a test asserting "the proxy succeeded" can be reading
+    /// a file another test wrote, and the suite passes or fails depending on
+    /// scheduling. A per-test cache is the only way the proxy tests mean
+    /// anything.
+    pub fn cache_dir(&self) -> PathBuf {
+        if self.data_dir.as_os_str().is_empty() {
+            xdg_cache_dir()
+        } else {
+            self.data_dir.join("cache")
+        }
+    }
+}
+
 fn base(var: &str, fallback: &str) -> PathBuf {
     match std::env::var_os(var) {
         Some(v) if !v.is_empty() => PathBuf::from(v).join("commons"),

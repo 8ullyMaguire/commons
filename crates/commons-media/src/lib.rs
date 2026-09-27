@@ -13,6 +13,7 @@ pub mod hwaccel;
 pub mod hwaccel_plan;
 pub mod probe;
 pub mod thumbs;
+pub mod transcode;
 
 pub use archive::{validate_member, Listing, Member, MemberKind, Rejection, Validated};
 pub use archive_io::{list_zip, ExtractionPlan, Format};

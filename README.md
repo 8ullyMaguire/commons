@@ -263,7 +263,7 @@ regenerated corpus does not show up as a diff.
 - [`docs/plans/implementation-plan.md`](docs/plans/implementation-plan.md) —
   the implementation plan, with per-ticket status and commit hashes
 - [`docs/prompts/phase-11-stashapp-ecosystem.md`](docs/prompts/phase-11-stashapp-ecosystem.md)
-  — the brief for adapting the `stashapp` ecosystem (728 YAML scrapers, 163
+  — the brief for adapting the `stashapp` ecosystem (727 YAML scrapers, 163
   Python scrapers, 79 plugin directories, 11 themes). Written to be handed to an
   agent with no memory of this project. **Not started, and deliberately last**:
   the rest of the project comes first. Its counts come from
@@ -316,8 +316,9 @@ that is a worse lie than "I do not know yet".
 | 1 — Content types | done | detection, probing, segments, archives, hashing, the five remaining content types, and the windowed grid |
 | 2 — Library and scale | 8 of 8 | watcher, checkpoints, hashing, move detection, missing volumes, durable job queue, hardware acceleration, storage accounting, encoder configuration, the locator consent gate, the throughput budget |
 | 3 | 2 of 8 | scan pipeline and face detection done; clustering, the performer model, still to come |
-| 4–6 | planned | federation, UI surfaces, review and automation |
-| 11 — community ecosystem | planned, **last** | adapt the stashapp ecosystem rather than fork it: 728 YAML scrapers, 163 Python scrapers, 79 plugin directories, 11 theme directories. Nothing is vendored — every artifact is fetched at install time, pinned by commit. |
+| 4–5 | planned | federation, UI surfaces, review and automation |
+| 6 — player and plugins | in progress | the player's resume/A-B-loop state and the on-demand proxy are done (T-P6-001); subtitles, Funscript, transcription, Cast/DLNA and Jellyfin compatibility to come |
+| 11 — community ecosystem | planned, **last** | adapt the stashapp ecosystem rather than fork it: 727 YAML scrapers, 163 Python scrapers, 79 plugin directories, 11 theme directories. Nothing is vendored — every artifact is fetched at install time, pinned by commit. |
 
 Closed so far, among others: #3530 (one file, many objects — 38 comments
 upstream), #2276 (multi-part scenes), #2511 (virtual compilations), #1258
@@ -335,10 +336,10 @@ than forking them. It is deliberately the **last** phase: it is the only one
 whose value is entirely borrowed, and every ticket before it is about the thing
 it plugs into.
 
-The two repositories are two different problems. 728 of the 981 scraper
+The two repositories are two different problems. 727 of the 981 scraper
 definitions are **declarative YAML** — an entry-point table plus XPath/JSON
 selectors and a `postProcess` chain — so adapting them means writing an
-interpreter for that little language, not translating 728 programs. The other
+interpreter for that little language, not translating 727 programs. The other
 163 are ordinary Python on a `py_common` runtime, and the 79 plugin directories
 are Python or TypeScript. Those get a **compatibility layer**, because
 reimplementing 155 working programs in Rust is a different project with a worse

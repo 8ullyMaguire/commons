@@ -68,7 +68,7 @@ const MAX_WHOLE_BODY: u64 = 64 * 1024 * 1024;
 /// moderation grant, and serving ordinary media under it would mean reading a
 /// file with a permission taken for a different reason — the same shape of bug
 /// as the `steward()` allowlist that `filter_ast`'s own docs record.
-fn local_caller() -> CallerId {
+pub fn local_caller() -> CallerId {
     CallerId {
         // A stable id, not a fresh UUID per request. Nothing keys off it yet,
         // but a per-request identity is the kind of thing that later becomes
@@ -293,7 +293,7 @@ fn partial_response(path: &Path, bytes: Vec<u8>, range: ByteRange, len: u64) -> 
         .into_response()
 }
 
-fn not_found() -> Response {
+pub fn not_found() -> Response {
     json_error(StatusCode::NOT_FOUND, "not_found", "")
 }
 

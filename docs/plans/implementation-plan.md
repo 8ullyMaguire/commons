@@ -3245,6 +3245,16 @@ explicitly out of scope).
 numbers are what T-P11-001's accept criteria assert, so the count is a test
 rather than a comment.
 
+**Then the staleness gate fired the same day**, which is the point of having it:
+upstream pushed again between writing the fixture and writing the documents, and
+728 became **727** YAML with a new site directory (216 → **217**) and one more
+`.md` (65 → **66**). The total under `scrapers/` is unchanged at 981, so this is
+a restructure — a new site's scraper arrived as markdown and two flat YAMLs moved
+into a site directory — not a deletion. Worth stating plainly: a pinned count of
+somebody else's repository is stale before it is written down, and the only
+defensible response to a change is to re-measure and re-assert, never to widen
+the check until it stops firing.
+
 **`./scripts/measure-ecosystem.py` regenerates them** from the GitHub API into
 `docs/ecosystem-2026-09-27.json`, and `verify.sh` runs it with `--check`, so a
 push upstream that changes a count fails the gate until the documents are updated
@@ -3261,7 +3271,7 @@ explicitly out of scope.
 
 | Repo | Stars | Shape | Scope here |
 |---|---|---|---|
-| `CommunityScrapers` | 841 | **728 YAML + 163 Python** scraper definitions, AGPL-3.0 | **T-P11-001…004** |
+| `CommunityScrapers` | 841 | **727 YAML + 163 Python** scraper definitions, AGPL-3.0 | **T-P11-001…004** |
 | `CommunityScripts` | 284 | **462 plugin files / 79 directories, 11 themes**, 2 userscripts, AGPL-3.0 | **T-P11-005, 007** |
 | `stash-box` | 371 | Go + TS metadata / perceptual-hash API, MIT | **a service to be a client of** — §0 of the brief |
 | `stash` (Go) | 13k | the reference implementation | not a target |
@@ -3278,7 +3288,7 @@ not: it is merely dormant, and it is a reading source, not a target.
 The two that matter here split into **two genuinely different problems**, and
 this plan does not pretend otherwise.
 
-**The scrapers are mostly declarative.** 728 of the 981 files under
+**The scrapers are mostly declarative.** 727 of the 981 files under
 `scrapers/` are YAML: an entry-point table (`performerByURL`, `sceneByFragment`,
 `galleryByURL`, …) plus `xPathScrapers` / `jsonScrapers` blocks that are
 selectors, `concat`, and a `postProcess` list of `replace` / `parseDate` /
@@ -3295,7 +3305,7 @@ the manifest *is* the YAML, and the plugin id is the directory name.
 
 ### The three decisions this phase rests on
 
-1. **The YAML scraper language gets an interpreter, not a translator.** 728
+1. **The YAML scraper language gets an interpreter, not a translator.** 727
    definitions is too many to translate one at a time, and they are declarative
    by design. A converter would need to stay in sync with every upstream
    construct forever; an interpreter is written once and tracks the language.
@@ -3323,7 +3333,7 @@ nothing; it builds a catalogue of `(repo, ref, path, kind, declared
 requirements)` and can pin a set of artifacts to exact commit SHAs.
 
 **Accept:** a test against a recorded fixture of the two trees that asserts the
-catalogue sees 728 YAML scrapers, 163 Python scrapers, 79 plugin directories and
+catalogue sees 727 YAML scrapers, 163 Python scrapers, 79 plugin directories and
 11 theme directories — and fails loudly if upstream has diverged, because a number that
 changes silently is a number nobody is maintaining. Pinning is by SHA, and a
 test asserts a SHAs-pinned fetch is byte-identical across two runs.
@@ -3339,7 +3349,7 @@ and JSON selector languages, and the `postProcess` chain
 `filter` / `setDefault`). Selectors evaluate against `lxml`-shaped results via
 `quick-xml` plus an HTML5 tree, not against a browser.
 
-**Accept:** every construct in the 728-file corpus is either implemented or
+**Accept:** every construct in the 727-file corpus is either implemented or
 recorded in a `unimplemented.yaml` list with the count. A differential test
 runs the interpreter over N real scrapers and asserts it produces a *structurally
 valid* result object; it does **not** assert equality with stash, because
@@ -3499,7 +3509,7 @@ results: an unsupported field returns an error, because a scraper that reads
   acceptance test, not by mockup. Visual design is a separate exercise.
 - **No scraper *authoring*.** Phase 11 makes the existing
   `stashapp/CommunityScrapers` and `CommunityScripts` ecosystems usable here —
-  728 declarative YAML scrapers, 163 Python scrapers, 79 plugin directories and
+  727 declarative YAML scrapers, 163 Python scrapers, 79 plugin directories and
   11 theme directories (28 CSS files). Writing *new* per-site scrapers is out of
   scope: it adapts what the community already maintains and does not fork it.
   That is also why Phase 11 vendors nothing (§0.1 rule 6).

@@ -12,6 +12,12 @@ license.workspace = true
 commons-core = { workspace = true }
 commons-store = { workspace = true }
 commons-plugin = { workspace = true }
+# T-P6-001: the on-demand proxy transcodes, and `commons-media` is the only
+# crate that knows how. The layering table in `commons-store/tests/layering.rs`
+# is amended in the same commit -- a dependency added without amending the
+# table is a test failure, which is the point of having one.
+commons-media = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "postgres"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

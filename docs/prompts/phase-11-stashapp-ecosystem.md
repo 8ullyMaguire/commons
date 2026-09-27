@@ -61,7 +61,7 @@ and a confident 484-file total before the layout trap in §1.1 was understood.
 
 | Repository | State | What it is |
 |---|---|---|
-| `stashapp/CommunityScrapers` | active, AGPL-3.0 | 981 files under `scrapers/`: **728 YAML**, 163 Python, 90 other (65 `.md`, 7 `.rb`); 9 `py_common`; 19 in `lib/` |
+| `stashapp/CommunityScrapers` | active, AGPL-3.0 | 981 files under `scrapers/`: **727 YAML**, 163 Python, 91 other (66 `.md`, 7 `.rb`); 9 `py_common`; 19 in `lib/` |
 | `stashapp/CommunityScripts` | active, AGPL-3.0 | 462 plugin files across **79 plugin directories** (95 Python, 84 `.md`, 79 `.yml`, 58 `.js`, 55 `.css`); **11 theme directories**, 53 theme files, 28 CSS; 2 userscripts; 19 archived |
 | `stashapp/stash-box` | active, TypeScript/Go | The metadata + perceptual-hash API. **A service, not an artifact** — see §5 |
 | `stashapp/stash` | active, Go, 13k★ | The reference implementation. Not a target |
@@ -95,7 +95,7 @@ Worth stating before any ticket touches the tree, because it is the kind of
 structural fact that produces a confident wrong count rather than an error:
 
 - **497** scrapers are flat: `scrapers/<Site>.yml`
-- **231** are grouped: `scrapers/<Site>/<Site>.yml`, across 216 site directories
+- **232** are grouped: `scrapers/<Site>/<Site>.yml`, across 217 site directories
 
 A glob of `scrapers/*.yml` reads 497 and misses a third. A recursive walk with a
 fixed depth assumption is worse — the first version of the measurement script in
@@ -108,7 +108,7 @@ wrong first and is the one to keep.
 
 ### 2.1 The YAML scrapers get an interpreter, not a translator
 
-728 declarative definitions, each a program in a small language: an entry-point
+727 declarative definitions, each a program in a small language: an entry-point
 table, XPath and JSON selector languages, and a `postProcess` chain
 (`replace` / `parseDate` / `truncate` / `map` / `dateFormat` / `switch` /
 `filter` / `setDefault`).
@@ -163,12 +163,12 @@ between a working phase and an impressive-looking one.
 
 **T-P11-001 — the counts are a test, not a comment.**
 A fixture of both trees, and a test that fails loudly if upstream has diverged.
-"728 YAML scrapers" written in a comment is a number that was true once; the same
+"727 YAML scrapers" written in a comment is a number that was true once; the same
 number as an assertion is a number somebody maintains. Pinning is by SHA, and a
 test asserts a SHA-pinned fetch is byte-identical across two runs.
 
 **T-P11-002 — coverage, asserted non-growing.**
-Every construct in the 728-file corpus is either implemented or recorded in
+Every construct in the 727-file corpus is either implemented or recorded in
 `unimplemented.yaml` with a count. A differential test runs the interpreter over
 real scrapers and asserts a **structurally valid** result object. It does *not*
 assert equality with stash — stash's Go implementation is the reference, and a

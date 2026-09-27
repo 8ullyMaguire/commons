@@ -277,3 +277,122 @@ fn an_unknown_codec_is_proxied_rather_than_trusted() {
 }
 
 use commons_store::playback::{rung_for, SourceCaps};
+
+/// ffprobe's `format_name` is a comma-joined LIST, and treating it as one name
+/// made every file in the library need a proxy.
+///
+/// This is worth its own test because the failure is silent in the worst way:
+/// the proxy still works, so nothing is visibly broken — the server just
+/// transcodes files that needed nothing, spending minutes of CPU and filling a
+/// disk. A green suite said "the ladder decides correctly" throughout.
+#[test]
+fn a_comma_joined_container_list_is_matched_by_membership() {
+    // What ffprobe actually prints for an mp4.
+    let mp4 = SourceCaps {
+        container: "mov,mp4,m4a,3gp,3g2,mj2".into(),
+        video_codec: "h264".into(),
+        audio_codec: "aac".into(),
+    };
+    assert_eq!(
+        rung_for(&mp4),
+        None,
+        "a browser plays h264/aac in mp4, so no rung is needed"
+    );
+
+    // And for a matroska file, which is `matroska,webm` -- so it IS a webm as
+    // far as a browser is concerned, and h264 in it is NOT playable.
+    let mkv_h264 = SourceCaps {
+        container: "matroska,webm".into(),
+        video_codec: "h264".into(),
+        audio_codec: "aac".into(),
+    };
+    assert_eq!(
+        rung_for(&mkv_h264),
+        Some(Rung::Highest),
+        "h264 muxed into matroska plays in no browser, whatever the list says"
+    );
+
+    // A webm with a webm codec is fine, and the same list must not break it.
+    let webm = SourceCaps {
+        container: "matroska,webm".into(),
+        video_codec: "vp9".into(),
+        audio_codec: "opus".into(),
+    };
+    assert_eq!(rung_for(&webm), None, "vp9/opus in webm needs no proxy");
+
+    // Surrounding whitespace in the list is ffprobe's, not ours, but trimming
+    // costs nothing and an untrimmed " mp4" would miss.
+    let spaced = SourceCaps {
+        container: " mov, mp4 , m4a ".into(),
+        video_codec: "h264".into(),
+        audio_codec: "aac".into(),
+    };
+    assert_eq!(
+        rung_for(&spaced),
+        None,
+        "the list is trimmed before matching"
+    );
+}
+
+/// A list containing BOTH webm and mp4 is an mp4 to a browser, and the pairing
+/// check must agree with the membership check.
+#[test]
+fn a_list_containing_both_containers_is_treated_as_mp4() {
+    let both = SourceCaps {
+        container: "matroska,webm,mp4".into(),
+        video_codec: "h264".into(),
+        audio_codec: "aac".into(),
+    };
+    assert_eq!(
+        rung_for(&both),
+        None,
+        "mp4 is in the list, so h264/aac plays and no rung is needed"
+    );
+}
+
+/// A file with NO audio stream needs no proxy.
+///
+/// Silence is common in a video library — a screen recording, a clip with the
+/// audio stripped — and `SourceCaps::audio_codec` is the empty string for it. An
+/// empty string matches no codec whitelist, so the first version of the ladder
+/// transcoded every silent file in the library: minutes of CPU each, for a file
+/// a browser plays perfectly well. The failure is invisible from the outside,
+/// because the proxy works.
+#[test]
+fn a_silent_playable_file_needs_no_rung() {
+    for container in ["mov,mp4,m4a,3gp,3g2,mj2", "matroska,webm"] {
+        let silent = SourceCaps {
+            container: container.into(),
+            video_codec: "h264".into(),
+            audio_codec: String::new(),
+        };
+        // h264 in a matroska/webm is not playable regardless of silence, so the
+        // only container that can pass here is the mp4 one.
+        let expected = if container.starts_with("mov") {
+            None
+        } else {
+            Some(Rung::Highest)
+        };
+        assert_eq!(
+            rung_for(&silent),
+            expected,
+            "container {container} with no audio stream"
+        );
+    }
+}
+
+/// Silence must not become a blanket pass: an unrecognised CODEC still needs a
+/// proxy, and a silent file with an unplayable video still needs one.
+#[test]
+fn silence_does_not_excuse_an_unplayable_video() {
+    let silent_bad_video = SourceCaps {
+        container: "mov,mp4,m4a".into(),
+        video_codec: "mpeg4".into(),
+        audio_codec: String::new(),
+    };
+    assert_eq!(
+        rung_for(&silent_bad_video),
+        Some(Rung::Highest),
+        "silence plus mpeg4 is still a file no browser plays"
+    );
+}

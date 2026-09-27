@@ -825,6 +825,7 @@ version = "0.1.0"
 dependencies = [
  "axum 0.7.9",
  "commons-core",
+ "commons-media",
  "commons-plugin",
  "commons-store",
  "http-body-util",

@@ -22,6 +22,7 @@ pub mod config;
 pub mod health;
 pub mod media;
 pub mod playback;
+pub mod proxy;
 pub mod range;
 
 pub use config::{Config, RunMode};
@@ -92,6 +93,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .merge(health_routes)
         .route("/media/:object_id", get(media::get_media))
+        .route("/media/:object_id/proxy.m3u8", get(proxy::get_proxy))
         .route(
             "/media/:object_id/playback",
             get(playback::get_playback_route).put(playback::put_playback_route),

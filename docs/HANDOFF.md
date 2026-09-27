@@ -1085,7 +1085,7 @@ so the count is a test rather than a comment:
 
 | | |
 |---|---|
-| `CommunityScrapers` (`master`) | 981 files under `scrapers/`: **728 YAML**, 163 Python, 90 other (65 `.md`, 7 `.rb`), 9 `py_common` |
+| `CommunityScrapers` (`master`) | 981 files under `scrapers/`: **727 YAML**, 163 Python, 91 other (66 `.md`, 7 `.rb`), 9 `py_common` |
 | `CommunityScripts` (`main`) | 462 plugin files across **79 plugin directories**; 11 theme directories, 53 theme files, 28 CSS; 2 userscripts; 19 archived |
 | Both | AGPL-3.0, actively pushed |
 | `stash` itself | Go, 13k stars — the reference implementation, not a target |
@@ -1093,7 +1093,7 @@ so the count is a test rather than a comment:
 
 Three decisions, and the reasoning matters more than the decisions:
 
-1. **The YAML scrapers get an interpreter, not a translator.** 728 declarative
+1. **The YAML scrapers get an interpreter, not a translator.** 727 declarative
    definitions, each a program in a small language (entry-point table, XPath and
    JSON selectors, a `postProcess` chain of `replace`/`parseDate`/`truncate`/
    `map`). A per-file converter has to track every upstream construct forever.
@@ -1621,3 +1621,61 @@ This is the kind of code where a passing test suite is not evidence. The bug
 that started this was a loop that wrote the first object before discovering the
 third was stale; the tests all passed until one was written that put *different
 rows* through the *same statement*.
+
+## The player's proxy: three bugs that were all silent
+
+T-P6-001's second half (the on-demand proxy, `commons-media/src/transcode.rs` and
+`commons-server/src/proxy.rs`) turned up three failures with the same shape:
+**nothing looked broken, and a green suite said it worked.** All three are now
+pinned by tests, and they are written up because the pattern is more useful than
+the fixes.
+
+**ffprobe's `format_name` is a comma-joined LIST.** An mp4 file reports
+`mov,mp4,m4a,3gp,3g2,mj2`; a matroska file reports `matroska,webm`. The ladder
+compared that whole string against `"mp4"`, so it never matched, and **every file
+in the library** was judged unplayable and proxied — a full transcode per file,
+for files that needed none. The proxy worked perfectly throughout. The same trap
+has a second form: a **silent** file has an empty `audio_codec`, which matches no
+codec whitelist either, so every clip with the audio stripped was proxied for the
+same non-reason. Both are now membership tests, and both tests use ffprobe's real
+strings rather than a tidy single name.
+
+**`scale='min(H,ih)':-2` scaled the WIDTH, not the height.** The rung is a
+height, so the height is what has to be bounded. The wrong version turned a
+160x120 fixture into 120x90 and would have made a 1080p rung produce a
+portrait-shaped video. The fix is `scale=-2:'min(H,ih)'` — and the second half
+of that fix is the part nobody expects: **`force_divisible_by=2` is mandatory.**
+`-2` makes the derived dimension even, but the aspect-ratio fit rounds *after* it,
+so a 16:9 source at 480 comes out 853x480 and libx264 refuses with `width not
+divisible by 2 (853x480)` — an error naming the encoder, not the filter, and one
+that only appears for some aspect ratios.
+
+**The partial file must keep its extension.** ffmpeg infers its muxer from the
+output filename, so `foo.mp4.partial` fails with `Error opening output files:
+Invalid argument` and never encodes at all. `foo.partial.mp4` is still
+distinguishable from a finished file and is something ffmpeg can write. The
+atomicity story is unchanged: writes go to a partial name and are renamed into
+place, so a killed encode is never served — and `is_cached` checks **size**, not
+existence, because a zero-byte leftover is exactly what a killed encode leaves.
+
+Two more worth carrying forward:
+
+- **`Config::cache_dir()` is under `data_dir` when one is set.** Keying the proxy
+  cache off a global XDG path ignored the per-test `data_dir`, so the tests were
+  writing into the developer's real `~/.cache/commons/proxy` and parallel tests
+  shared one cache. A suite whose passes depend on scheduling is not a suite.
+- **A second encoder flag was my own logic inversion.** `assert!(!w.is_multiple_of(2))`
+  with the message "an odd width is unencodable" asserts the width IS odd. The
+  message was right and the predicate was wrong; had the width come out odd the
+  test would have passed and the encode would have failed. When a predicate and
+  its message disagree, one of them is a bug and the message is usually the one
+  that is telling the truth.
+
+**`commons-server` now depends on `commons-media`**, and the layering table in
+`commons-store/tests/layering.rs` says so with the reasoning attached. The store
+cannot own the transcode (`commons-media` already depends on the store, so that
+edge is a cycle), and `commons-api` is not where the route belongs while it is the
+only crate holding a second router that does not exist. The route calls
+`Transcoder` and probes; it does not reimplement either, and its consent gate is
+`Store::media_path` — the same call `/media/:id` makes, so there is one gate
+rather than two.

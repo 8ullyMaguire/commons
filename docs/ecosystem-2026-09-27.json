@@ -3,14 +3,14 @@
     "lib_files": 19,
     "py_common_files": 9,
     "ref": "master",
-    "scraper_site_dirs": 216,
+    "scraper_site_dirs": 217,
     "scrapers_dir_files": 981,
-    "scrapers_markdown": 65,
+    "scrapers_markdown": 66,
     "scrapers_python": 163,
     "scrapers_ruby": 7,
-    "scrapers_yaml": 728,
-    "scrapers_yaml_flat": 497,
-    "scrapers_yaml_grouped": 231,
+    "scrapers_yaml": 727,
+    "scrapers_yaml_flat": 495,
+    "scrapers_yaml_grouped": 232,
     "total_files": 1035
   },
   "CommunityScripts": {
@@ -29,7 +29,7 @@
     "userscript_dirs": 2,
     "userscript_files": 4
   },
-  "measured": "2026-09-27T09:52:08+02:00",
+  "measured": "2026-09-27T10:44:48+02:00",
   "org": "stashapp",
   "repo_count": 14,
   "repos": {
@@ -50,7 +50,7 @@
       "forks": 520,
       "language": "YAML",
       "license": "AGPL-3.0",
-      "pushed_at": "2026-09-26",
+      "pushed_at": "2026-09-27",
       "reason": "the declarative scraper corpus",
       "scope": "work",
       "stars": 841

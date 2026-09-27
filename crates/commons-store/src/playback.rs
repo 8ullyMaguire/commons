@@ -272,26 +272,52 @@ pub fn rung_for(caps: &SourceCaps) -> Option<Rung> {
     // Checking the three independently is the trap: `webm` + `h264` is
     // container-yes/codec-yes and plays nothing, because the browser will not
     // mux h264 into webm.
-    let (c_ok, v_ok, a_ok) = (
-        matches!(
-            caps.container.to_ascii_lowercase().as_str(),
-            "mp4" | "m4v" | "webm"
-        ),
+    // ffprobe's `format_name` is a COMMA-JOINED LIST, not a single name: an
+    // mp4 file reports `mov,mp4,m4a,3gp,3g2,mj2` and a matroska file reports
+    // `matroska,webm`. Matching the whole string against `"mp4"` therefore
+    // never matches anything, and every file in the library gets proxied --
+    // which is the expensive direction, and a silent one: the proxy "works",
+    // it is just transcoding files that needed nothing. So the container is
+    // tested for MEMBERSHIP of the list.
+    let containers: Vec<String> = caps
+        .container
+        .to_ascii_lowercase()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    let has_container = |names: &[&str]| containers.iter().any(|c| names.contains(&c.as_str()));
+
+    // **A file with no audio stream is not a file the browser cannot play.**
+    // `SourceCaps::audio_codec` is empty for a silent video, and an empty
+    // string matches no whitelist -- so the first version of this function
+    // transcoded every silent file in the library, which is a large fraction
+    // of a video library and entirely unplayable-looking to the user for no
+    // reason. Silence is a legitimate thing for a file to be, so an absent
+    // audio codec passes; an UNRECOGNISED one still fails.
+    let silent = caps.audio_codec.trim().is_empty();
+    let a_ok = silent
+        || matches!(
+            caps.audio_codec.to_ascii_lowercase().as_str(),
+            "aac" | "mp3" | "opus" | "vorbis" | "flac"
+        );
+
+    let (c_ok, v_ok) = (
+        has_container(&["mp4", "m4v", "webm"]),
         matches!(
             caps.video_codec.to_ascii_lowercase().as_str(),
             "h264" | "avc1" | "vp8" | "vp9" | "av01"
-        ),
-        matches!(
-            caps.audio_codec.to_ascii_lowercase().as_str(),
-            "aac" | "mp3" | "opus" | "vorbis" | "flac"
         ),
     );
     if !(c_ok && v_ok && a_ok) {
         return Some(Rung::Highest);
     }
     // Recognised on all three, and the pairing has to be real.
-    let webm = caps.container.eq_ignore_ascii_case("webm");
-    let mp4ish = matches!(caps.container.to_ascii_lowercase().as_str(), "mp4" | "m4v");
+    // The same list-membership rule for the pairing check: a file ffprobe calls
+    // `matroska,webm` IS a webm as far as a browser is concerned.
+    let webm = has_container(&["webm"]) && !has_container(&["mp4", "m4v"]);
+    let mp4ish = has_container(&["mp4", "m4v"]);
     let webm_video = matches!(
         caps.video_codec.to_ascii_lowercase().as_str(),
         "vp8" | "vp9" | "av01"
@@ -300,14 +326,18 @@ pub fn rung_for(caps: &SourceCaps) -> Option<Rung> {
         caps.video_codec.to_ascii_lowercase().as_str(),
         "h264" | "avc1"
     );
-    let webm_audio = matches!(
-        caps.audio_codec.to_ascii_lowercase().as_str(),
-        "opus" | "vorbis"
-    );
-    let mp4_audio = matches!(
-        caps.audio_codec.to_ascii_lowercase().as_str(),
-        "aac" | "mp3"
-    );
+    // Silence is compatible with either container, so it satisfies both
+    // branches rather than failing both.
+    let webm_audio = silent
+        || matches!(
+            caps.audio_codec.to_ascii_lowercase().as_str(),
+            "opus" | "vorbis"
+        );
+    let mp4_audio = silent
+        || matches!(
+            caps.audio_codec.to_ascii_lowercase().as_str(),
+            "aac" | "mp3"
+        );
 
     if (webm && webm_video && webm_audio) || (mp4ish && mp4_video && mp4_audio) {
         None
