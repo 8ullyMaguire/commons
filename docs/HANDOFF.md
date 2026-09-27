@@ -999,6 +999,15 @@ Expiry is enforced **on read** (`undoable()` and `undo()`), never by a sweeper �
 a sweeper is a second thing to run, schedule, and notice has stopped. Rows are
 never deleted: an expired record is invisible and inert, not gone.
 
+**The record is written BEFORE the write it reverses**, which is deliberate and
+the opposite of the obvious order. A data-modifying CTE would make them one
+statement and SQLite refuses it outright (`near "INSERT": syntax error` — an
+`INSERT` as a CTE body is not SQLite syntax), and a transaction is refused
+project-wide for a reason `search.rs` already records. So the ordering carries
+the safety: a crash between the two leaves a record describing a write that
+never happened, and undoing that is refused by the staleness check and expires
+on its own. The other order leaves a write the user cannot reverse.
+
 **The restore is atomic across objects**, and this took three measurements to
 get right. It is one statement per shape over a `VALUES` CTE, and a statement is
 atomic — so no transaction, which matters because `StoreError` has no

@@ -40,8 +40,12 @@
 //! tell which half happened.
 //!
 //! The check is a single query, not a read-then-write: between reading the
-//! current state and writing the prior state, another writer can commit. The
-//! whole operation is one transaction for the same reason.
+//! current state and writing the prior state, another writer can commit. So the
+//! check is repeated inside the write itself, and the write is one statement per
+//! shape over a `VALUES` set -- a statement is atomic, which buys
+//! all-or-nothing across objects without a transaction. See
+//! [`undo_restore`] for the three things about that statement that had to be
+//! measured rather than assumed.
 //!
 //! # Expiry is enforced on read
 //!
@@ -260,6 +264,24 @@ impl Write {
             entries,
         }
     }
+}
+
+/// What [`Store::prepare_undo`] did, so the caller knows whether it must
+/// bother writing a record's worth of state.
+///
+/// `Nothing` is a variant rather than an empty `Vec` because "the write reached
+/// no objects" and "the write reached objects and the record is on disk" are
+/// different facts, and a caller that checks `entries.is_empty()` cannot tell
+/// them apart.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PreparedUndo {
+    /// The write reached nothing, so no record was written.
+    Nothing,
+    /// The record is on disk. The caller now performs its write.
+    Recorded {
+        entries: Vec<UndoEntry>,
+        created: String,
+    },
 }
 
 /// A write, and how to reverse it.
@@ -707,46 +729,111 @@ impl Store {
     /// of the failure, but it is a gap. Recorded in
     /// `docs/plans/implementation-plan.md` rather than left to be discovered.
     pub async fn record_undo(&self, w: &Write) -> Result<(), UndoError> {
-        let (id, caller, action, tag_id) = (&w.id, &w.caller, &w.action, &w.tag_id);
-        let (requested, matched) = (w.requested, w.matched);
-        let entries = w.entries.as_slice();
         let created = commons_core::ts::now();
         let expires = expires_at(&created)?;
+        self.write_record(w, &created, &expires).await?;
+        for e in &w.entries {
+            self.write_entry(w, e).await?;
+        }
+        Ok(())
+    }
 
+    /// The `undo_record` row.
+    ///
+    /// Split out of [`Store::record_undo`] so the direct path and
+    /// [`Store::prepare_undo`] cannot drift into writing different columns for
+    /// the same record — the drift that would make a record unreadable by the
+    /// half of the code that reads it back.
+    async fn write_record(&self, w: &Write, created: &str, expires: &str) -> Result<(), UndoError> {
         undo_exec!(
             self,
             "INSERT INTO undo_record
                  (id, caller, action, tag_id, requested, matched, created_at, expires_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            id.to_string(),
-            caller.to_string(),
-            action.to_string(),
-            tag_id.to_string(),
-            requested,
-            matched,
-            created.clone(),
-            expires,
+            w.id.to_string(),
+            w.caller.to_string(),
+            w.action.to_string(),
+            w.tag_id.to_string(),
+            w.requested,
+            w.matched,
+            created.to_string(),
+            expires.to_string(),
         );
-
-        for e in entries {
-            undo_exec!(
-                self,
-                "INSERT INTO undo_entry (record_id, object_id, row_existed,
-                     before_confidence, before_source, before_created_at,
-                     after_confidence, after_source, after_created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                id.to_string(),
-                e.object_id.clone(),
-                e.before.row_existed as i64,
-                e.before.confidence,
-                e.before.source.clone(),
-                e.before.created_at.clone(),
-                e.after.confidence,
-                e.after.source.clone(),
-                e.after.created_at.clone(),
-            );
-        }
         Ok(())
+    }
+
+    /// One `undo_entry` row, for one object the write reached.
+    async fn write_entry(&self, w: &Write, e: &UndoEntry) -> Result<(), UndoError> {
+        undo_exec!(
+            self,
+            "INSERT INTO undo_entry (record_id, object_id, row_existed,
+                 before_confidence, before_source, before_created_at,
+                 after_confidence, after_source, after_created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            w.id.to_string(),
+            e.object_id.clone(),
+            e.before.row_existed as i64,
+            e.before.confidence,
+            e.before.source.clone(),
+            e.before.created_at.clone(),
+            e.after.confidence,
+            e.after.source.clone(),
+            e.after.created_at.clone(),
+        );
+        Ok(())
+    }
+
+    /// Prepare a write's undo record, and hand back what the write must do.
+    ///
+    /// # The ordering is the whole point
+    ///
+    /// The record is written BEFORE the write it reverses, never after, and the
+    /// two cannot be made atomic: a data-modifying CTE would be the portable
+    /// answer, and measured against both engines it is not — Postgres runs
+    /// `WITH rec AS (INSERT …) INSERT … SELECT … FROM rec` and SQLite refuses it
+    /// with `near "INSERT": syntax error`, because an `INSERT` as a CTE body is
+    /// not SQLite syntax. A transaction is the only spelling that works on both,
+    /// and `search.rs` already records why this codebase does not take one: the
+    /// `Transaction` executor is as engine-specific as the pool it came from, so
+    /// supporting both means one copy of the writer per engine, and the two
+    /// drift.
+    ///
+    /// So the ordering carries the safety instead, and it is the opposite of the
+    /// obvious one:
+    ///
+    /// - **Record first, write second.** A failure between them leaves a record
+    ///   describing a write that never happened. Pressing undo on it restores
+    ///   `before` onto a row the write never touched — and the staleness check
+    ///   refuses it, because the row is not in the `after` state the record
+    ///   claims. The record is inert and expires on its own.
+    /// - **Write first, record second** leaves a write the user cannot reverse,
+    ///   which is the failure the user actually experiences.
+    ///
+    /// The asymmetry is not a stylistic preference. It is the only ordering in
+    /// which the residue is recoverable, and it holds because the staleness check
+    /// is a statement about the row rather than about the record.
+    ///
+    /// The entries are read by the caller and written back by
+    /// [`Store::record_prepared`], so the prior state is captured before the
+    /// write and not reconstructed from it.
+    pub async fn prepare_undo(
+        &self,
+        w: &Write,
+        entries: Vec<UndoEntry>,
+    ) -> Result<PreparedUndo, UndoError> {
+        if entries.is_empty() {
+            // No record for a write that reached nothing. An empty record would
+            // be offerable to the user and would undo nothing, which is a
+            // button whose only effect is to disappear.
+            return Ok(PreparedUndo::Nothing);
+        }
+        let created = commons_core::ts::now();
+        let expires = expires_at(&created)?;
+        self.write_record(w, &created, &expires).await?;
+        for e in &entries {
+            self.write_entry(w, e).await?;
+        }
+        Ok(PreparedUndo::Recorded { entries, created })
     }
 
     /// Read one record and its entries.

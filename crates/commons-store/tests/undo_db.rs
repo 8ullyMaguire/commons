@@ -21,7 +21,9 @@ use harness::{postgres_store, sqlite_store};
 
 use commons_core::ts::now;
 use commons_store::db::Store;
-use commons_store::undo::{self, TagState, UndoEntry, UndoError, Write, UNDO_WINDOW_SECS};
+use commons_store::undo::{
+    self, PreparedUndo, TagState, UndoEntry, UndoError, Write, UNDO_WINDOW_SECS,
+};
 /// Run a block against both engines.
 ///
 /// Same reason as `folders_db.rs`: the two result types share no variant a
@@ -880,5 +882,158 @@ async fn a_record_mixing_both_shapes_restores_every_object() {
         // And both deleted rows are gone rather than blanked.
         assert_eq!(tag_row_count(&store, &b, &tag).await, 0, "b's row is gone");
         assert_eq!(tag_row_count(&store, &c, &tag).await, 0, "c's row is gone");
+    });
+}
+
+/// The ordering claim, and it is a claim about a failure that cannot be
+/// triggered from a test.
+///
+/// [`Store::prepare_undo`] writes the record BEFORE the write it reverses, so a
+/// crash between them leaves a record describing a write that never happened.
+/// This is safe only because undoing that record is refused — the row is not in
+/// the `after` state the record claims, so the staleness check stops it. If that
+/// check ever accepted it, the residue would restore `before` onto a row nobody
+/// edited, and the "safe direction" would be the unsafe one after all.
+///
+/// So the residue is built directly here: a record, a write that never ran, and
+/// the press.
+#[tokio::test]
+async fn a_record_whose_write_never_happened_is_refused_rather_than_replayed() {
+    on_each_store!(|store| {
+        let (tag, obj) = tag_and_object(&store, "residue").await;
+
+        // The row as it was BEFORE, and no write ever touches it.
+        put_tag_row(&store, &obj, &tag, Some(0.4), Some("manual")).await;
+
+        store
+            .record_undo(&Write {
+                id: "r-residue".into(),
+                caller: "me".into(),
+                action: "bulk.tag.add".into(),
+                tag_id: tag.clone(),
+                requested: 1,
+                matched: 1,
+                // The record claims the write left 0.9/bulk. It did not.
+                entries: vec![UndoEntry {
+                    object_id: obj.clone(),
+                    before: TagState {
+                        row_existed: true,
+                        confidence: Some(0.4),
+                        source: Some("manual".into()),
+                        created_at: None,
+                    },
+                    after: TagState {
+                        row_existed: true,
+                        confidence: Some(0.9),
+                        source: Some("bulk".into()),
+                        created_at: None,
+                    },
+                }],
+            })
+            .await
+            .expect("record");
+
+        // The record is OFFERABLE — expiry and ownership both pass, because both
+        // are properties of the record and the write never happened. Only the
+        // staleness check can catch this, which is why it is the one that has to.
+        let offered = store
+            .undoable("me")
+            .await
+            .expect("read")
+            .iter()
+            .any(|r| r.id == "r-residue");
+        assert!(offered, "nothing about the record itself is wrong");
+
+        // And pressing it is refused, with the row untouched.
+        let err = store
+            .undo("r-residue", "me")
+            .await
+            .expect_err("a record whose write never happened must not replay");
+        assert_eq!(
+            err,
+            UndoError::Superseded {
+                object_id: obj.clone()
+            }
+        );
+
+        let now = undo::tag_state(&store, &obj, &tag).await.expect("read");
+        assert_eq!(now.confidence, Some(0.4), "the row is exactly as it was");
+        assert_eq!(now.source, Some("manual".into()));
+    });
+}
+
+/// `prepare_undo` writes no record for a write that reached nothing.
+///
+/// A record with zero entries is offerable and undoes nothing, so the user
+/// presses a button whose only effect is to disappear. The `Nothing` variant is
+/// what stops that, and it has to be a distinct outcome rather than an empty
+/// list, because "reached nothing" and "recorded" are different facts.
+#[tokio::test]
+async fn preparing_undo_for_a_write_that_reached_nothing_records_nothing() {
+    on_each_store!(|store| {
+        let (tag, _obj) = tag_and_object(&store, "empty").await;
+        let w = Write {
+            id: "r-empty".into(),
+            caller: "me".into(),
+            action: "bulk.tag.add".into(),
+            tag_id: tag.clone(),
+            requested: 0,
+            matched: 0,
+            entries: vec![],
+        };
+        let prepared = store.prepare_undo(&w, vec![]).await.expect("prepare");
+        assert_eq!(prepared, PreparedUndo::Nothing, "no record is written");
+
+        assert!(
+            store.undo_record("r-empty").await.expect("read").is_none(),
+            "and nothing is left in the table for the user to find"
+        );
+    });
+}
+
+/// And a write that DID reach objects records them, before the write runs.
+#[tokio::test]
+async fn preparing_undo_records_the_entries_before_the_write() {
+    on_each_store!(|store| {
+        let (tag, obj) = tag_and_object(&store, "prep").await;
+        put_tag_row(&store, &obj, &tag, Some(0.3), Some("manual")).await;
+        let entry = UndoEntry {
+            object_id: obj.clone(),
+            before: TagState {
+                row_existed: true,
+                confidence: Some(0.3),
+                source: Some("manual".into()),
+                created_at: None,
+            },
+            after: TagState {
+                row_existed: true,
+                confidence: Some(0.9),
+                source: Some("bulk".into()),
+                created_at: None,
+            },
+        };
+        let w = Write {
+            id: "r-prep".into(),
+            caller: "me".into(),
+            action: "bulk.tag.add".into(),
+            tag_id: tag.clone(),
+            requested: 1,
+            matched: 1,
+            entries: vec![entry.clone()],
+        };
+        let prepared = store.prepare_undo(&w, vec![entry]).await.expect("prepare");
+        assert!(
+            matches!(prepared, PreparedUndo::Recorded { .. }),
+            "the record is on disk before the write runs"
+        );
+        // Readable at once, which is what "before the write" has to mean: the
+        // record is not deferred or batched.
+        let rec = store
+            .undo_record("r-prep")
+            .await
+            .expect("read")
+            .expect("the record exists");
+        assert_eq!(rec.entries.len(), 1);
+        assert_eq!(rec.entries[0].object_id, obj);
     });
 }

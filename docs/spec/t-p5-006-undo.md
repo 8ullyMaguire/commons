@@ -140,14 +140,38 @@ test checks column *names* and cannot see it.
 Four things the design above did not know when it was written, each of which
 changed the code.
 
-**The write is not atomic with its record.** `bulk_apply_tag` is a single
-`INSERT ... SELECT`, so making the write and `record_undo` one transaction needs
-that statement to run on a connection `record_undo` also holds. Not done. The
-failure left is a write with no undo — the user is told the write happened,
-which is the safe direction, but it is a gap and it is written down here rather
-than left to be discovered. The fix is a `Store::bulk_apply_tag_undoable` that
-takes the connection; it wants the bulk module's error type, so it is bulk's
-to write rather than undo's.
+**The write and its record cannot be one statement, so the ORDER carries the
+safety instead.** The obvious fix is a data-modifying CTE — `WITH rec AS (INSERT
+…) INSERT … SELECT … FROM rec` — and measured against both engines it is not
+available: Postgres runs it, and SQLite refuses it with `near "INSERT": syntax
+error`, because an `INSERT` as a CTE body is not SQLite syntax at all. A
+transaction is the only spelling that works on both, and `search.rs` already
+records why this codebase does not take one: the `Transaction` executor is as
+engine-specific as the pool it came from, so supporting both engines means one
+copy of the writer per engine, and the two drift.
+
+So [`Store::prepare_undo`] writes the record **before** the write it reverses,
+which is the opposite of the obvious order, and the asymmetry is not a
+preference:
+
+- Record first, write second: a failure between them leaves a record describing
+  a write that never happened. Pressing undo on it restores `before` onto a row
+  the write never touched — and the staleness check refuses it, because the row
+  is not in the `after` state the record claims. The record is inert and expires
+  on its own.
+- Write first, record second: a failure leaves a write the user cannot reverse,
+  which is the failure a user actually experiences.
+
+This holds only because the staleness check is a statement about the *row* rather
+than about the record, so a test builds the residue directly — a record whose
+write never ran — and requires the press to be refused. It also means the
+staleness check is load-bearing for a second, unrelated reason, and removing it
+kills eight tests.
+
+A write that reached nothing records nothing, and says so with
+`PreparedUndo::Nothing` rather than an empty entry list: a record with zero
+entries is offerable to the user and undoes nothing, which is a button whose
+only effect is to disappear.
 
 **An entry has no `after.row_existed`.** It is reconstructed as `true` on read,
 because an entry is only written for an object the write *touched* and a write
