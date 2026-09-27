@@ -18,9 +18,16 @@ comparing them:
 | `origin` | `github.com/8ullyMaguire/commons` |
 | `forgejo` | `git.polarisocial.xyz/hirrolot19/commons` |
 
-Both private. `git pushall` (a local alias) moves both; a bare `git push` still
-goes to `origin` alone, deliberately unchanged, so nothing about the existing
-workflow moved.
+Both private. `git pushall` (an alias for `scripts/pushall.sh`) moves both; a
+bare `git push` still goes to `origin` alone, deliberately unchanged, so nothing
+about the existing workflow moved.
+
+The alias was first written as an inline shell function using `git push -q`
+chained with `&&`, and it **exited 0 having pushed nothing**: `-q` swallowed the
+output and the trailing `&&` made the function's status the second push's. A
+commit followed by a `&&`-chained `pushall` therefore reported success while the
+remotes stayed a commit behind, and only a `git ls-remote` comparison noticed.
+It is a script now, no `-q`, and it prints the remote before each push.
 
 The check compares `HEAD` and the tag set per remote against local, over the
 wire, and is the half-state guard: a push to one remote and not the other leaves

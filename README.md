@@ -173,6 +173,13 @@ git pushall            # main
 git pushall --tags     # main and every milestone tag
 ```
 
+`git pushall` is an alias for `scripts/pushall.sh`, which pushes to each remote
+in turn and echoes which one it is on. The first version of that alias was a
+shell function using `git push -q` chained with `&&`; it exited **0 having
+pushed nothing**, because `-q` swallowed the output and the trailing `&&` made
+the function's exit status the second push's. A quiet push behind a chain is how
+a total no-op gets a green exit code. Hence the script, and no `-q`.
+
 `scripts/verify.sh` ends with a **remotes-in-sync** check that compares `HEAD`
 and the tag set on each remote against local, over the wire. A push to one
 remote and not the other is the half-state worth catching: locally everything
