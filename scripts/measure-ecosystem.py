@@ -206,8 +206,7 @@ def main() -> int:
     m = measure()
     print(summary(m), end="")
 
-    # Everything but the timestamp, so a re-measure on the same day is not a diff.
-    comparable = {k: v for k, v in m.items() if k != "measured"}
+    comparable = comparable_only(m)
 
     if args.write:
         FIXTURE.write_text(json.dumps(m, indent=2, sort_keys=True) + "\n")
@@ -218,18 +217,57 @@ def main() -> int:
         if not FIXTURE.exists():
             sys.exit(f"{FIXTURE} does not exist; run with --write")
         old = json.loads(FIXTURE.read_text())
-        old_cmp = {k: v for k, v in old.items() if k != "measured"}
+        old_cmp = comparable_only(old)
         if old_cmp != comparable:
+            changed = describe_drift(old_cmp, comparable)
             print("\nSTALE: upstream has moved since the fixture was written.", file=sys.stderr)
             print("The documents quote the OLD numbers. Either the change is", file=sys.stderr)
             print("irrelevant, or README.md, docs/HANDOFF.md, the plan and the", file=sys.stderr)
             print("Phase 11 brief now understate reality. Re-run with --write and", file=sys.stderr)
             print("update the prose, or record why the new numbers do not matter.", file=sys.stderr)
+            print(f"moved: {changed}", file=sys.stderr)
             return 1
         print("fixture is current")
         return 0
 
     return 0
+
+
+# Fields that must not gate the build.
+#
+# `stars` is a popularity signal, not a corpus fact. It moves by a hundred a day,
+# it is not quoted in any document, and a gate that fires on it trains you to
+# re-run with --write without reading the rest of the message -- which is how a
+# gate that DOES matter gets ignored. Everything that is quoted in prose, and
+# everything that describes the shape of the corpus, still gates.
+VOLATILE = ("stars", "measured")
+
+
+def comparable_only(m: dict) -> dict:
+    """The part of a measurement that a document could disagree with.
+
+    Recurses into the per-repo and per-corpus dicts, so `stars` is dropped
+    wherever it appears rather than only at the top level.
+    """
+    def scrub(v):
+        if isinstance(v, dict):
+            return {k: scrub(x) for k, x in v.items() if k not in VOLATILE}
+        return v
+    return scrub(m)
+
+
+def describe_drift(old: dict, new: dict) -> str:
+    """Name the fields that moved, so the failure says what to look at."""
+    moved = []
+    def walk(a, b, path):
+        if isinstance(a, dict) and isinstance(b, dict):
+            for k in sorted(set(a) | set(b)):
+                walk(a.get(k), b.get(k), f"{path}.{k}" if path else k)
+        elif a != b:
+            moved.append(f"{path}: {a!r} -> {b!r}")
+    walk(old, new, "")
+    # Long first, so a parent is not printed alongside all its children.
+    return ", ".join(moved[:8]) or "nothing"
 
 
 def _gh_authed() -> bool:

@@ -8,6 +8,65 @@ milestone carries an annotated `phase-*` tag.
 
 ---
 
+### Subtitles: the parsers, the schema, and three silent bugs
+
+T-P6-002, steps 1–3. Spec `docs/spec/t-p6-002-subtitles.md`.
+
+**`commons-media/src/subtitles.rs`** — `parse` for srt, vtt, ass/ssa, `to_webvtt`,
+and a pure `Cue`. 35 tests, no file, no process. The separation is the point: a
+parser tested only by round-tripping through ffmpeg cannot tell a parser bug from
+an ffmpeg bug, so the parsers take bytes and the process never enters it.
+
+Six parser bugs, found by tests written from the format specs rather than from
+the code. Two are worth carrying:
+
+- **A karaoke tag applies to the syllable *after* it.** `{\k20}ka` attaches
+  `{\k20}` to nothing and `ka` to the timing. Writing it the other way round
+  produced `"kadoke"` for `{\k20}ka{\k30}doke`, which is a real word, which is
+  why it survived my first two passes. Every hard line break in every ASS file
+  also survived as a literal `\N`, because `\N` is in the *text* and not inside
+  an override block where the stripper was looking.
+- **A seconds field with two separators is neither half.** `"01.000,500"` — the
+  fractional part is after the **last** separator, and the part before it is not
+  a valid integer. The obvious split on the first separator leaves `"01.0"`, which
+  does not parse, and dropping *all* separators glues the digits into `"01000"`.
+  The answer is to take the last separator as the fraction's and keep everything
+  before it verbatim.
+
+**`commons-store/src/subtitles.rs`** and **`0021_subtitles.sql`** — both engines,
+7 tests each. Three bugs, all of which are silent in production:
+
+- **A document is identified by its track, not its digest.** The unique index was
+  `(object_id, sha256)`, which is the obvious key and it *deletes a user's
+  subtitle track without an error*: a film with an English and a forced-signs
+  track commonly has identical text in both files, so the second write reads as
+  "unchanged" and is skipped. Now `UNIQUE (object_id, origin,
+  COALESCE(stream_index, -1), COALESCE(language, ''), format)` — where a track
+  *is*, not what it contains — and the store's skip uses the same tuple as a
+  `TrackKey`. The `COALESCE`s are load-bearing: NULL never equals NULL in a
+  unique index on either engine, so two sidecars of one language collided.
+- **`migration_parity` cannot see a type.** It compares column *names*, and
+  `INTEGER` is a valid name on both engines while meaning INT4 on one of them.
+  `stream_index` and `byte_size` were `INTEGER` and decoded as `Option<i64>`:
+  they applied cleanly, wrote cleanly, read cleanly on SQLite, and failed **at
+  read time on Postgres and nowhere else**. Only the store test found it, and only
+  because it round-trips a row through both engines. Every `i64` column is now
+  `BIGINT` on Postgres, with the reason in the migration, because the mirror looks
+  wrong side by side and will be "corrected" otherwise.
+- **`placeholders(n)` is not `placeholder(n)`.** One character apart, and they
+  mean opposite things: the first is the *list* 1..=n, the second the nth. A
+  five-slot query built with the first produced eleven placeholders for five bound
+  values, and Postgres reported it as `syntax error at or near ","` at whatever
+  character offset the extra comma landed on. `placeholder` now exists beside it
+  with that in its doc comment.
+
+The general lesson is the one the first of those three is named for: **a test
+written after the schema encodes the schema; a test written before it encodes
+what the schema is for.** `two_languages_of_one_object_are_both_kept` existed
+before the index did, which is the only reason it was there to catch it.
+
+---
+
 ### Two remotes, and a check that they agree
 
 The repository is mirrored to two private remotes and `verify.sh` now ends by

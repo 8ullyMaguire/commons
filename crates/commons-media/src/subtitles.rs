@@ -46,6 +46,26 @@
 use std::fmt;
 
 /// One subtitle cue: a span of time and the text for it.
+/// Convert parsed cues into the store's shape.
+///
+/// This lives here rather than in `commons-store` because the dependency runs
+/// the other way: `commons-media` depends on `commons-store`, so a conversion
+/// in the store's crate would be a cycle. It is here anyway by the same
+/// argument that puts the parsers here — this is the crate that owns `Cue` and
+/// knows what a cue is, and the store's tuple is just its serialised form.
+///
+/// ```ignore
+/// let cues = parse(&bytes, Format::Ass)?;
+/// commons_store::subtitles::put_document(&store, &doc, &Cues::from_parsed(&cues)).await?;
+/// ```
+pub fn to_store_cues(cues: &[Cue]) -> commons_store::subtitles::Cues {
+    commons_store::subtitles::Cues::new(
+        cues.iter()
+            .map(|c| (c.seq, c.start_ms, c.end_ms, c.text.clone(), c.style.clone()))
+            .collect(),
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cue {
     /// 0-based position **in the source file's own order**.

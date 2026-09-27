@@ -2749,6 +2749,20 @@ over DLNA (#5420) and injected for external players (#2770).
 correct to 40 ms; test an `.ass` file parses and renders.
 **Done when:** both exist.
 
+**Progress (2026-09-27).** Parsers, schema and store are in and tested on both
+engines; `extract`, sidecar discovery, the transcode change, and the Svelte
+component are not. The done-when table in
+`docs/spec/t-p6-002-subtitles.md` §9 is the live one — it is a table because a
+bullet list here reads as "not started" three months from now whether or not it
+is true.
+
+Three bugs found by writing the tests before the schema, all silent in
+production; the reasoning is in `docs/HANDOFF.md`. The one worth repeating here:
+a subtitle document is keyed by **where the track is**
+`(object_id, origin, stream_index, language, format)`, not by its digest. Keyed
+by `(object_id, sha256)`, a film whose English and forced-signs tracks have
+identical text loses one of them with no error anywhere.
+
 ### T-P6-003 — Funscript and interactive playback
 
 **Spec:** §5.6

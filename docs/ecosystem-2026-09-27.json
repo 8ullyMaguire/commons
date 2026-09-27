@@ -29,7 +29,7 @@
     "userscript_dirs": 2,
     "userscript_files": 4
   },
-  "measured": "2026-09-27T10:44:48+02:00",
+  "measured": "2026-09-27T11:47:29+02:00",
   "org": "stashapp",
   "repo_count": 14,
   "repos": {
@@ -163,7 +163,7 @@
       "pushed_at": "2026-09-22",
       "reason": "the reference implementation",
       "scope": "out",
-      "stars": 13026
+      "stars": 13027
     },
     "stash-box": {
       "archived": false,

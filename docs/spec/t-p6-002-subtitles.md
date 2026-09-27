@@ -2,7 +2,8 @@
 
 **Plan entry:** `docs/plans/implementation-plan.md` §T-P6-002
 **Spec:** §5.10 (C10), §11.1
-**Status:** specified, not implemented.
+**Status:** §1–§3 implemented (parsers, schema, store, both engines). §4–§7
+not started.
 
 ---
 
@@ -122,10 +123,10 @@ already there should not be copied into the database to be found again.
 
 | Column | Type | Notes |
 |---|---|---|
-| `id` | uuid PK | |
+| `id` | text PK | derived, not random: see below |
 | `object_id` | text FK | the object it belongs to |
 | `origin` | text | `embedded` or `sidecar` — **not** nullable, not optional |
-| `stream_index` | int NULL | ffprobe's index; NULL for a sidecar |
+| `stream_index` | bigint NULL | ffprobe's index; NULL for a sidecar |
 | `path` | text NULL | the sidecar's path; NULL when embedded |
 | `format` | text | `ass`, `ssa`, `srt`, `vtt`, `mov_text` — as ffprobe/extension report it |
 | `language` | text NULL | **normalised BCP-47**, or NULL when absent |
@@ -133,8 +134,8 @@ already there should not be copied into the database to be found again.
 | `is_forced` | bool | from `disposition.forced` |
 | `is_hearing_impaired` | bool | from `disposition.hearing_impaired` |
 | `sha256` | text | of the *raw document*, so a re-extract is a no-op |
-| `byte_size` | int | |
-| `extracted_at` | timestamptz | |
+| `byte_size` | bigint | |
+| `extracted_at` | text | ISO-8601, like every other timestamp in this schema |
 
 `CHECK (origin IN ('embedded','sidecar'))`, and
 `CHECK ((origin = 'sidecar') = (path IS NOT NULL))` — the pair is redundant, so
@@ -145,11 +146,11 @@ embedded one with a path, and neither is a state anything wants.
 
 | Column | Type | Notes |
 |---|---|---|
-| `id` | uuid PK | |
-| `document_id` | uuid FK | |
-| `seq` | int | 0-based, **as the source ordered them** |
-| `start_ms` | int | |
-| `end_ms` | int | |
+| `id` | text PK | derived: `<document_id>:<seq>` |
+| `document_id` | text FK | |
+| `seq` | bigint | 0-based, **as the source ordered them** |
+| `start_ms` | bigint | |
+| `end_ms` | bigint | |
 | `text` | text | the cue's text with its inline tags **stripped**, for search and for WebVTT |
 | `style_json` | text NULL | the source styling, when the format has any |
 
@@ -166,6 +167,59 @@ temptation to collapse them is exactly the bug:
 subtitle file with overlapping or out-of-order cues is **normal** (ASS
 dialogue is layered that way), and re-deriving `seq` from timestamps renumbers
 the file — which changes what a diff shows and what a search highlights.
+
+### The uniqueness key is the TRACK, not the digest
+
+The table above does not say how a document is *identified*, and the answer is
+load-bearing enough to belong in the spec rather than in a migration comment.
+
+The obvious key is `(object_id, sha256)` — "these bytes are already stored" — and
+it deletes a user's subtitle track without an error. A film with an English track
+and a forced-signs track very often has **identical text in both files**: a
+translation script emits the same cues, and a sign-language track is frequently a
+copy. Under `(object_id, sha256)` the second write reads as "unchanged", is
+skipped, and the player shows one language where the file has two. No error, no
+log line, and a track that was there before the upgrade.
+
+What identifies a track is **where it is**, not what it contains:
+
+```
+UNIQUE (object_id, origin, COALESCE(stream_index, -1), COALESCE(language, ''), format)
+```
+
+Re-extracting the same track replaces the row. A track that *moved* (a remux
+renumbers stream indices) becomes a new row, and `delete_documents` collects the
+stale one on the next re-scan. The two `COALESCE`s are not decoration: a NULL
+never equals another NULL in a unique index on either engine, so without them
+every sidecar of one language would collide with itself and with the others.
+
+The store's skip check uses the same tuple, as a `TrackKey`. Keeping them as two
+independent expressions is how they come to disagree, and the disagreement is
+silent in one direction only: the constraint rejects a duplicate loudly, while a
+skip that is too broad drops a track with no symptom at all.
+
+**The test that found this is `two_languages_of_one_object_are_both_kept`, and it
+was written before the constraint was.** That order is the point. A test written
+after the schema encodes the schema; a test written before it encodes what the
+schema is *for*.
+
+### Two engines, one migration, and a type the parity test cannot see
+
+`migration_parity` compares column **names** between the Postgres and SQLite
+trees. It cannot see a type, because `INTEGER` is a valid type name on both
+engines — and means INT4 on one of them. `stream_index` and `byte_size` were
+`INTEGER`, decoded as `Option<i64>` in Rust, and so:
+
+- applied cleanly on both engines
+- wrote cleanly on both engines
+- read cleanly on **SQLite**, where `INTEGER` is a 64-bit rowid
+- failed at **read** time on Postgres, and nowhere else
+
+Only the store test caught it, and only because it round-trips a row through both
+engines. Every column the Rust side decodes as `i64` is `BIGINT` on Postgres; the
+three booleans are INT4 in Rust and so are `INTEGER` here. That asymmetry is
+recorded in the migration itself, because the mirror will look "wrong" to the
+next person reading them side by side.
 
 ---
 
@@ -304,11 +358,21 @@ Each is a real request, named so it is deferred rather than forgotten.
 
 ## 9. Definition of done
 
-- `0021_subtitles.sql` in both engines; `migration_parity.rs` green.
-- `commons-media/src/subtitles.rs` with `extract`, `parse_*` for `srt`, `vtt`,
-  `ass`/`ssa`, and a **pure** cue model, all of it tested without a file on
-  disk for the parsers — a parser tested only by round-tripping through ffmpeg
-  cannot tell a parser bug from an ffmpeg bug.
+| # | Item | State |
+|---|---|---|
+| 1 | `0021_subtitles.sql` in both engines; `migration_parity.rs` green | **done** |
+| 2 | `commons-media/src/subtitles.rs`: `parse` for `srt`, `vtt`, `ass`/`ssa`, a **pure** cue model, and `to_webvtt`. Tested with no file and no process — a parser tested only by round-tripping through ffmpeg cannot tell a parser bug from an ffmpeg bug | **done** (35 tests) |
+| 3 | `commons-store/src/subtitles.rs`: `put_document` (one transaction), `list_documents`, `get_document`, `list_cues`, `stored_hash`, `delete_documents`, `count_documents`, on both engines | **done** (7 tests × 2 engines) |
+| 4 | `extract` — ffmpeg in, cues out | not started |
+| 5 | Sidecar discovery by convention, and a test that the two ambiguous cases in §8.1 resolve to one document each | not started |
+| 6 | `commons-media::transcode` replaces `-sn` with the two cases of §5, and a test asserting a **cue is present in the transcode output** — §8.3 | not started |
+| 7 | `SubtitleTrack.svelte` with the list, the WebVTT conversion, and the offset, and a unit test for the conversion that includes `<`, `&`, and an empty cue | not started |
+| 8 | A round-trip test asserting **every** cue within 40 ms of the original | not started |
+| 9 | `docs/HANDOFF.md` updated; `phase-6-002-subtitles` tagged | on completion of #4–#8 |
+
+Two of the nine are done and both were the ones with a silent failure mode,
+which is the order the risk wanted them in: the parsers and the schema are where
+a bug costs a user a subtitle track with nothing in the logs.
 - Sidecar discovery by convention, and a test that the two ambiguous cases in
   §8.1 resolve to one document each.
 - `commons-media::transcode` replaces `-sn` with the two cases of §5, and a

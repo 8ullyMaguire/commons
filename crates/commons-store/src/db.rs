@@ -76,6 +76,48 @@ pub enum Store {
     Postgres(PgPool),
 }
 
+/// The `n` bind placeholders for an engine: `$1, $2, …` on Postgres, `?, ?, …`
+/// on SQLite.
+///
+/// **One copy, on purpose.** This started as a private helper in `playback.rs`
+/// and a second private copy in `subtitles.rs`, and two copies of a dialect
+/// switch is two places for an engine to be forgotten — a query that works on
+/// SQLite and fails on Postgres is a bug whose only symptom is "it works on my
+/// machine", which is the worst kind to debug in a two-engine codebase.
+///
+/// The asymmetry is not negotiable: Postgres has no `?` placeholder and SQLite
+/// has no `$1`, so every multi-parameter query in this crate has to ask which
+/// engine it is talking to. Doing it through one function means a new query
+/// cannot get it wrong by omission.
+/// The **nth** placeholder, for a query whose parameters are not contiguous.
+///
+/// `placeholders` is the wrong tool for a query that names its slots out of
+/// order, and using it there is a silent corruption rather than an error: slot
+/// 2 expands to "$1, $2", so the statement has six placeholders where it wants
+/// five, and the database rejects it with "syntax error at or near ','" at
+/// whatever character offset the extra comma lands on. Nothing about that
+/// message points at the cause, which is why this exists.
+pub(crate) fn placeholder(n: usize, numbered: bool) -> String {
+    if numbered {
+        format!("${n}")
+    } else {
+        "?".to_string()
+    }
+}
+
+pub(crate) fn placeholders(n: usize, numbered: bool) -> String {
+    (1..=n)
+        .map(|i| {
+            if numbered {
+                format!("${i}")
+            } else {
+                "?".to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 impl Store {
     /// Open a local library at `data_dir/commons.sqlite`, creating the
     /// directory if needed, and migrate it.

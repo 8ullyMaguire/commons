@@ -353,7 +353,7 @@ pub fn rung_for(caps: &SourceCaps) -> Option<Rung> {
 
 use sqlx::Row;
 
-use crate::db::{Store, StoreError};
+use crate::db::{placeholders, Store, StoreError};
 
 /// Why a playback read or write failed.
 #[derive(Debug)]
@@ -378,26 +378,6 @@ impl From<StoreError> for PlaybackStoreError {
     fn from(e: StoreError) -> Self {
         PlaybackStoreError::Query(e)
     }
-}
-
-/// Build the placeholder list for a statement of `n` binds.
-///
-/// Postgres takes `$1..$n`; SQLite takes `?`. Sending `?` to Postgres is a
-/// **syntax error at the VALUES list**, not a silent mismatch, and the error
-/// names the statement rather than the dialect -- so it reads as a malformed
-/// migration when it is in fact the wrong placeholder. Every two-engine
-/// statement in this file goes through here rather than hard-coding either.
-fn placeholders(n: usize, numbered: bool) -> String {
-    (1..=n)
-        .map(|i| {
-            if numbered {
-                format!("${i}")
-            } else {
-                "?".to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 /// Read one object's playback state.
