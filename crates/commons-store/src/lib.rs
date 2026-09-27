@@ -27,6 +27,7 @@ pub mod folders;
 pub mod funscript;
 pub mod fuzzy;
 pub mod index;
+pub mod interview;
 pub mod locator;
 pub mod media;
 pub mod playback;

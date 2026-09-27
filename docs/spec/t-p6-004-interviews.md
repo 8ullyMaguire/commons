@@ -231,6 +231,44 @@ And these, which the ticket implies:
 - An unavailable model produces `ModelError::Unavailable`, not a panic, and the
   caller can tell it apart from `ChecksumMismatch`.
 
+## 6a. What the storage layer actually found
+
+Written down because each of these was found by the two-engine test rather than
+by reading, and each is a shape this schema has now been bitten by twice before.
+
+- **`?` sent to Postgres is a syntax error at an offset that names nothing.**
+  Three `DELETE`s were written with a literal `?` because that is what the
+  SQLite arm wanted. Postgres answered `syntax error at end of input` at
+  position 51 — an offset into a statement that has nothing wrong at 51. Every
+  statement is now built from a marker.
+- **`placeholders(n, …)` returns the whole comma-joined list.** Writing one
+  `{p}` per column expands a 12-bind INSERT into 144 placeholders. The
+  convention is a single `{p}` for a VALUES clause, and `placeholder(i, …)`
+  for a specific parameter in a predicate.
+- **A marker that is a PREFIX of another marker is rewritten by its
+  replacement.** `{p}` and `{p:i}` in one statement: the `{p}` replacement
+  matched the prefix inside `{p:i}` and both range bounds became `$2`. The
+  query returned *zero rows with no error* — the worst failure shape, because a
+  chapter search that returns nothing looks like a library with no chapters in
+  it. The markers are now `{a}` / `{b}` / `{c}` and the order is irrelevant.
+- **An untyped `$n` against an `INTEGER` column is inferred as `text`.**
+  `start_ms >= $2` is `integer >= text` and the query is refused at plan time
+  on the arm that runs the comparison. A test that only ever lists every word
+  never reaches it. Fixed with an explicit `CAST`.
+- **`INTEGER` is INT4 on Postgres and INT8 on SQLite.** `word_count` was
+  declared `INTEGER` and decoded as `i64`: green forever on SQLite, a read-time
+  type error on Postgres, and invisible to `migration_parity` because that test
+  compares column *names*. Third occurrence in this repository.
+- **A replacement arriving under a NEW transcript id leaves the previous run's
+  words behind.** The children were deleted by the incoming id, which matches
+  nothing on a re-run that reuses the row and only the new words on one that
+  does not. The delete is now keyed on both the id and the object, and the
+  parent is an `ON CONFLICT (object_id) DO UPDATE`.
+
+That is six, and every one of them produced a wrong answer rather than an
+error. The parities that catch them are the two-engine test and the round trip;
+neither is optional.
+
 ## 7. Fixtures
 
 Per the standing rule: **each fixture creates its own instance, never a named

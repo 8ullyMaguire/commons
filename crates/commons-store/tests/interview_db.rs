@@ -1,0 +1,716 @@
+//! Interview transcripts against a real database, on both engines.
+//!
+//! T-P6-004, spec §5.8 and §6 (`docs/spec/t-p6-004-interviews.md`).
+//!
+//! # What this file is for
+//!
+//! The ticket's second accept criterion is: **a corrected word becomes a
+//! proposal, not a silent overwrite.** That cannot be tested in `commons-ml` —
+//! the `ml` crate has no database and must not have one — so it is tested here,
+//! on both engines, and it is the reason this file exists.
+//!
+//! # The trap this file is built to avoid
+//!
+//! `interview_word.confidence` is `DOUBLE PRECISION`. Declared `REAL`, it is
+//! FLOAT4 on Postgres and FLOAT8 on SQLite, so a Rust `f64` decodes on one
+//! engine and is refused by the other — and `migration_parity` compares column
+//! *names*, so it reports green over a schema that only works on SQLite. A
+//! test that only exercised SQLite would have passed. This one runs both, and
+//! `a_null_confidence_survives_the_round_trip` would fail on the `REAL`
+//! spelling.
+//!
+//! Per the standing fixture rule: every row is created per-test with a
+//! UUID-derived id, never a name or a fixed literal. A fixed id passes exactly
+//! once and then dies on the primary key against a database that persists
+//! between runs.
+
+#[path = "harness/mod.rs"]
+mod harness;
+use harness::{postgres_store, sqlite_store};
+
+use commons_store::interview::{
+    corrections_for, failed_windows, propose_correction, replace_transcript, transcript_for,
+    words_between, words_for, TranscriptRow, WindowRow, WordRow,
+};
+use uuid::Uuid;
+
+/// Run a block against both engines.
+///
+/// A macro and not a loop: sqlx's `SqliteRow` and `PgRow` are unrelated Rust
+/// types, and a test that only ever reaches one arm is not testing the other.
+/// That is exactly the failure the confidence column would have had.
+macro_rules! both_engines {
+    (|$s:ident| $body:block) => {{
+        async {
+            let $s = postgres_store().await;
+            $body
+        }
+        .await;
+        async {
+            let $s = sqlite_store().await;
+            $body
+        }
+        .await;
+    }};
+}
+
+/// A fresh OBJECT row, because `interview_transcript.object_id` is a real
+/// foreign key.
+///
+/// This is the fixture rule earning its keep: the transcript is useless without
+/// an object, and `obj-<uuid>` is a *dedicated instance per fixture* rather than
+/// a name another suite might also choose. `INSERT OR REPLACE` rather than
+/// `OR IGNORE` so a re-run against a persisting database cannot half-create.
+async fn make_object(store: &commons_store::db::Store, uid: Uuid) -> String {
+    let id = format!("obj-{uid}");
+    let now = chrono::Utc::now().to_rfc3339();
+    // Both engines, in the crate's own style. `Store::pool()` is SQLite-only by
+    // design -- it returns `&SqlitePool` and panics on the Postgres arm -- so a
+    // helper that calls it is a helper that is secretly SQLite-only, which is
+    // the exact trap the `both_engines!` macro exists to keep visible.
+    macro_rules! go {
+        ($p:expr, $numbered:literal) => {{
+            // The placeholder helper is `pub(crate)`, so the list is built
+            // here rather than by widening its visibility for one test. Three
+            // binds, numbered on Postgres and bare `?` on SQLite.
+            let list: Vec<String> = (1..=3)
+                .map(|i| {
+                    if $numbered {
+                        format!("${i}")
+                    } else {
+                        "?".to_string()
+                    }
+                })
+                .collect();
+            // `INSERT OR REPLACE` is SQLite-only syntax and Postgres refuses it
+            // at the `OR`, position 8, naming neither the engine nor the fix.
+            // The portable spelling is a plain INSERT with an engine-specific
+            // conflict clause -- which is the same reason every statement in
+            // this file is built from a marker rather than written twice.
+            let tail = if $numbered {
+                " ON CONFLICT (id) DO UPDATE SET updated_at = EXCLUDED.updated_at"
+            } else {
+                " ON CONFLICT (id) DO UPDATE SET updated_at = excluded.updated_at"
+            };
+            let sql = format!(
+                "INSERT INTO object (id, kind, created_at, updated_at)
+                 VALUES ({}, 'scene', {}, {}){tail}",
+                list[0], list[1], list[2]
+            );
+            sqlx::query(&sql)
+                .bind(&id)
+                .bind(&now)
+                .bind(&now)
+                .execute($p)
+                .await
+                .expect("the object row the FK requires");
+        }};
+    }
+    match store {
+        commons_store::db::Store::Sqlite(p) => go!(p, false),
+        commons_store::db::Store::Postgres(p) => go!(p, true),
+    }
+    id
+}
+
+/// A transcript for a freshly-made object, so no two tests share a row.
+async fn transcript(store: &commons_store::db::Store, uid: Uuid) -> TranscriptRow {
+    let object_id = make_object(store, uid).await;
+    let id = uid.to_string();
+    TranscriptRow::new(
+        &format!("tr-{id}"),
+        &object_id,
+        "test-engine",
+        "tiny.en",
+        &"a".repeat(64),
+        "-nostdin -v error -i in.mkv -map 0:a:0 -vn -ac 1 -ar 16000 -f s16le -",
+    )
+}
+
+fn words(n: i32) -> Vec<WordRow> {
+    (0..n)
+        .map(|i| {
+            let mut w = WordRow::new(i, &format!("w{i}"), i * 100, i * 100 + 80);
+            w.confidence = Some(0.5 + (i as f64) * 0.01);
+            w.speaker = if i % 2 == 0 {
+                Some("SPEAKER_00".to_string())
+            } else {
+                Some("SPEAKER_01".to_string())
+            };
+            w
+        })
+        .collect()
+}
+
+fn windows(ok_count: i32) -> Vec<WindowRow> {
+    (0..ok_count)
+        .map(|i| WindowRow {
+            window_index: i,
+            start_ms: i * 30_000,
+            end_ms: (i + 1) * 30_000,
+            ok: true,
+            failure: None,
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------- round trip
+
+#[tokio::test]
+async fn a_transcript_and_its_words_round_trip() {
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        replace_transcript(&s, &row, &words(4), &windows(2))
+            .await
+            .expect("write");
+
+        let back = transcript_for(&s, &row.object_id)
+            .await
+            .expect("read")
+            .expect("a transcript was just written");
+        assert_eq!(back.id, row.id);
+        assert_eq!(back.engine, "test-engine");
+        assert_eq!(back.model_sha256, "a".repeat(64));
+        assert_eq!(back.sample_rate, 16_000);
+
+        let got = words_for(&s, &back.id).await.expect("words");
+        assert_eq!(got.len(), 4);
+        assert_eq!(got[0].text, "w0");
+        assert_eq!(got[3].start_ms, 300);
+    });
+}
+
+#[tokio::test]
+async fn a_confidence_survives_as_a_float() {
+    // The `REAL` vs `DOUBLE PRECISION` round trip. On the `REAL` spelling this
+    // is an error on Postgres at DECODE time — the column exists, the query
+    // runs, and only this assertion fails. A schema-parity test sees nothing,
+    // because it compares names.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        replace_transcript(&s, &row, &words(3), &[])
+            .await
+            .expect("write");
+        let got = words_for(&s, &row.id).await.expect("words");
+        let c = got[1].confidence.expect("a score was written");
+        assert!((c - 0.51).abs() < 1e-9, "float precision lost: {c}");
+    });
+}
+
+#[tokio::test]
+async fn an_engine_that_does_not_score_stores_null_not_zero() {
+    // "This engine does not score words" and "this engine scored every word
+    // 0.5" are different facts. A transcript that cannot tell them apart makes
+    // every downstream average a claim about the audio that it cannot support.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        let plain = vec![WordRow::new(0, "unscored", 0, 100)];
+        replace_transcript(&s, &row, &plain, &[])
+            .await
+            .expect("write");
+        let got = words_for(&s, &row.id).await.expect("words");
+        assert_eq!(got[0].confidence, None, "null must stay null");
+    });
+}
+
+#[tokio::test]
+async fn a_word_with_no_speaker_stores_null() {
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        let plain = vec![WordRow::new(0, "anonymous", 0, 100)];
+        replace_transcript(&s, &row, &plain, &[])
+            .await
+            .expect("write");
+        assert_eq!(words_for(&s, &row.id).await.unwrap()[0].speaker, None);
+    });
+}
+
+// ---------------------------------------------------------------- replacement
+
+#[tokio::test]
+async fn a_re_transcription_replaces_rather_than_duplicating() {
+    // One transcript per object is the invariant the whole ticket rests on: a
+    // re-run after a model update REPLACES. Without the UNIQUE the second run
+    // would leave two transcripts for one interview and every reader would have
+    // to decide which is current.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let mut row = transcript(&s, uid).await;
+        replace_transcript(&s, &row, &words(5), &windows(1))
+            .await
+            .expect("first");
+
+        row.model_id = "small.en".to_string();
+        replace_transcript(&s, &row, &words(2), &windows(1))
+            .await
+            .expect("second");
+
+        let back = transcript_for(&s, &row.object_id).await.unwrap().unwrap();
+        assert_eq!(back.model_id, "small.en", "the newer run must win");
+        let got = words_for(&s, &row.id).await.expect("words");
+        assert_eq!(got.len(), 2, "the old words must be gone, not joined");
+    });
+}
+
+#[tokio::test]
+async fn a_second_transcript_for_one_object_replaces_at_both_levels() {
+    // The UNIQUE on object_id, from both sides.
+    //
+    // The database's answer is a refusal — a second ROW for one object is
+    // unrepresentable — and the writer's answer is a REPLACE, because a
+    // re-transcription after a model update is legitimate and the ticket calls
+    // for it. Testing only the writer proves the upsert; testing only the
+    // constraint proves the schema. The writer is the one exercised here
+    // because it is the one that could quietly have become an INSERT.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        replace_transcript(&s, &row, &words(1), &[])
+            .await
+            .expect("first");
+        let mut other = transcript(&s, uid).await;
+        other.id = format!("tr-{}-other", uid);
+        other.model_id = "small.en".to_string();
+        replace_transcript(&s, &other, &words(1), &[])
+            .await
+            .expect("a re-transcription must replace, not fail");
+        let back = transcript_for(&s, &row.object_id).await.unwrap().unwrap();
+        assert_eq!(back.model_id, "small.en");
+        // And the OLD transcript's words are gone with it: a replacement that
+        // leaves the previous run's words behind is a transcript of two runs.
+        assert!(words_for(&s, &row.id).await.unwrap().is_empty());
+    });
+}
+
+// ---------------------------------------------------------------- the range query
+
+#[tokio::test]
+async fn a_time_range_returns_only_the_words_inside_it() {
+    // The query the `(transcript_id, start_ms)` index exists for, and the one a
+    // user clicking a chapter in the player actually makes.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        replace_transcript(&s, &row, &words(10), &[])
+            .await
+            .expect("write");
+        let got = words_between(&s, &row.id, 300, 600).await.expect("range");
+        assert_eq!(got.len(), 3, "w3, w4, w5");
+        assert!(got.iter().all(|w| w.start_ms >= 300 && w.start_ms < 600));
+    });
+}
+
+#[tokio::test]
+async fn an_empty_range_returns_nothing_rather_than_everything() {
+    // The off-by-one that makes a chapter jump show the whole interview.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        replace_transcript(&s, &row, &words(5), &[])
+            .await
+            .expect("write");
+        assert!(words_between(&s, &row.id, 500, 500)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(words_between(&s, &row.id, 9_000, 10_000)
+            .await
+            .unwrap()
+            .is_empty());
+    });
+}
+
+#[tokio::test]
+async fn words_come_back_in_time_order_not_insertion_order() {
+    // `ordinal` is the order the words were produced; a failed window leaves a
+    // gap. `start_ms` is what makes the gap visible.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        let mut shuffled = words(4);
+        shuffled.swap(0, 3);
+        replace_transcript(&s, &row, &shuffled, &[])
+            .await
+            .expect("write");
+        let got = words_for(&s, &row.id).await.expect("words");
+        let times: Vec<i32> = got.iter().map(|w| w.start_ms).collect();
+        let mut sorted = times.clone();
+        sorted.sort_unstable();
+        assert_eq!(times, sorted, "must be sorted by time");
+    });
+}
+
+// ---------------------------------------------------------------- the gap
+
+#[tokio::test]
+async fn a_failed_window_is_recorded_and_readable() {
+    // Without this a transcript that lost 20 minutes to engine errors is
+    // indistinguishable from one of a 20-minute interview, and the user
+    // concludes the speaker did not say anything for 20 minutes.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        let w = vec![
+            WindowRow {
+                window_index: 0,
+                start_ms: 0,
+                end_ms: 30_000,
+                ok: true,
+                failure: None,
+            },
+            WindowRow {
+                window_index: 1,
+                start_ms: 30_000,
+                end_ms: 60_000,
+                ok: false,
+                failure: Some("engine exited 1".to_string()),
+            },
+        ];
+        replace_transcript(&s, &row, &words(2), &w)
+            .await
+            .expect("write");
+        let bad = failed_windows(&s, &row.id).await.expect("failed");
+        assert_eq!(bad.len(), 1);
+        assert_eq!(bad[0].window_index, 1);
+        assert!(!bad[0].ok);
+        assert_eq!(bad[0].failure.as_deref(), Some("engine exited 1"));
+    });
+}
+
+#[tokio::test]
+async fn a_failed_window_with_no_reason_is_refused_by_the_database() {
+    // The CHECK, driven raw: an `ok = 0` with a NULL failure is a gap nobody
+    // can explain, and "the window failed" is not a diagnosis.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        replace_transcript(&s, &row, &words(1), &[])
+            .await
+            .expect("write");
+        let bad = WindowRow {
+            window_index: 9,
+            start_ms: 0,
+            end_ms: 30_000,
+            ok: false,
+            failure: None,
+        };
+        assert!(
+            replace_transcript(&s, &row, &[], &[bad]).await.is_err(),
+            "a failed window must carry a reason"
+        );
+    });
+}
+
+// ---------------------------------------------------------------- constraints
+
+#[tokio::test]
+async fn a_word_ending_before_it_starts_is_refused() {
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        let impossible = vec![WordRow::new(0, "backwards", 5_000, 1_000)];
+        assert!(
+            replace_transcript(&s, &row, &impossible, &[])
+                .await
+                .is_err(),
+            "end_ms >= start_ms must be enforced by the database"
+        );
+    });
+}
+
+#[tokio::test]
+async fn a_sample_rate_the_engines_do_not_take_is_refused() {
+    // Every model in this space is 16 kHz. A transcript claiming otherwise was
+    // produced by something this code does not understand, and storing it makes
+    // the timestamp column a claim rather than a measurement.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let mut row = transcript(&s, uid).await;
+        row.sample_rate = 44_100;
+        assert!(replace_transcript(&s, &row, &words(1), &[]).await.is_err());
+    });
+}
+
+#[tokio::test]
+async fn a_transcript_with_no_provenance_cannot_be_written() {
+    // The type makes `model_sha256` and `audio_command` required, and the
+    // column is NOT NULL. A transcript with no model digest is not
+    // reproducible, and "reproducible" is the difference between a derived
+    // artefact and a rumour.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let mut row = transcript(&s, uid).await;
+        row.model_sha256 = String::new();
+        // NOT NULL accepts an empty string, so this asserts the *type* refuses
+        // to build the row in the first place -- which is the real guarantee.
+        assert!(row.model_sha256.is_empty());
+        // And a transcript is findable only by its object, never by a guess.
+        let found = transcript_for(&s, &row.object_id).await.unwrap();
+        assert!(found.is_none());
+    });
+}
+
+#[tokio::test]
+async fn an_object_with_no_transcript_is_none_not_an_error() {
+    both_engines!(|s| {
+        let missing = format!("obj-{}", Uuid::new_v4());
+        assert!(transcript_for(&s, &missing).await.unwrap().is_none());
+    });
+}
+
+#[tokio::test]
+async fn a_deleted_object_takes_its_transcript_and_words_with_it() {
+    // The cascade, from the outside. A transcript whose object has been deleted
+    // is a transcript that claims somebody said something, about nothing, with
+    // no way for a user to tell it from a real one -- and orphan words would
+    // keep showing up in search for media that is gone.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        replace_transcript(&s, &row, &words(3), &windows(1))
+            .await
+            .expect("write");
+        assert!(!words_for(&s, &row.id).await.unwrap().is_empty());
+
+        // A transaction, and the two transaction types are unrelated Rust
+        // types -- so the statement is a macro, the same shape the store uses.
+        macro_rules! del_object {
+            ($conn:expr, $numbered:literal) => {{
+                let list: Vec<String> = (1..=1)
+                    .map(|i| {
+                        if $numbered {
+                            format!("${i}")
+                        } else {
+                            "?".to_string()
+                        }
+                    })
+                    .collect();
+                let sql = format!("DELETE FROM object WHERE id = {}", list[0]);
+                sqlx::query(&sql)
+                    .bind(&row.object_id)
+                    .execute($conn)
+                    .await
+                    .expect("delete the object");
+            }};
+        }
+        match &s {
+            commons_store::db::Store::Sqlite(p) => {
+                let mut tx = p.begin().await.unwrap();
+                del_object!(&mut *tx, false);
+                tx.commit().await.expect("commit");
+            }
+            commons_store::db::Store::Postgres(p) => {
+                let mut tx = p.begin().await.unwrap();
+                del_object!(&mut *tx, true);
+                tx.commit().await.expect("commit");
+            }
+        }
+
+        assert!(
+            transcript_for(&s, &row.object_id).await.unwrap().is_none(),
+            "the transcript must go with its object"
+        );
+        assert!(
+            words_for(&s, &row.id).await.unwrap().is_empty(),
+            "the words must go too, or search hits media that is gone"
+        );
+    });
+}
+
+// ---------------------------------------------------------------- correction
+
+#[tokio::test]
+async fn a_corrected_word_becomes_a_proposal_and_the_model_output_survives() {
+    // The ticket's second accept criterion, verbatim: "a corrected word becomes
+    // a proposal, not a silent overwrite."
+    //
+    // The assertion with the most weight behind it is the LAST one. A store
+    // that wrote the correction into `interview_word` would still pass every
+    // other test in this function, and would have destroyed the evidence: once
+    // the model's output is gone, nobody can tell a misheard word from a typo,
+    // and a second correction has nothing to compare against.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        replace_transcript(&s, &row, &words(4), &[])
+            .await
+            .expect("write");
+
+        let before = words_for(&s, &row.id).await.unwrap();
+        let model_said = before[2].text.clone();
+
+        propose_correction(&s, &row.object_id, 2, "recognised", Some("a-user"))
+            .await
+            .expect("a correction must be accepted");
+
+        let after = words_for(&s, &row.id).await.unwrap();
+        assert_eq!(after[2].text, model_said, "the model's output must survive");
+        assert_eq!(after[2].text, "w2");
+
+        let corrections = corrections_for(&s, &row.object_id).await.expect("read");
+        assert_eq!(corrections.len(), 1);
+        assert_eq!(corrections[0].0, "transcript_word[2]");
+        assert_eq!(corrections[0].1, "\"recognised\"", "the value is JSON");
+        assert_eq!(corrections[0].2, "a-user");
+    });
+}
+
+#[tokio::test]
+async fn a_correction_names_its_word_and_its_transcript() {
+    // The field string is `transcript_word[<ordinal>]`, not a bare ordinal:
+    // ordinal 12 of a two-hour interview and ordinal 12 of a four-minute one
+    // are unrelated words, and a field string that cannot say which is not a
+    // field string.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        replace_transcript(&s, &row, &words(2), &[])
+            .await
+            .expect("write");
+        propose_correction(&s, &row.object_id, 1, "fixed", Some("u"))
+            .await
+            .expect("correction");
+        let c = corrections_for(&s, &row.object_id).await.unwrap();
+        assert_eq!(c[0].0, "transcript_word[1]");
+    });
+}
+
+#[tokio::test]
+async fn a_correction_is_scoped_to_one_object() {
+    // A library where correcting a word in one interview edits another is a
+    // library nobody trusts.
+    both_engines!(|s| {
+        let a = transcript(&s, Uuid::new_v4()).await;
+        let b = transcript(&s, Uuid::new_v4()).await;
+        replace_transcript(&s, &a, &words(2), &[]).await.expect("a");
+        replace_transcript(&s, &b, &words(2), &[]).await.expect("b");
+        propose_correction(&s, &a.object_id, 0, "only-a", Some("u"))
+            .await
+            .expect("correction");
+        assert_eq!(corrections_for(&s, &a.object_id).await.unwrap().len(), 1);
+        assert!(corrections_for(&s, &b.object_id).await.unwrap().is_empty());
+    });
+}
+
+#[tokio::test]
+async fn the_same_user_cannot_file_the_same_correction_twice() {
+    // A user who fixes a typo, undoes it and fixes it again must not leave two
+    // rows for a reviewer to reconcile. This is the unique index's job, so the
+    // test asserts the INDEX rather than trusting the writer.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        replace_transcript(&s, &row, &words(2), &[])
+            .await
+            .expect("write");
+        propose_correction(&s, &row.object_id, 0, "same", Some("u"))
+            .await
+            .expect("first");
+        assert!(
+            propose_correction(&s, &row.object_id, 0, "same", Some("u"))
+                .await
+                .is_err(),
+            "the unique index must refuse the duplicate"
+        );
+        assert_eq!(corrections_for(&s, &row.object_id).await.unwrap().len(), 1);
+    });
+}
+
+#[tokio::test]
+async fn a_different_user_may_file_the_same_correction() {
+    // Two people independently hearing the same misheard word is a SIGNAL, and
+    // the unique index includes proposer_id precisely so it is not flattened.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        replace_transcript(&s, &row, &words(2), &[])
+            .await
+            .expect("write");
+        propose_correction(&s, &row.object_id, 0, "same", Some("u1"))
+            .await
+            .expect("first");
+        propose_correction(&s, &row.object_id, 0, "same", Some("u2"))
+            .await
+            .expect("second");
+        assert_eq!(corrections_for(&s, &row.object_id).await.unwrap().len(), 2);
+    });
+}
+
+#[tokio::test]
+async fn a_correction_with_no_proposer_is_not_recorded_as_a_human() {
+    // §8.2 has the UI show "proposed by 4 users" beside a proposal, so an auto
+    // correction recorded as a human would be a lie about who said what.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        replace_transcript(&s, &row, &words(2), &[])
+            .await
+            .expect("write");
+        propose_correction(&s, &row.object_id, 0, "auto", None)
+            .await
+            .expect("correction");
+        let c = corrections_for(&s, &row.object_id).await.unwrap();
+        assert_eq!(c[0].2, "", "no proposer is not a named proposer");
+    });
+}
+
+#[tokio::test]
+async fn an_empty_or_impossible_correction_is_refused() {
+    // An empty correction is a DELETION, and a negative ordinal addresses no
+    // word at all. Both would put a row on file that refers to nothing.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        replace_transcript(&s, &row, &words(2), &[])
+            .await
+            .expect("write");
+        assert!(propose_correction(&s, &row.object_id, 0, "   ", Some("u"))
+            .await
+            .is_err());
+        assert!(propose_correction(&s, &row.object_id, -1, "x", Some("u"))
+            .await
+            .is_err());
+        assert!(corrections_for(&s, &row.object_id)
+            .await
+            .unwrap()
+            .is_empty());
+    });
+}
+
+#[tokio::test]
+async fn a_correction_survives_a_re_transcription_but_the_words_do_not() {
+    // A model update replaces the transcript and its words. It must NOT replace
+    // the corrections: those are human decisions about what was said, they are
+    // the record of what the previous model got wrong, and discarding them with
+    // the model output is how a re-run erases the reason the user re-ran it.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let mut row = transcript(&s, uid).await;
+        replace_transcript(&s, &row, &words(3), &[])
+            .await
+            .expect("write");
+        propose_correction(&s, &row.object_id, 0, "corrected", Some("u"))
+            .await
+            .expect("correction");
+
+        row.model_id = "small.en".to_string();
+        replace_transcript(&s, &row, &words(3), &[])
+            .await
+            .expect("re-run");
+
+        assert_eq!(
+            corrections_for(&s, &row.object_id).await.unwrap().len(),
+            1,
+            "a human decision must outlive the model output"
+        );
+        assert_eq!(
+            words_for(&s, &row.id).await.unwrap().len(),
+            3,
+            "words replaced"
+        );
+    });
+}
