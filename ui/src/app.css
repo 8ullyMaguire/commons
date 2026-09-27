@@ -1,14 +1,17 @@
 /* Global styles. Deliberately almost empty: a design system is not this
    ticket, and a component library would violate "no UI framework" in the
-   ticket. What is here is the reset and the two colour variables the grid
-   reads, so a future theme is a variable change and not a component rewrite. */
+   ticket. What is here is the reset, and the colours are now GENERATED from
+   ui/src/lib/theme/contrast.ts (T-P5-007) -- the promise this comment made
+   in phase 0, that a theme would be "a variable change and not a component
+   rewrite".
 
-:root {
-  --bg: #111;
-  --fg: #eee;
-  --muted: #999;
-  color-scheme: dark;
-}
+   The three values that used to live here are gone rather than overridden.
+   Two copies of a colour set drift quietly: the CSS is what a user sees and
+   the TypeScript is what the contrast test checks, so an edit to one leaves
+   the suite green and the page failing contrast. `scripts/gen-theme-css.py`
+   writes theme.css from the source and verify.sh fails when they disagree. */
+
+@import './theme.css';
 
 * {
   box-sizing: border-box;
@@ -54,4 +57,83 @@ body {
 .count {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+
+/* ---------------------------------------------------------------------------
+   Accessibility primitives. Global, on purpose (T-P5-007, spec 10.8).
+
+   Every one of these is a decision that is WRONG when applied per component:
+   the focus ring is applied once so that a component cannot forget it and a
+   plugin cannot opt out of it, and the hit-target floor is a media-query
+   override so a dense desktop grid stays dense on a desktop.
+--------------------------------------------------------------------------- */
+
+/* A focus ring, and the one place it is defined.
+
+   `:focus-visible` rather than `:focus`, deliberately: `:focus` puts a ring on
+   a mouse click, which is the complaint that makes people turn off the
+   accessibility feature they need. The second rule removes the ring from a
+   focused element that is NOT focus-visible, because some engines style
+   `:focus` on their own and the first rule alone would leave both.
+
+   A component that sets `outline: none` without replacing it is a violation,
+   and `e2e/a11y.spec.ts` is what holds that line -- not this comment. */
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  /* A ring drawn UNDER the content is invisible on a filled control, and the
+     default z-order puts it there. */
+  position: relative;
+  z-index: 1;
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* The hit-target floor (#3322, #6383).
+
+   44px is the WCAG 2.2 target-size minimum, and it is applied only where the
+   pointer is coarse. A 28px row is right on a desktop with a mouse and
+   wrong on a phone, and the query is how one stylesheet says both without
+   duplicating every rule. */
+@media (pointer: coarse) {
+  button,
+  [role='button'],
+  a.btn,
+  input[type='button'],
+  input[type='submit'] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+/* Safe-area insets (#5979).
+
+   `env()` with a fallback, because it is unsupported on a desktop engine and
+   an unsupported function makes the whole declaration invalid -- so the
+   padding would be dropped rather than degraded. The shell carries the inset,
+   not each component, for the same reason the tokens are global: a component
+   that adds its own inset double-pads. */
+.app {
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+/* Respect a reduced-motion preference.
+
+   Not in the ticket's list, and included anyway: `FunscriptPlayer.svelte` and
+   `Lightbox.svelte` both animate, and a user who has asked the OS for less
+   motion has asked this page too. The global kill switch is one rule, and it
+   has to be global to be reliable. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

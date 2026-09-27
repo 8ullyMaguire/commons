@@ -160,6 +160,21 @@ for m in "$REPO"/scripts/mutate-*.mjs; do
   fi
 done
 
+# The theme CSS is GENERATED from ui/src/lib/theme/contrast.ts (T-P5-007), and
+# this is the only thing that stops the two copies drifting.
+#
+# The failure it prevents is the quiet kind: the TypeScript is what the
+# contrast test checks and the CSS is what the user sees, so a colour edited
+# in one place leaves every test green and a page that fails WCAG. Checking
+# here rather than in a test is deliberate -- a test that imports the generated
+# file would be asserting that the generator agrees with itself.
+echo "== generated theme css"
+if python3 "$REPO/scripts/gen-theme-css.py" --check; then
+  :
+else
+  fail=1
+fi
+
 # The Phase 11 ecosystem numbers, re-measured. A staleness check, not a
 # correctness one: upstream pushes daily so the numbers WILL change, and what
 # must not happen is README.md, HANDOFF.md, the plan and the Phase 11 brief
