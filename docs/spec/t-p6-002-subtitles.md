@@ -2,8 +2,9 @@
 
 **Plan entry:** `docs/plans/implementation-plan.md` §T-P6-002
 **Spec:** §5.10 (C10), §11.1
-**Status:** §1–§4 implemented (parsers, schema, store, both engines, probe,
-extractor, sidecar reading). §5–§7 not started.
+**Status:** §1–§5 implemented (parsers, schema, store, both engines, probe,
+extractor, sidecar reading and discovery, transcode plan). §6 has its client
+logic and needs its component; §7 is a deliberate scope statement.
 
 ---
 
@@ -18,9 +19,10 @@ measured about it, and what is missing.
 | `commons-media::probe` | **enumerates them** — `SubtitleStream` in `MediaInfo` |
 | `commons-media::probe` subtitle model | **done** — index, codec, language, size, start |
 | sidecar reading (`.srt` beside the video) | **done** — `Extractor::read_sidecar`, no process |
-| sidecar *discovery* (finding the file) | **does not exist** — §5 |
+| sidecar *discovery* (finding the file) | **done** — `commons-media::sidecar::discover` |
 | extraction (ffmpeg → cues) | **done** — `Extractor::extract_stream` |
-| `commons-media::transcode` | **`-sn`, deliberately.** `transcode.rs:232` defers to this ticket |
+| transcode: carry or re-derive (§5) | **done** — `SubtitlePlan` in `transcode.rs` |
+| `commons-media::transcode` | **carries or re-derives** — `SubtitlePlan`, §5 |
 | ffmpeg `ass` filter | **present** |
 | ffmpeg `subtitles` filter | **present** |
 | ffmpeg `ass`/`ssa`/`subrip` decoders | **present** |

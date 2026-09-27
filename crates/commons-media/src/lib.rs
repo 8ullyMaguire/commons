@@ -13,6 +13,7 @@ pub mod extract;
 pub mod hwaccel;
 pub mod hwaccel_plan;
 pub mod probe;
+pub mod sidecar;
 pub mod subtitles;
 pub mod thumbs;
 pub mod transcode;
