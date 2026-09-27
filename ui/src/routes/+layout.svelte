@@ -79,6 +79,7 @@
   import { guard } from '$lib/api/guard-store.svelte.js';
   import { decide, isDirty, summary } from '$lib/api/guard.js';
   import CommandPalette from '$lib/components/CommandPalette.svelte';
+  import Menu from '$lib/components/Menu.svelte';
   import { commands, handleKey } from '$lib/api/commands-ui.js';
   import { registerAppCommands, CMD } from '$lib/api/command-bindings.js';
   import type { Command } from '$lib/api/commands.js';
@@ -146,6 +147,27 @@
    * than like a constant, and that is the more expensive mistake.
    */
   let selectedCount = $state(0);
+
+  /**
+   * The view menu's items.
+   *
+   * Real destinations rather than placeholders, so the menu is a thing a user
+   * can use and the e2e's click assertions are about a navigation that
+   * happens rather than a callback that fires.
+   *
+   * A menu item navigates, so it goes through `goto` rather than an anchor:
+   * a menu of plain links is nine Tab presses to get past, which is the thing
+   * the menu pattern exists to avoid. The keydown handler owns the keyboard and
+   * the callback owns the navigation, and each is tested for its own property.
+   */
+  const VIEW_ITEMS = ['Wall', 'List', 'Tags', 'Play'].map((label) => ({
+    id: label.toLowerCase(),
+    label,
+    onselect: () => {
+      const path = `/${label.toLowerCase()}`;
+      if (page.url.pathname !== path) goto(path);
+    }
+  }));
 
   let paletteOpen = $state(false);
   /** Set while the palette is open, so the shell knows not to also act. */
@@ -489,6 +511,17 @@
       aria-current={page.url.pathname === '/index-mode' ? 'page' : undefined}>Index</a
     >
     <span class="spacer"></span>
+    <!--
+      The view menu, and the first user of `use:popover`.
+
+      It lives in the shell rather than in a surface because the view
+      preference is the user's, not the page's: set it once and it holds on
+      every route. The trigger is at the far right of the toolbar, which is
+      the worst case for a menu that opens downward -- and the case #4667 is
+      about. That is deliberate. A popover that is only ever tested near the
+      top of the window is a popover whose viewport clamping has never run.
+    -->
+    <Menu label="View" items={VIEW_ITEMS} />
     <!--
       The visible half of the tab-close case. `beforeunload`'s prompt cannot be
       worded, so a user about to close the tab gets one line from the page
