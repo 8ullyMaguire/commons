@@ -170,3 +170,53 @@ The media route (Rust, both engines where it touches the store):
 ## 8. What the implementation found
 
 To be written once the code lands.
+
+---
+
+## 12. As built, and the three things the spec got wrong
+
+**The media route shipped without range requests.** §1 made serving bytes by
+object id, with range support, a precondition. What shipped is
+`crates/commons-store/src/media.rs`: `Location::resolve` returns the path, the
+state and the size for an object the caller is cleared to see, and the consent
+check happens *in the query* — `consent_clause` is part of the `WHERE`, so
+there is no code path that returns a path without having passed the tier
+filter. That is the property worth having, and it is stronger than checking
+after the fetch. The HTTP range layer is still to do; it belongs with the route
+that serves these bytes, and `Location` is the contract it should be written
+against. The spec's ordering was right and its scope was one layer too
+optimistic.
+
+**Choosing a file is a collation problem, not a SQL problem.** One file per
+object is the precondition, so the query returns the row and sorts in Rust.
+The first version had `ORDER BY f.path` and produced different answers on two
+machines: Postgres' default collation is locale-dependent, and a database
+initialised under one `LC_COLLATE` orders `a/b.jpg` differently from another.
+The test that would have caught it is a test asserting *which* file wins, and
+there is one — but only because the fixture has two candidate files with a
+deliberate order. The mutant that "believes the engine's order" is killed by
+that assertion, which is the whole reason the assertion exists.
+
+**The window is a route concern, and it should be.** §2 argued the feed cannot
+hold an index into a growing array. The implementation keeps the focus as an
+index in the *URL* (`/vertical?focus=41`) and slices the window in the route,
+not the component. Two reasons, both found while building it:
+
+- the component is then a pure function of its props, which is what lets the
+  unit tests test the thresholds at their boundaries;
+- the focus is the one piece of state a user is most likely to want to send
+  someone ("this one, at 2:14"), and a component variable cannot be linked,
+  survives a reload, or answers the back button.
+
+The e2e spec asserts the window bound exactly — 12, from 60 rows — rather than
+`less than 60`, because a `< 60` is satisfied by any window at all and would
+survive a change that doubled it.
+
+## 13. What is deliberately not done
+
+- **Range requests and the HTTP route itself.** `Location` is the contract;
+  the route that serves bytes is still to write.
+- **Audio.** The feed is muted by design (§10.8's autoplay constraint), so
+  there is no unmute affordance yet.
+- **Likes, comments, save from within a slide.** The slide is not an item
+  detail page; those are reachable by opening the item.

@@ -2,9 +2,9 @@
 
 Where Commons is, what is verified, and what is deliberately not done.
 
-**As of:** 2026-09-27 · **Branch:** `main` · **No git remote is configured**, so
-nothing here has ever been pushed. That is the one part of the standing
-instruction that cannot be satisfied without someone adding a remote.
+**As of:** 2026-09-27 · **Branch:** `main` · **Remote:** `origin` =
+`https://github.com/8ullyMaguire/commons`; every commit is pushed, and every
+milestone carries an annotated `phase-*` tag.
 
 ---
 
@@ -28,13 +28,13 @@ nothing. `scripts/verify.sh` runs it, so the claim cannot rot.
 
 | | State |
 |---|---|
-| Rust workspace | 1155 tests, 0 failures; 92 UI unit + 22 Playwright, 0 failures |
+| Rust workspace | 1252 tests, 0 failures; 277 UI unit + 68 Playwright, 0 failures |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | `cargo fmt --all --check` | clean |
 | `scripts/scan-history-secrets.py` | 499 blobs, 0 findings |
 | `scripts/scan-history-secrets-selftest.py` | 8/8 planted patterns caught |
-| UI unit tests | 43 pass (`node ./tests/run-tests.mjs`) |
-| UI browser tests | 11 pass (`pnpm run test:e2e`) |
+| UI unit tests | 277 pass (`node ./tests/run-tests.mjs`) |
+| UI browser tests | 68 pass (`pnpm run test:e2e`) |
 | UI type check | 0 errors (`svelte-check --threshold error`) |
 | UI build | clean, no compiler warnings |
 
@@ -381,6 +381,44 @@ every published test vector was too small to reach the broken path.
 So: assert where the *last* item lands, not how many there are; assert *which*
 error came back, not merely that one did; and when a bug survives a mutation
 check, ask whether the test only ever exercised the failing path.
+
+### T-P5-006 item 9 — the feed, and two ways a test proves nothing
+
+Two failures in this item, both of them a test that passed and proved nothing.
+Both are recorded here because the shape recurs, not the instance.
+
+**A mutation survived because the fixture had one of everything.** The first
+preload test used the feed's own fixture — three clips and a still, focus 0 —
+and asserted that exactly items 0, 1 and 2 preload. With `preload="auto"`
+hardcoded on every video the test still passed. The reason: with focus 0 and
+`PREFETCH_AHEAD = 2`, *every* video in that fixture is inside the prefetch
+radius, so the real function and the mutation return the same list. A fixture
+whose every element is inside the filter cannot test the filter. Six clips
+killed it. `media-view.test.ts` had already made the same argument about a
+fixture with one of everything.
+
+**A test asserted an attribute the framework never emits.** The muted-video
+test checked `toHaveAttribute('muted', '')`. Svelte compiles a bare `muted` on
+an element to a *property* assignment, so the markup carries no such
+attribute and the assertion was checking something the component does not
+produce — it would have passed on a feed whose videos never played anything.
+The property is also the only one that matters: it is what the autoplay gate
+reads. The test now asserts the IDL property.
+
+**The third way, which is not a test bug at all.** In `media.rs` the inner
+join cannot be mutated into an observable difference, and that is a fact about
+the SQL rather than a gap in coverage: `consent_clause` emits
+`c.tier IN (...)`, so under a `LEFT JOIN` a missing consent row produces
+`c.tier = NULL`, the predicate is false, and the mutant is a no-op that returns
+exactly the unmutated result. The script records it as a known survivor with
+that reason rather than pretending a test was written for it.
+
+**And the infrastructure betrays you here too.** The mutation script's first
+verdict logic grepped for `0 failed`, which Playwright never prints, and read
+`tail -1`, which only ever sees the pass line — so it reported the inverse of
+the truth for every mutant and looked like four survivors. A harness that
+reports the wrong answer is worse than no harness, because it sends you looking
+for holes that are not there.
 
 ## Deliberately not done
 

@@ -2561,7 +2561,7 @@ unsaved-entry protection (#6466), CSV import (#1296), per-field ignore lists
 attempt navigation with an unsaved edit and assert a confirm appears.
 **Done when:** that test exists.
 
-**Progress (8 of 17).** Item 1, the selection model, and item 2, the list
+**Progress (9 of 17).** Item 1, the selection model, and item 2, the list
 table, are in `ui/src/lib/api/selection.ts` and
 `ui/src/lib/components/ListTable.svelte`. Item 3, the bulk write and its modal,
 is in `crates/commons-store/src/bulk.rs` and
@@ -2581,7 +2581,11 @@ actions, is in `crates/commons-store/src/undo.rs` with migration
 sort and per-user density -- is in `ui/src/lib/api/media-view.ts`,
 `ui/src/lib/components/TagView.svelte`, `crates/commons-store/src/sort.rs` and
 `all_tags_with_counts` in `crates/commons-store/src/tags.rs`, specced in
-`docs/spec/t-p5-006-view-modes.md`.
+`docs/spec/t-p5-006-view-modes.md`. Item 9, the vertical feed, is in
+`ui/src/lib/api/feed.ts`, `ui/src/lib/components/VerticalFeed.svelte` and
+`ui/src/routes/vertical/+page.svelte`, with the media consent gate it needs
+first in `crates/commons-store/src/media.rs`, specced in
+`docs/spec/t-p5-006-vertical-feed.md`.
 
 **Both atomicity gaps the spec named are closed, and neither needed a
 transaction — which is worth recording, because the spec's own conclusion was
