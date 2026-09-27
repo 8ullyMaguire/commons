@@ -26,6 +26,7 @@ pub mod locator;
 pub mod query;
 pub mod relations;
 pub mod search;
+pub mod sort;
 pub mod tags;
 pub mod undo;
 

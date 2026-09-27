@@ -67,6 +67,7 @@ macro_rules! bind_value {
     };
 }
 use crate::filter_ast::{CallerId, Filter};
+use crate::sort::Sort;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -102,12 +103,24 @@ impl fmt::Display for ObjectRow {
 pub struct ObjectPage {
     pub rows: Vec<ObjectRow>,
     pub has_more: bool,
+    /// Where to resume, when there is more to resume from.
+    ///
+    /// `None` whenever `has_more` is false, including for a short page that
+    /// happens to be the last one -- so a caller cannot seek past the end and
+    /// receive an empty page that looks like a filter that matched nothing.
+    #[doc(hidden)]
+    pub next_cursor: Option<crate::sort::Cursor>,
 }
 
 impl ObjectPage {
     /// The ids, for a caller that only wants to know what is there.
     pub fn ids(&self) -> Vec<String> {
         self.rows.iter().map(|r| r.id.clone()).collect()
+    }
+
+    /// Where to resume this page's sort, or `None` at the end.
+    pub fn next_cursor(&self) -> Option<crate::sort::Cursor> {
+        self.next_cursor.clone()
     }
 }
 
@@ -141,10 +154,44 @@ impl Store {
     /// constructor, so every call site has to say who is asking. That is the
     /// entire mechanism: a filter that can be omitted is a filter that will be
     /// omitted, and the call site that omits it is the one nobody reviews.
+    /// Newest first, first page only. Kept for the callers that do not care
+    /// about the order, and defined in terms of [`Self::query_sorted`] so there
+    /// is one query in this file rather than two that can drift.
     pub async fn query(
         &self,
         filter: &Filter,
         caller: &CallerId,
+        limit: usize,
+    ) -> Result<ObjectPage, QueryError> {
+        self.query_sorted(filter, caller, Sort::date_desc(), None, limit)
+            .await
+    }
+
+    /// A consent-filtered object page, in a given order, from a given position.
+    ///
+    /// The order is a tuple, and it is always total: [`Sort`] appends `o.id` as
+    /// the last key so that a page boundary between two rows that tie on
+    /// everything the user named still has a defined answer. Without that, a
+    /// cursor is a guess and the list repeats and skips rows.
+    ///
+    /// `cursor` is the keyset position, or `None` for the first page. It is the
+    /// last row's own key values, produced by [`ObjectPage::next_cursor`] — a
+    /// caller cannot assemble one by hand, so a cursor of the wrong arity for
+    /// the sort is a type error rather than a page that is quietly wrong.
+    ///
+    /// # What is NOT here
+    ///
+    /// No `totalCount`. A `COUNT(*)` over the same filter is a second scan of
+    /// the same inner join, on the hot path, to produce a number the UI can
+    /// show approximately. §5.16 does not require an exact count, and a keyset
+    /// page cannot produce one honestly anyway -- the honest number is "at least
+    /// this many", which is what `has_more` already says.
+    pub async fn query_sorted(
+        &self,
+        filter: &Filter,
+        caller: &CallerId,
+        sort: Sort,
+        cursor: Option<crate::sort::Cursor>,
         limit: usize,
     ) -> Result<ObjectPage, QueryError> {
         if limit > MAX_PAGE {
@@ -166,40 +213,151 @@ impl Store {
         let body = compiled.sql;
         params.extend(compiled.params);
 
-        // `limit + 1` for `has_more`, and the extra row is dropped afterwards
-        // rather than trimmed in SQL, because a `LIMIT` that is off by one
-        // between the count and the page is the classic way to get a page that
-        // says "no more" while one exists.
+        // The keyset predicate, when there is a cursor. Its binds go LAST
+        // because its placeholders appear last in the assembled string -- the
+        // same rule the two pushes above obey, and the same reason the order
+        // is not a coincidence.
+        if let Some(c) = &cursor {
+            params.extend(sort.after_binds(c));
+        }
+        let after_clause = match &cursor {
+            Some(_) => format!(
+                " AND ({})",
+                sort.after_sql().expect("a sort always has a predicate")
+            ),
+            None => String::new(),
+        };
+
+        // The key columns ride along in the SELECT so the last row can become
+        // the next cursor without a second round trip.
+        //
+        // ALL of them, always, in a fixed order -- not just the ones this sort
+        // uses, and not in the sort's order. Two reasons, and the first is the
+        // one that forced it: `sqlx::query_as` maps to a tuple type, so the
+        // column count is fixed at compile time and cannot follow the number of
+        // sort keys. The second: a page's cursor is a *value*, and a value that
+        // could have been assembled in a different order depending on which keys
+        // the sort happened to use is a value whose meaning depends on the sort
+        // that produced it. This one has one meaning.
         let sql = format!(
-            "SELECT o.id, o.kind, o.title, c.tier, c.redistribution_permitted
+            "SELECT o.id, o.kind, o.title, c.tier, c.redistribution_permitted, \
+                    o.date, o.rating_sum, o.title, o.kind, o.created_at
                FROM object o
                INNER JOIN consent_record c ON c.object_id = o.id
-              WHERE {consent} AND ({body})
-              ORDER BY o.date DESC, o.id
+              WHERE {consent} AND ({body}){after_clause}
+              ORDER BY {}
               LIMIT {}",
+            sort.order_by(),
             limit + 1
         );
 
-        let mut qb = sqlx::query_as::<_, (String, String, Option<String>, String, bool)>(&sql);
-        for p in &params {
-            qb = bind_value!(qb, p);
+        // (id, kind, title, tier, redistribution, date, rating_sum, title, kind, created_at)
+        //
+        // `redistribution_permitted` is an INTEGER column in BOTH schemas, and
+        // sqlx decodes a Postgres INTEGER as `i64`, not `bool`. This tuple said
+        // `bool`, so the query PANICKED on Postgres: `mismatched types; Rust type
+        // bool (as SQL type BOOL) is not compatible with SQL type INT4`. The
+        // consent-filtered object query has therefore only ever run against
+        // SQLite, and no test noticed because every test reaching this path used
+        // the SQLite harness.
+        //
+        // Decoding as `i32` and reading "non-zero" as true handles both engines
+        // without a branch: SQLite's INTEGER is a 64-bit value that sqlx will
+        // widen to i32 for a column declared INTEGER, and Postgres's INTEGER is
+        // INT4, which is i32 exactly.
+        //
+        // `locator.rs` reads this same column as `i64` and its tests pass only
+        // on SQLite, for the same reason this one failed: sqlx is strict about
+        // INT4 vs INT8 and does not widen. So there is no "existing idiom to
+        // follow" here -- there is one idiom that happens to be correct on one
+        // engine. Reading it by name with `try_get` is the fix that would work
+        // either way; `i32` is the fix that works for the value this column
+        // actually holds, and the column is a 0/1 flag, so the narrower type is
+        // the right one to assert.
+        type R = (
+            String,         // id
+            String,         // kind
+            Option<String>, // title
+            String,         // tier
+            i32,            // redistribution_permitted: Postgres INTEGER is INT4
+            Option<String>, // date
+            i64,            // rating_sum (NOT NULL in the schema)
+            Option<String>, // title (as a sort key)
+            String,         // kind (as a sort key)
+            String,         // created_at
+        );
+        // Two arms, not one generic executor.
+        //
+        // `self.pool()` is SQLite-only and panics on Postgres -- and the code
+        // this replaced CALLED IT, so the consent-filtered object query has
+        // only ever run against SQLite. No test caught it because every test
+        // that exercises this path used the SQLite harness. The match is what
+        // the rest of this crate already does (see `relations.rs`), and writing
+        // it out is the price of two engines: the `?` placeholders have to
+        // become `$1..$n` on the Postgres side, which is not something a shared
+        // executor can hide, because the number of placeholders is not known
+        // until the statement is assembled.
+        macro_rules! bound {
+            ($qb:expr) => {{
+                let mut qb = $qb;
+                for p in &params {
+                    qb = bind_value!(qb, p);
+                }
+                qb
+            }};
         }
-        let raw = qb.fetch_all(self.pool()).await.map_err(StoreError::Query)?;
+        let raw: Vec<R> = match self {
+            Store::Sqlite(p) => bound!(sqlx::query_as::<_, R>(&sql))
+                .fetch_all(p)
+                .await
+                .map_err(StoreError::Query)?,
+            Store::Postgres(p) => {
+                let pg = Store::bind_sql(&sql);
+                bound!(sqlx::query_as::<_, R>(&pg))
+                    .fetch_all(p)
+                    .await
+                    .map_err(StoreError::Query)?
+            }
+        };
 
         let has_more = raw.len() > limit;
+        // The cursor is the LAST ROW THE CALLER SEES -- index `limit - 1` --
+        // and not the extra `limit + 1`-th row, which exists only to prove
+        // `has_more` and is dropped.
+        //
+        // I wrote the extra row first, and it was a silent data-loss bug: seeking
+        // from a row that was never returned skips that row on the next page, so
+        // every page boundary would drop exactly one object and the list would
+        // be quietly missing 1-in-N of the library with no error anywhere. The
+        // `limit + 1` window is what makes this mistake easy to write, because
+        // the row carrying the key values is right there in the loop.
+        let visible = &raw[..limit.min(raw.len())];
+        let rows: Vec<ObjectRow> = visible
+            .iter()
+            .map(|(id, kind, title, tier, redistribution, ..)| ObjectRow {
+                id: id.clone(),
+                kind: kind.clone(),
+                title: title.clone(),
+                tier: tier.clone(),
+                redistribution_permitted: *redistribution != 0,
+            })
+            .collect();
+        let next_cursor = if has_more {
+            visible.last().map(
+                |(id, _, _, _, _, date, rating_sum, sk_title, sk_kind, added)| {
+                    crate::sort::Cursor::from_row(
+                        &sort, id, date, rating_sum, sk_title, sk_kind, added,
+                    )
+                },
+            )
+        } else {
+            None
+        };
+
         Ok(ObjectPage {
-            rows: raw
-                .into_iter()
-                .take(limit)
-                .map(|(id, kind, title, tier, redistribution)| ObjectRow {
-                    id,
-                    kind,
-                    title,
-                    tier,
-                    redistribution_permitted: redistribution,
-                })
-                .collect(),
+            rows,
             has_more,
+            next_cursor,
         })
     }
 

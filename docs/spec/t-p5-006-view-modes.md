@@ -108,19 +108,46 @@ rendered as a video that will not play.
 
 ## 4. Secondary sort (#7068, #1508)
 
-§10.4 names secondary-sort *correctness*, which is the tell: the bug is not that
-sorting is missing, it is that a sort is not a total order.
+**Measured first, and the measurement invalidated the section I had written.** I
+specced this as a *correctness* fix — a keyset cursor carrying `(sort, id)` where
+it must carry `(primary, secondary, id)`, producing repeats and skips at page
+boundaries. That is a real bug shape, but there is no such cursor here:
 
-A keyset cursor is `(sort, direction, id)` today. A user asking for "newest
-first, then by rating" needs `(primary, secondary, id)` — and the id is only the
-last tiebreaker if **every** preceding key is in the cursor. A cursor carrying
-only the primary key produces a list that repeats and skips rows at every
-boundary, and the only way to see it is a list longer than one page, sorted on a
-column with ties.
+- `Store::query` (`crates/commons-store/src/query.rs:178`) hard-codes
+  `ORDER BY o.date DESC, o.id`. The `sort` string in `GridQuery` is never sent,
+  never read, and has no server-side meaning.
+- `Store::query` takes `(filter, caller, limit)` — **no offset and no cursor**.
+  `ObjectPage` is `{ rows, has_more }`. The "keyset cursor" in
+  `ui/src/lib/api/keyset.ts` is a client-side row list with a dedup set, not a
+  seek position.
 
-So `GridQuery` gains `secondary` and the cursor carries the full key tuple. The
-test that matters is not "sorting works" — it is **a key with more ties than fit
-in one page, and the assertion that page 2 contains no id from page 1.**
+So the honest scope is: **there is no sort and no server-side pagination at
+all.** Secondary sort cannot be a fix; it requires the primary sort, and both
+require the pagination. The ticket's own wording ("secondary-sort correctness")
+is the kind of phrase that presumes the rest of the stack exists, and here it
+does not — which is the second time in this item that §10.4's surface list
+described something as a small fix to something that was not built.
+
+This is not a reason to shrink the item. It is a reason to build the sort as a
+total order from the start, because the expensive mistake is building a single-key
+sort now and discovering the cursor problem later, on top of a working query.
+
+**The design, and the part that is not optional:** the sort is a *tuple* of keys,
+always ending in `id`. `ORDER BY <k1> <dir1>, <k2> <dir2>, o.id ASC` — the trailing
+`id` unconditionally, with its own fixed direction, is what makes the order total
+and therefore makes a cursor correct. A secondary key with *its own* direction
+spells `[{"date":"DESC"},{"rating":"ASC"}]`; the `id` is not a key the user
+chooses, because a user-chosen `id` direction would break the tiebreak that the
+id exists to provide.
+
+Keyset pagination (`WHERE (k1, k2, id) > (?, ?, ?)`) needs row-value comparison,
+which **Postgres has and SQLite does not** — SQLite's row values compare
+lexicographically as blobs, and `>` on a row value is not the tuple comparison
+the ORDER BY implies. The portable spelling is the explicit three-way form, which
+is the same trap the undo CTE just walked into: the obvious SQL is the one engine
+only. The test that matters is therefore not "sorting works" but **a key with more
+ties than fit in one page, asserting page 2 repeats no id from page 1** — the
+boundary is the only place a non-total order shows.
 
 ## 5. Per-user density
 
