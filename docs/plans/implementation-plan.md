@@ -2910,12 +2910,14 @@ word becomes a proposal, not a silent overwrite.
 
 **Spec:** `docs/spec/t-p6-004-interviews.md`.
 
-**Progress:** the storage layer and the engine seam are done and tested
-(`crates/commons-ml/src/asr/`, `crates/commons-store/src/interview.rs`,
-migration 0023, 24 store tests x 2 engines). Remaining: the two engine
-adapters (whisper.cpp, parakeet), chapters/quotes/topics as `Marker`s and
-weighted `Tag`s, speaker attribution into `PersonCluster`, and the timing
-acceptance test against a hand-checked fixture.
+**Progress:** the storage layer, the engine seam, BOTH engine adapters and both
+accept criteria are done and tested (`crates/commons-ml/src/asr/`,
+`crates/commons-store/src/interview.rs`, migration 0023; 24 store tests x 2
+engines, 12 whisper parser tests, 11 parakeet sidecar tests over a real pipe,
+7 timing tests). parakeet is a Python sidecar, not in-process — spec §3.1 was
+revised in place to say so and why. Remaining: chapters/quotes/topics as
+`Marker`s and weighted `Tag`s, speaker attribution into `PersonCluster`, and the
+model-backed half of the timing test.
 
 **Split out of this ticket:** the *Q&A search* page. The deliverable that makes
 it possible is a searchable word-level transcript, and a search UI built before

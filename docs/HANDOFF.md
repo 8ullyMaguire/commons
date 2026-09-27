@@ -36,10 +36,31 @@ interview and of a four-minute one are unrelated words), and a correction
 **outlives a re-transcription** — a model update replaces the words, and
 discarding the human decisions with them erases the reason the user re-ran it.
 
-Not done: the two engine adapters (whisper.cpp, parakeet), chapters/quotes/
-topics as `Marker`s and weighted `Tag`s, speaker attribution into
-`PersonCluster`, and the model-backed half of the timing test (written, loudly
-skipped — it is not counted as passing).
+**Both engine adapters are done, and parakeet is a subprocess after all.**
+whisper.cpp parses its own JSON (12 tests, no binary required). parakeet is a
+Python sidecar over a pipe, and the spec's §3.1 was **revised in place** to say
+so — the original text chose in-process "because the memory is bounded by chunk
+size", which was reasoning about the model rather than about the repository.
+The three reasons it changed, in order: an in-process ONNX path cannot be
+tested here at all (HuggingFace 401s, no model fetchable, no runtime
+installed), so it would ship with nothing but a clean compile as evidence; a
+subprocess cannot wedge a scan, which the original argument applied to
+whisper.cpp and then stopped; and `tract-onnx` pulls ~20 crates for one optional
+feature. What survived is that both engines verify the digest before loading.
+
+The 11 sidecar tests run the **real Python over a real pipe** against a fake
+`onnxruntime`, so the protocol is verified on a machine with no model. Two
+things worth knowing: the fake must be named `onnxruntime.py` (anything else is
+importable by nobody and every run reports "onnxruntime is not installed",
+which reads like a broken environment), and the blank index is a **parameter**,
+not a constant — CTC puts it last, TDT first, and guessing emits a word per
+frame of silence. The decode's run-tracking was wrong twice before it was
+right: a run's start was set after the word was emitted, so every transcript's
+first word was timed from frame 0.
+
+Not done: chapters/quotes/topics as `Marker`s and weighted `Tag`s, speaker
+attribution into `PersonCluster`, and the model-backed half of the timing test
+(written, loudly skipped — not counted as passing).
 
 **A test that could not fail, found by mutating the code it covers.**
 `dropping_a_supervised_child_leaves_no_zombie` counted `ps -eo stat= | grep -c

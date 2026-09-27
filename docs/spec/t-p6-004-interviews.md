@@ -89,12 +89,42 @@ Two engines, both local, both behind the trait:
   in-process, which is what makes it usable for a library scan; whisper.cpp is
   what makes it usable for a one-off.
 
-**Why a subprocess for whisper.cpp and in-process for parakeet.** A subprocess
-that can be killed is a subprocess that cannot wedge a scan. A local ASR model
-given a pathological 90-minute input can allocate until the OOM killer arrives,
-and a library that can be OOM-killed mid-scan is a library whose scan is not
-resumable. The ONNX path gets in-process only because `ModelError` has already
-made the model file trustworthy and the memory is bounded by chunk size.
+**Why a subprocess for whisper.cpp and in-process for parakeet.**
+
+**Revised, and the revision is the point.** The original text above chose
+in-process for parakeet "because the memory is bounded by chunk size". That was
+reasoning about the model, not about the repository, and it is the kind of
+reasoning that is never re-checked because it sounds like engineering.
+
+The parakeet path is a **subprocess too** — a Python sidecar speaking ONNX
+Runtime over a pipe. The reasons, in the order they mattered:
+
+1. **It can be verified.** whisper.cpp's JSON parser is a pure function, and it
+   is tested on this machine with no model present. An in-process ONNX path
+   cannot be tested that way: its correctness is a property of a model file
+   nobody can fetch, behind a runtime nobody has installed. Shipping it would
+   mean shipping code whose only evidence is that it compiles.
+2. **It can be killed.** The original argument — that a subprocess cannot wedge
+   a scan — applied to whisper.cpp and was not applied to parakeet, for no
+   reason other than that the reasoning ran out. A pathological 90-minute input
+   can allocate until the OOM killer arrives either way; being in-process only
+   means the OOM killer takes the *library* with it, so the scan is not
+   resumable. That is a worse failure than the one the design was trying to
+   avoid, not a better one.
+3. **The dependency is not free.** The in-process route needs an ONNX runtime
+   bound into the workspace. `tract-onnx` pulls ~20 transitive crates including
+   a full NNEF and transformer stack, for a feature that one user with one
+   model will use. The sidecar needs Python, which the user already needs to
+   have for the model anyway.
+
+What is **kept** from the original is the reason the model file is trustworthy:
+both engines verify the digest through `ModelSource::open_with_sha256` before
+loading, and neither is opened on a mismatch.
+
+The cost, stated plainly: a Python sidecar is a dependency the user must
+install, it is slower to start, and it will not work on a machine with no
+Python. That is a real cost and it is why the second engine is optional and
+whisper.cpp is the default.
 
 ### 3.2 Chunking
 
