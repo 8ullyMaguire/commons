@@ -17,10 +17,43 @@
 mod support;
 
 use axum::http::{header, StatusCode};
-use support::{playable_video_fixture, set_content_hash, unplayable_video_fixture, TestApp};
+use support::{
+    media_fixture_denied, playable_video_fixture, set_content_hash, unplayable_video_fixture,
+    TestApp,
+};
 
 fn body_of(r: &support::TestResponse) -> serde_json::Value {
     serde_json::from_slice(&r.body).unwrap_or(serde_json::Value::Null)
+}
+
+/// A real, browser-playable mp4, for a fixture that must not be transcodeable.
+fn playable_mp4() -> Option<Vec<u8>> {
+    // The same bytes `playable_video_fixture` writes, obtained the same way --
+    // the helper writes a file, this returns its contents.
+    let out = std::process::Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=160x120:rate=8:duration=1",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-profile:v",
+            "baseline",
+            "-f",
+            "mp4",
+            "pipe:1",
+        ])
+        .output()
+        .ok()?;
+    if out.status.success() && !out.stdout.is_empty() {
+        Some(out.stdout)
+    } else {
+        None
+    }
 }
 
 #[tokio::test]
@@ -280,5 +313,185 @@ async fn a_low_height_request_does_not_produce_a_taller_proxy() {
         r.body.len() < 2_000_000,
         "a 240p request should not produce a 1080p file: {} bytes",
         r.body.len()
+    );
+}
+
+/// `GET /media/:id/caps` -- what the server knows about playability.
+///
+/// The player's whole reason for existing as a client is that it must decide
+/// *before* constructing a `<video>`, and it cannot: `ObjectRow` has no
+/// container, no codecs and no frame rate, and the database has no columns for
+/// them either. So it asks. These tests are about the answer being the real one
+/// -- from the same probe and the same `rung_for` the proxy uses -- rather than
+/// a client-side guess that is permanently "proxied".
+#[tokio::test]
+async fn a_playable_file_reports_a_null_rung() {
+    // `rung: null` in a 200, not a 404. "This file is fine" is an answer, and
+    // the client exists to receive it.
+    let app = TestApp::new().await;
+    let Some(object_id) = playable_video_fixture(&app).await else {
+        eprintln!("skipping: ffmpeg absent");
+        return;
+    };
+    let r = app.get_raw(&format!("/media/{object_id}/caps")).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let b = body_of(&r);
+    assert!(
+        b["rung"].is_null(),
+        "an h264/mp4 needs no proxy, so the rung must be null: {b}"
+    );
+    // The codecs are named, because the client's own `needsProxy` restates this
+    // rule and a client that guessed differently would need them to tell why.
+    assert_eq!(b["video_codec"], "h264");
+    assert_eq!(b["container"], "mov,mp4,m4a,3gp,3g2,mj2");
+}
+
+#[tokio::test]
+async fn an_unplayable_file_reports_the_rung_it_would_use() {
+    let app = TestApp::new().await;
+    let Some(object_id) = unplayable_video_fixture(&app).await else {
+        eprintln!("skipping: ffmpeg absent");
+        return;
+    };
+    let r = app.get_raw(&format!("/media/{object_id}/caps")).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let b = body_of(&r);
+    let rung = b["rung"].as_u64().expect("an mpeg4 source needs a proxy");
+    assert!(
+        (480..=1080).contains(&rung),
+        "the rung must be one of the ladder's, not an arbitrary height: {b}"
+    );
+    assert_eq!(b["video_codec"], "mpeg4");
+}
+
+#[tokio::test]
+async fn caps_agrees_with_the_proxy_rather_than_deciding_twice() {
+    // THE claim. The client decides from this answer, and the proxy refuses or
+    // serves from its own. If the two can disagree, then a client told "no
+    // proxy needed" gets a 422 from the proxy route, or vice versa -- and both
+    // look like a broken player rather than a disagreement between two
+    // implementations of the same rule.
+    let app = TestApp::new().await;
+    let Some(playable) = playable_video_fixture(&app).await else {
+        eprintln!("skipping: ffmpeg absent");
+        return;
+    };
+    let Some(unplayable) = unplayable_video_fixture(&app).await else {
+        eprintln!("skipping: ffmpeg absent");
+        return;
+    };
+
+    // Says "no proxy needed" => the proxy route refuses.
+    let caps = body_of(&app.get_raw(&format!("/media/{playable}/caps")).await);
+    assert!(caps["rung"].is_null());
+    assert_eq!(
+        app.get_raw(&format!("/media/{playable}/proxy.m3u8"))
+            .await
+            .status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "caps said no rung and the proxy transcoded anyway: two decisions"
+    );
+
+    // Says "a rung" => the proxy route serves.
+    let caps = body_of(&app.get_raw(&format!("/media/{unplayable}/caps")).await);
+    assert!(!caps["rung"].is_null());
+    assert_eq!(
+        app.get_raw(&format!("/media/{unplayable}/proxy.m3u8"))
+            .await
+            .status,
+        StatusCode::OK,
+        "caps named a rung and the proxy refused: two decisions"
+    );
+}
+
+#[tokio::test]
+async fn caps_reports_the_dimensions_and_rate_a_frame_seek_needs() {
+    // `frameToMs` returns null without a rate, and a player that has been told
+    // nothing reports time accuracy -- so this endpoint is where a frame-accurate
+    // seek either becomes possible or is honestly not.
+    let app = TestApp::new().await;
+    let Some(object_id) = playable_video_fixture(&app).await else {
+        eprintln!("skipping: ffmpeg absent");
+        return;
+    };
+    let b = body_of(&app.get_raw(&format!("/media/{object_id}/caps")).await);
+    // 320x240 at 10fps: the shape `playable_video_fixture` writes. Asserting the
+    // real numbers rather than plausible ones is the point -- a test written
+    // against a guess fails here and tells you to read the fixture.
+    assert_eq!(b["width"], 320, "{b}");
+    assert_eq!(b["height"], 240, "{b}");
+    assert_eq!(b["fps"], 10.0, "{b}");
+    assert_eq!(b["duration_ms"], 1000, "{b}");
+    // And rotation, because a sideways phone video is a grid of wrong thumbnails
+    // and the field has to be somewhere the player can use it.
+    assert_eq!(b["rotation"], 0, "{b}");
+    // The fixture is silent (`-an`), so the audio codec is the empty string --
+    // NOT null and NOT absent. That distinction is load-bearing: a client
+    // matching an audio codec against a whitelist needs to see "", and read it
+    // as "no audio", which is the case a browser plays natively.
+    assert_eq!(
+        b["audio_codec"], "",
+        "a silent file reports an empty codec: {b}"
+    );
+}
+
+#[tokio::test]
+async fn caps_is_404_for_an_object_the_caller_may_not_see() {
+    // The same gate, and the same answer, as every other media route. A caps
+    // endpoint that 200s for a denied object would be a way to learn what is in
+    // the library, and it would do it by returning the codecs.
+    let app = TestApp::new().await;
+    // The existing denied fixture: a real, playable mp4 at a tier the local
+    // caller may not see. Using a real file matters here -- the assertion is
+    // that the response does not describe it, and a random-bytes fixture would
+    // have nothing to leak.
+    let Some(bytes) = playable_mp4() else {
+        eprintln!("skipping: ffmpeg absent");
+        return;
+    };
+    let object_id = media_fixture_denied(&app, &bytes).await;
+    let r = app.get_raw(&format!("/media/{object_id}/caps")).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    assert!(
+        !String::from_utf8_lossy(&r.body).contains("h264"),
+        "a refused caps response must not leak what the file is"
+    );
+}
+
+#[tokio::test]
+async fn caps_of_an_unknown_object_is_404() {
+    let app = TestApp::new().await;
+    assert_eq!(
+        app.get_raw("/media/no-such-object/caps").await.status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn caps_does_not_transcode_anything() {
+    // The whole point is to be cheap. If this route encoded, a player opening a
+    // file would pay a transcode before the user pressed play, and then pay
+    // again for the proxy it was told to use.
+    let app = TestApp::new().await;
+    let Some(object_id) = unplayable_video_fixture(&app).await else {
+        eprintln!("skipping: ffmpeg absent");
+        return;
+    };
+    let r = app.get_raw(&format!("/media/{object_id}/caps")).await;
+    assert_eq!(r.status, StatusCode::OK);
+    // The observable proof: caps returns in roughly the time a probe takes and
+    // does NOT return video. A route that transcoded would answer with the
+    // encode's content type and take minutes. Asserting on the body is the
+    // version of this that does not depend on a cache directory's location,
+    // which is `TestApp`'s business and not this test's.
+    assert_eq!(
+        r.headers[header::CONTENT_TYPE],
+        "application/json",
+        "caps must answer with a description, never with media"
+    );
+    let b = body_of(&r);
+    assert!(
+        b.get("video_codec").is_some(),
+        "a description, not a video: {b}"
     );
 }

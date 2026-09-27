@@ -360,3 +360,124 @@ export interface CreateAllMissingResult {
 export function createAllMissing(rows: readonly string[]): Promise<CreateAllMissingResult> {
   return query<CreateAllMissingResult>(CREATE_ALL_MISSING, { rows });
 }
+
+// ---------------------------------------------------------------------------
+// Playback state (T-P6-001)
+// ---------------------------------------------------------------------------
+
+/**
+ * A file's saved position, as the server holds it.
+ *
+ * Both loop markers are nullable *independently*, and that is the shape the
+ * database has: a half-set loop is a real state a user can leave behind by
+ * setting marker A and not marker B, and collapsing it to "no loop" would make
+ * the UI claim marker A does not exist.
+ */
+export interface PlaybackState {
+  readonly position_ms: number;
+  readonly duration_ms: number | null;
+  readonly loop_a_ms: number | null;
+  readonly loop_b_ms: number | null;
+  readonly completed: boolean;
+  readonly updated_at: string;
+}
+
+function mediaPath(objectId: string, suffix = ''): string {
+  return `/media/${encodeURIComponent(objectId)}${suffix}`;
+}
+
+/**
+ * What the server knows about a file's shape and playability.
+ *
+ * `rung` is the load-bearing field: null means a browser plays this directly,
+ * a number is the proxy height to ask for. The client cannot work this out
+ * itself -- `ObjectRow` has no container, no codecs and no frame rate, and the
+ * database has no columns for them -- so a client that guessed would guess
+ * "proxied" every time and pay a transcode per file. The same failure as the
+ * `format_name` bug in the ladder, one layer up.
+ */
+export interface MediaCaps {
+  readonly container: string;
+  readonly video_codec: string;
+  /** `""` for a silent file, which is NOT the same as a missing field. */
+  readonly audio_codec: string;
+  readonly width: number | null;
+  readonly height: number | null;
+  readonly fps: number | null;
+  /** Display-matrix rotation, 0/90/180/270. */
+  readonly rotation: number | null;
+  readonly duration_ms: number | null;
+  /** The proxy height this file needs, or null when it needs none. */
+  readonly rung: number | null;
+}
+
+/**
+ * Ask what a file is.
+ *
+ * A 404 becomes null, like `fetchPlayback`: "no such file, or none you may see"
+ * is an answer the caller already has to handle, and a thrown error here would
+ * make "the file is gone" and "the server is down" the same message to a user.
+ * A 422 means ffprobe could not read the file, which is a *different* failure
+ * and does throw -- the caller says "this file cannot be read" rather than
+ * playing nothing.
+ */
+export async function fetchMediaCaps(
+  objectId: string,
+  signal?: AbortSignal
+): Promise<MediaCaps | null> {
+  const res = await fetch(mediaPath(objectId, '/caps'), { signal });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`caps: ${res.status}`);
+  return (await res.json()) as MediaCaps;
+}
+
+/**
+ * Read a file's saved position.
+ *
+ * A file with no saved state is not an error: it is a file nobody has played,
+ * which is the normal case for most of a library. So a 404 becomes `null` and
+ * every other failure throws -- "this file has never been played" and "the
+ * server is down" need different responses from a player, and only the second
+ * is worth telling a user about.
+ */
+export async function fetchPlayback(
+  objectId: string,
+  signal?: AbortSignal
+): Promise<PlaybackState | null> {
+  const res = await fetch(mediaPath(objectId, '/playback'), { signal });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`playback: ${res.status}`);
+  return (await res.json()) as PlaybackState;
+}
+
+/**
+ * Save a position.
+ *
+ * `keepalive` is set because the most important call is the one made as the page
+ * goes away, and a `fetch` cancelled by navigation is a position lost -- which
+ * is the whole reason the endpoint exists. One header on every call is cheaper
+ * than a second code path for the one call that matters most.
+ *
+ * The loop markers are sent as null rather than 0 when unset. The server stores
+ * NULL for "not set"; sending 0 would be a real position at the start of the
+ * file, and a loop whose A is 0 is one the server's CHECK rejects as not
+ * ordered.
+ */
+export function savePlayback(
+  objectId: string,
+  state: {
+    position_ms: number;
+    duration_ms: number | null;
+    loop_a_ms: number | null;
+    loop_b_ms: number | null;
+  }
+): Promise<void> {
+  return fetch(mediaPath(objectId, '/playback'), {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(state),
+    keepalive: true
+  }).then((res) => {
+    if (!res.ok) throw new Error(`playback: ${res.status}`);
+  });
+}

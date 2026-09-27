@@ -148,6 +148,86 @@ pub async fn get_proxy(
     serve_file(out_path, headers).await
 }
 
+/// `GET /media/:id/caps` -- what the server knows about this file's playability.
+///
+/// # Why this exists, and why it is a separate call
+///
+/// The player has to know whether to point a `<video>` at the file or at the
+/// proxy, and it has to know BEFORE the element is constructed: a source the
+/// browser cannot decode produces a `<video>` that never fires `canplay`, and
+/// the user gets a black rectangle with a play button that does nothing. So the
+/// decision cannot be made after an error.
+///
+/// The alternative -- deriving it from the object row -- does not work, and the
+/// reason is worth recording: `ObjectRow` has no container, no codecs and no
+/// frame rate, because nothing in the library views needs them and the database
+/// has no columns for them either. So a client guessing from a row is guessing,
+/// and `needsProxy({})` is permanently `true`: every file proxied, a transcode
+/// per file, for files that needed none. Which is the same silent cost as the
+/// `format_name` bug in the ladder, one layer up.
+///
+/// So the client asks, and the answer comes from the same probe and the same
+/// [`rung_for`] the proxy itself uses. One decision, one implementation, and a
+/// client that gets the real answer instead of a conservative guess.
+///
+/// The cost is one ffprobe per open, which is milliseconds on a small file and
+/// tens on a large one. That is a real cost, and the reason a future cache is
+/// keyed on the file's hash rather than its path: this endpoint is correct now
+/// and expensive, and the fix is to remember the answer, not to stop asking.
+///
+/// `rung` is `null` when the file needs no proxy, which is the case the caller
+/// exists to detect. A 200 with `rung: null` rather than a 404, because "this
+/// file is fine" is an answer and not a failure.
+pub async fn get_caps(
+    State(state): State<std::sync::Arc<AppState>>,
+    AxumPath(object_id): AxumPath<String>,
+) -> Response {
+    // The same gate as `/media/:id` and `/proxy.m3u8`, for the same reason: one
+    // consent decision, made in one place, rather than three that can disagree.
+    let location = match state.store.media_path(&object_id, &local_caller()).await {
+        Ok(Some(loc)) => loc,
+        Ok(None) => return not_found(),
+        Err(e) => {
+            tracing::error!(object_id = %object_id, error = %e, "caps: media_path failed");
+            return internal_error();
+        }
+    };
+    if !location.is_present() {
+        return not_found();
+    }
+
+    // A probe failure is NOT a 404 and NOT a 500. It means the file is indexed
+    // and unreadable, which is a state a user can act on differently from either.
+    let info = match probe::probe(&location.path) {
+        Ok(i) => i,
+        Err(e) => {
+            tracing::warn!(object_id = %object_id, error = %e, "caps: probe failed");
+            return unprocessable(format!("cannot read the source file: {e}"));
+        }
+    };
+
+    let caps = source_caps(&info);
+    let rung = rung_for(&caps);
+    // Width, height, fps and rotation come off the FIRST video stream, which is
+    // the same stream `source_caps` reads the codec from -- so the shape a client
+    // is told about and the shape the ladder judged are the same file's. A file
+    // with no video stream reports nulls rather than zeros, because "0x0" reads
+    // as a real measurement and `fps: 0` is what a failed probe would look like.
+    let video = info.video_streams.first();
+    let json = serde_json::json!({
+        "container": caps.container,
+        "video_codec": caps.video_codec,
+        "audio_codec": caps.audio_codec,
+        "width": video.map(|v| v.width),
+        "height": video.map(|v| v.height),
+        "fps": video.map(|v| v.fps),
+        "rotation": video.map(|v| v.rotation),
+        "duration_ms": info.duration_ms,
+        "rung": rung.map(|r| r.height()),
+    });
+    (StatusCode::OK, axum::Json(json)).into_response()
+}
+
 /// The rung for a requested height, never above the one the source needs.
 ///
 /// A request for 1080 of a source that only needs a 480 proxy gets 480: the

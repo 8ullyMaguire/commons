@@ -1679,3 +1679,69 @@ only crate holding a second router that does not exist. The route calls
 `Transcoder` and probes; it does not reimplement either, and its consent gate is
 `Store::media_path` — the same call `/media/:id` makes, so there is one gate
 rather than two.
+
+## The player, on the client: a seek is a request, not a fact
+
+T-P6-001's client half (`ui/src/lib/player/player.ts`, `Player.svelte`,
+`/play`, and `e2e/player.spec.ts`) turned up five more silent failures. Four of
+them are one bug wearing five costumes, and the fifth is the reason the other
+four were findable.
+
+**`video.currentTime = x` is a REQUEST, and the browser can refuse it silently.**
+No `error`, no `seeked`, and `currentTime` keeps its old value while `timeupdate`
+goes on reporting it. Every one of these followed from that:
+
+- a resume wrote 2,500 ms, `timeupdate` overwrote it with 0, and the file opened
+  at the start with a saved position nobody could see;
+- a scrubber drag was fighting the clock several times a second, so the thumb
+  sprang back to wherever playback was;
+- a loop marker dropped right after a drag landed at the position the file used
+  to be at — **and was silently wrong**, because a marker is a place in time and
+  a marker at the wrong place is worse than no marker.
+
+The fix is a `pendingSeek` that holds the requested position until `seeked`
+says otherwise, and `seeking` so the clock gets no vote during a drag. But the
+part that matters is the **bound**: after `SEEK_GRACE_MS` the clock takes the
+position back, because a control that displays a position the file is not at —
+for ever, with every later marker placed from it — is worse than a seek that did
+not happen. `a refused seek does not leave the scrubber showing a position the
+file is not at` is the test that stops "optimistically show the seek" from being
+a fix that passes.
+
+**`ObjectRow` has no codecs, so a client guessing always guesses "proxy."** Same
+silent cost as the `format_name` bug, one layer up: a transcode for every file in
+the library, for files that need none. The database has no columns for them
+either, so the client cannot know. Hence `GET /media/:id/caps` — the server's own
+probe and the same `rung_for` the proxy route uses, so there is one decision
+rather than two implementations that can disagree. `caps agrees with the proxy
+rather than deciding twice` asserts the agreement in both directions, because
+disagreement in either one looks like a broken player.
+
+**`completed` was being thrown away.** The stored state has it, `resumePosition`
+honours it, and the component kept only `position_ms` and the loop — so every
+video a user had watched to the end resumed at its **final frame**. Found by the
+one test that asserted the decision rather than the file.
+
+**`isLoopArmed` demanded `a_ms > 0`, and the server does not.** A loop over the
+first five seconds is a loop a user sets by dragging A to the start; the
+database's CHECK only requires `a < b`. The extra condition made that loop inert
+— the marker drawn, the badge silent, the file not looping. "Unset" is NULL, and
+`loopMarkers` is the one place that says so.
+
+**A `-1` sentinel is not a way to say "nothing".** `data-resume-target` used one,
+and a test asserting `-1` passed against a player that had not finished asking
+the server — then failed in a different test order, and would have been deleted
+as flaky. The attribute is now *absent* for "start at the beginning", with
+`data-resume-decided` carrying the distinction that absence cannot.
+
+And the note that makes the rest findable, from the e2e suite: **this
+environment's Chromium will not seek a paused, never-played video at all.**
+`currentTime = 2.5` reads back 0, readyState is 4, the range is buffered, no
+event fires. The product code is correct; an assertion on the element's clock
+would be testing a browser limitation. So the e2e tests assert the *decision*
+(`data-resume-target`) and the *file's agreement with the control* — and where a
+real media event was needed, the fixture is a real H.264 MP4 rather than a
+synthetic blob, because Chromium here has no VP8-in-MSE and a fixture the browser
+rejects produces a player that never leaves its loading state, which then fails
+as a broken resume, a broken scrubber, or a broken control bar: all three of the
+things being tested.
