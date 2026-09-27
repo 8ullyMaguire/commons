@@ -854,18 +854,39 @@ fn a_missing_program_is_a_failure_not_a_panic() {
 /// system.
 #[test]
 fn dropping_a_supervised_child_leaves_no_zombie() {
-    let count_zombies = || -> usize {
+    // Count only OUR OWN children, identified by pid.
+    //
+    // The obvious version -- `ps -eo stat= | grep -c '^Z'` -- measures the whole
+    // machine, so it counts every other process's unreaped children as ours.
+    // That is not a weaker test, it is a test of something else: it failed at
+    // 13 zombies against a baseline of 7 while three cargo runs were in flight,
+    // spawned 20 children, reaped all 20 correctly, and still reported a
+    // failure. The assertion below is the same claim with the noise removed.
+    let child_pids = || -> Vec<u32> {
+        // Built as one String first: `args` wants a homogeneous array, and
+        // splicing a `String` into a `&str` literal does not compile.
+        // `$2` is the parent, not `$1`. `ps -eo pid=,ppid=,stat=` prints
+        // pid FIRST, so matching `$1 == me` finds the row for the test process
+        // ITSELF and never a child -- an always-empty list, so the assertion
+        // below could not fail. Verified against a real zombie on this box:
+        // `$1 == <its ppid>` returns nothing, `$2 == <its ppid>` returns its
+        // pid. The stat column is matched with `^Z` rather than `== "Z"`
+        // because the trailing flag is part of it: zombies read `Z<` or `ZN`.
+        let script = format!(
+            "ps -eo pid=,ppid=,stat= | awk '$2 == {me} && $3 ~ /^Z/ {{ print $1 }}'",
+            me = std::process::id()
+        );
         let out = std::process::Command::new("sh")
-            .args(["-c", "ps -eo stat= | grep -c '^Z' || true"])
+            .args(["-c", &script])
             .output()
             .expect("ps");
         String::from_utf8_lossy(&out.stdout)
-            .trim()
-            .parse()
-            .unwrap_or(0)
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect()
     };
 
-    let before = count_zombies();
+    let before = child_pids();
     for _ in 0..20 {
         let mut command = std::process::Command::new("/bin/sh");
         command.args(["-c", "exit 0"]);
@@ -874,10 +895,13 @@ fn dropping_a_supervised_child_leaves_no_zombie() {
     }
     // The reapers are threads; give them a moment to collect.
     std::thread::sleep(Duration::from_millis(500));
-    let after = count_zombies();
+    // The claim is about the CHILDREN THIS PROCESS SPAWNED, so it is asserted
+    // by identity: the specific pids we forked, found unreaped. Comparing two
+    // counts would pass if we leaked one while reaping twenty.
+    let after = child_pids();
     assert!(
-        after <= before,
-        "20 dropped children left {after} zombies, up from {before}"
+        after.is_empty(),
+        "20 dropped children left {after:?} unreaped of ours (baseline {before:?})"
     );
 }
 

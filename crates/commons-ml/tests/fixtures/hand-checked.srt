@@ -1,0 +1,19 @@
+1
+00:00:00,000 --> 00:00:02,000
+The quick brown fox
+
+2
+00:00:02,000 --> 00:00:04,000
+jumps over the lazy dog
+
+3
+00:00:04,000 --> 00:00:07,000
+and then the interview begins
+
+4
+00:00:30,000 --> 00:00:33,000
+this word is at the chunk seam
+
+5
+00:01:00,000 --> 00:01:04,000
+this one is in the third window
