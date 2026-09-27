@@ -2561,7 +2561,7 @@ unsaved-entry protection (#6466), CSV import (#1296), per-field ignore lists
 attempt navigation with an unsaved edit and assert a confirm appears.
 **Done when:** that test exists.
 
-**Progress (13 of 17).** Item 1, the selection model, and item 2, the list
+**Progress (14 of 17).** Item 1, the selection model, and item 2, the list
 table, are in `ui/src/lib/api/selection.ts` and
 `ui/src/lib/components/ListTable.svelte`. Item 3, the bulk write and its modal,
 is in `crates/commons-store/src/bulk.rs` and
@@ -2599,7 +2599,10 @@ right-click paste, is in `ui/src/lib/api/paste.ts`,
 `ui/src/lib/api/csv.ts`, specced in `docs/spec/t-p5-006-csv.md`; the per-field
 ignore lists (#2318, #2399) are item 13, in `ui/src/lib/api/ignore-list.ts` and
 `ui/src/lib/api/tagger-fields.ts`, specced in
-`docs/spec/t-p5-006-ignore-list.md`. §10.10 is now complete.
+`docs/spec/t-p5-006-ignore-list.md`. §10.10 is now complete. The wall's group-by and auto-scroll (#6544, #6955) are
+item 14, in `ui/src/lib/api/wall.ts` and `ui/src/lib/components/Wall.svelte`,
+specced in `docs/spec/t-p5-006-wall.md`. Its known gap is recorded there: the
+wall is virtualized per page, not per pixel.
 
 **Both atomicity gaps the spec named are closed, and neither needed a
 transaction — which is worth recording, because the spec's own conclusion was

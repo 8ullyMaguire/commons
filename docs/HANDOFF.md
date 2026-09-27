@@ -420,6 +420,80 @@ the truth for every mutant and looked like four survivors. A harness that
 reports the wrong answer is worse than no harness, because it sends you looking
 for holes that are not there.
 
+### T-P5-006 item 14 -- the wall, with group-by and auto-scroll
+
+#6544 (group-by) and #6955 (auto-scroll) are one surface, and the interesting
+part is a consequence of combining them that neither issue mentions.
+
+**Grouping breaks VirtualGrid's fixed row height.** The fixed height is what
+lets the grid compute a 100,000 item library's scroll height from the count
+alone, so the scrollbar is right on the first frame. A grouped wall has a
+VARIABLE row height -- a header, then however many rows the group needs -- so
+the wall has its own scrolling and `wall.ts` owns the geometry. The honest
+choice was made over the convenient one: not "measure the groups" (which needs
+the whole list before the first paint) but "reserve a placeholder and SAY the
+scrollbar is approximate". `groupExtents` returns an `exact` flag for exactly
+that reason; a scrollbar that is approximately right must not be presented as
+exact. The placeholder is the MEDIAN group height, not the mean, so one group of
+5,000 items cannot make every other section reserve 5,000 items of blank space.
+
+**Three bugs the pure tests found before any browser ran.**
+`String(null)` is the four characters "null", so every unfiled row landed in a
+section literally titled "null" (organized and rating both). `yearOf('2024')`
+returned null because the regex demanded a dash, and a year-only date is what a
+badly-named file produces -- "group by year" on such a library produced no
+sections, silently, because an empty result is a valid result. And auto-scroll
+re-pinned on "close enough": the unpin path checked `atBottom`, which includes
+the 48px slack, so a user who scrolled up by 40 pixels got dragged straight back
+down. The exact behaviour the feature exists to prevent, re-entering through
+the unpin path. Only the true bottom re-pins now.
+
+**A test that names a direction, not a magnitude.** A pending group reserves at
+least `max(placeholder, known + pending)`, and the assertion is
+`before >= after` -- "it is tall enough" passes on a wall that teleports; only
+"it never gets shorter" catches the shrink.
+
+**Two component bugs only the browser could find**, both the shape the harness
+skill already records. `KeysetStore` is a class with a `get state()`, and a
+getter over `#state` is not a tracked dependency -- so `$derived(store.rows)`
+computed once and the wall rendered empty while looking finished. It mirrors the
+store now, and reassigns after EVERY load, because a `.then` on the initial load
+catches one page and none of the rest. And the e2e learned the
+`toBeVisible()`-does-not-wait lesson from the other direction: section elements
+exist the instant the query starts and hold nothing until the page lands, so a
+`toHaveCount` on a section passed against an unloaded wall. It waits for a tile.
+
+**Four test files broke at once when the row grew four grouping fields**, each
+with its own `function row(...)`. Now one total factory,
+`ui/tests/helpers/row.ts`, that names every field of `ObjectRow` -- a new field
+breaks it and nothing else. Making it run cost a runner fix worth recording:
+`run-tests.mjs` globs `tests/*.test.ts`, which is NOT recursive, so a helper
+under `tests/helpers/` is never compiled into the temp dir, the importing file
+fails to resolve it, and `node --test` reports one failure with no assertion
+while the file's tests silently vanish from the count. The suite went 490 -> 459
+with two failures and the cause was a glob.
+
+**A mutation script that reported 22 stale out of 28 and looked fine.** "0
+survivors" is the number a lazy script reports when it is not finding the source
+at all: `substitute` compiled string patterns as regexes, and half of them are
+source lines full of metacharacters. A high stale count is a matcher bug, not
+drifted source. After the literal-match fix, 28/28 killed on the first run, and
+most of the 26 that had looked fine were never actually exercised.
+
+**Known gap, stated rather than hidden:** the wall is virtualized per PAGE, not
+per pixel, so a group holding 50,000 rows renders 50,000 tiles and violates
+4.2. That is the next item, not a claim this one makes. Grouping is a
+client-side switch over the loaded page; real group-by is a query parameter and
+belongs with T-P6-007.
+
+28 mutations, 28 killed. 38 UI tests, 11 e2e. UI now 528, e2e 123, Rust 1310.
+
+A pre-existing flake, recorded: `commons-jobs`' zombie test failed once in a
+full-suite run ("left 3 zombies, up from 2") and passes 3/3 in isolation. It
+counts SYSTEM-WIDE zombies, so a busy host with parallel test threads makes it
+non-deterministic. Not from this item, and not fixed by it -- but a test reading
+a machine-global counter will fail in CI too, and is worth its own fix.
+
 ### T-P5-006 item 13 — per-field ignore lists, and §10.10 is complete
 
 #2318 (ignore fields when using the tagger) and #2399 (exclude fields from the

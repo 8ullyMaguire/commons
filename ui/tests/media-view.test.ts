@@ -15,23 +15,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { tileShape, ASPECT_LIMITS } from '../src/lib/api/media-view.js';
-import type { ObjectRow } from '../src/lib/api/client.js';
+import { makeRow } from './helpers/row.js';
 
-function row(over: Partial<ObjectRow> = {}): ObjectRow {
-  return {
-    id: 'o1',
-    kind: 'Scene',
-    title: 't',
-    date: null,
-    rating: null,
-    organized: null,
-    coverPath: null,
-    width: 800,
-    height: 1200,
-    durationMs: null,
-    ...over
-  };
-}
+/** The row factory, from the one place every UI test builds a row. */
+const row = makeRow;
 
 /** The default target: the 2:3 poster shape most libraries are full of. */
 const T = 2 / 3;

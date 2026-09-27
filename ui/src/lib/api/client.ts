@@ -181,6 +181,10 @@ export const OBJECTS_QUERY = /* GraphQL */ `
         width
         height
         durationMs
+        producer
+        performers
+        tags
+        folder
       }
     }
   }
@@ -198,6 +202,14 @@ export interface ObjectRow {
   readonly width: number | null;
   readonly height: number | null;
   readonly durationMs: number | null;
+  // The grouping fields, for the wall's group-by (#6544). A `null` here is
+  // meaningful and is not normalised away: a row with no studio is grouped
+  // under nothing, and "Unknown" as a section title is the thing a user has to
+  // click through to find the three rows they wanted.
+  readonly producer: string | null;
+  readonly performers: readonly string[];
+  readonly tags: readonly string[];
+  readonly folder: string | null;
 }
 
 export interface ObjectsResult {

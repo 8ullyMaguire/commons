@@ -17,20 +17,10 @@ import {
   type GridQuery
 } from '../src/lib/api/keyset.js';
 import type { ObjectRow, PageInput } from '../src/lib/api/client.js';
+import { makeRow } from './helpers/row.js';
 
 function row(i: number): ObjectRow {
-  return {
-    id: `obj-${i}`,
-    kind: 'Scene',
-    title: `Item ${i}`,
-    date: null,
-    rating: null,
-    organized: null,
-    coverPath: null,
-    width: 800,
-    height: 1200,
-    durationMs: null
-  };
+  return makeRow({ id: `obj-${i}`, title: `Item ${i}` });
 }
 
 /** A transport that serves `total` rows in pages, recording every input. */

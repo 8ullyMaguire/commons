@@ -38,6 +38,12 @@ try {
   //    follows the imports, so listing the entry points is enough.
   run(esbuild, [
     'tests/*.test.ts',
+    // Recursive, because `tests/helpers/` holds shared factories that a test
+    // imports. Without this the helper is never compiled into the temp dir, the
+    // importing test file fails to resolve it, and the file fails to LOAD --
+    // which `node --test` reports as one failure with no assertion, and the
+    // whole file's tests silently disappear from the count.
+    'tests/helpers/*.ts',
     'src/lib/**/*.ts',
     '--outdir=' + out,
     '--outbase=.',
