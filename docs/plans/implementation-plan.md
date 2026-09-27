@@ -2564,7 +2564,7 @@ assertion.
 **Done when:** all three exist — they are cheap and they are the actual
 complaints.
 
-### T-P5-006 — View modes and bulk editing
+### T-P5-006 — View modes and bulk editing — DONE
 
 **Spec:** §10.4, §10.6, §10.7, §10.9, §10.10
 
