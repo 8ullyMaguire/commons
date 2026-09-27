@@ -40,7 +40,8 @@ meantime is indistinguishable from one that was not.
 
 ## 3. The decision that shapes everything
 
-**The undo record is written by the write, in the same transaction.**
+**The undo record is written by the write.** (Not in the same transaction —
+the draft said so and it is false; see section 6.)
 
 The alternative — reconstruct from `object_tag` after the fact — looks cheaper
 and is wrong in three ways, each of which is a real bug rather than a nicety:
@@ -49,15 +50,16 @@ and is wrong in three ways, each of which is a real bug rather than a nicety:
    Re-running the target selection later can return a different set, because the
    filter's result is not stable: an object may have been added, removed, or
    edited by another action between the write and the undo.
-2. *What was there before?* "Remove this tag" applied to an object that already
-   had it was a no-op; the inverse is *add it back*. Without the prior state the
-   undo cannot tell a no-op from a change, so it would delete a tag the user set
-   deliberately.
+2. *What was there before?* `bulk_apply_tag` is `ON CONFLICT DO UPDATE`, so an
+   object that already carried the tag has its `confidence` and `source`
+   *replaced*. The inverse is "put back what was there", and what was there is
+   not recoverable from the row afterwards. Without the prior state the undo
+   would restore the write's own values and call it a restoration.
 3. *Is undo still allowed?* A write that was superseded must not be undoable into
    a state nobody was ever in. That is a comparison against a recorded prior
    state, so it needs the record.
 
-The cost is one table and one insert inside a transaction that already exists.
+The cost is one table and one insert.
 
 ## 4. Shape, as shipped
 
@@ -173,11 +175,31 @@ run, schedule, and notice has stopped. Rows are never deleted: an expired
 record is invisible and inert, not gone, because the history of what was done
 and undone is itself history.
 
+**The check is two passes, and the second one repeats it.** The first version
+wrote as it checked, so a two-object record whose second object had been
+superseded left the first object restored — and its doc claimed all-or-nothing
+unconditionally. A test asserting a two-object stale record touches *neither*
+object caught it. The shipped version reads every object's state first (refusing
+before any write, which is the refusal that actually happens), then writes with
+the expected state in each statement's own `WHERE` and treats the row count as
+the check. The repeat is not redundant: it is the only part that survives a
+commit landing between the two passes.
+
+`IS NOT DISTINCT FROM`, not `=`, in that `WHERE`. Every value column is nullable
+and `=` never matches NULL, so a row of three NULLs would fail its own equality
+test and be refused as superseded — a false refusal on the most common legacy
+state. Six of the thirteen tests fail when the comparison is mutated to `=`.
+
+**Still not atomic across objects.** Pass two is a loop of separate statements,
+so a failure on the third leaves the first two applied. That needs a
+transaction, which this store's error type has no variant for, and it is the
+gap section 6 names rather than a property to claim.
+
 ## 7. Status
 
 Done. `crates/commons-store/src/undo.rs`, migration `0019_undo.sql` (both
-engines), `tests/undo_db.rs` (11 tests, both engines), 7 unit tests,
-`ui/src/lib/api/undo.ts` (11 tests). 1217 Rust, 237 UI. Clippy clean.
+engines), `tests/undo_db.rs` (13 tests, both engines), 7 unit tests,
+`ui/src/lib/api/undo.ts` (11 tests). 1219 Rust, 237 UI. Clippy clean.
 
 Not done, and named: the atomicity gap in section 6, and the `.svelte`
 component that renders the toast (the model is done and tested, the DOM is not).

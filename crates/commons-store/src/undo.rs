@@ -353,6 +353,41 @@ macro_rules! undo_exec {
     }};
 }
 
+/// As `undo_exec!`, but returning how many rows the statement touched.
+///
+/// The row count *is* the staleness check: a restore whose WHERE carried the
+/// expected state matches one row or none, so `0` means the object moved and
+/// must not be overwritten. That is what removes the check-then-write window —
+/// the condition and the write are one statement, so nothing can commit
+/// between them.
+///
+/// `IS NOT DISTINCT FROM` rather than `=`, because a NULL never equals a NULL
+/// under `=` and every value column here is nullable. A row of three NULLs
+/// would fail its own equality test and be reported as superseded, which is the
+/// exact false refusal the row_existed column exists to prevent.
+macro_rules! undo_affected {
+    ($store:expr, $sql:expr, $($v:expr),* $(,)?) => {{
+        let sql: &str = $sql;
+        macro_rules! go {
+            ($p:expr, $q:expr) => {{
+                let mut qb = sqlx::query($q);
+                $( qb = qb.bind($v); )*
+                qb.execute($p)
+                    .await
+                    .map_err(StoreError::Query)?
+                    .rows_affected() as usize
+            }};
+        }
+        match $store {
+            Store::Sqlite(p) => go!(p, sql),
+            Store::Postgres(p) => {
+                let bound = Store::bind_sql(sql);
+                go!(p, &bound)
+            }
+        }
+    }};
+}
+
 /// `expires_at` for a record created at `created`.
 ///
 /// Written out rather than computed by a database function because the two
@@ -669,6 +704,29 @@ impl Store {
     /// All-or-nothing is deliberate. A partial undo leaves the user unable to
     /// tell which half happened, and the next undo would then be trying to
     /// reverse a write that was only half applied.
+    ///
+    /// # Two passes, and why the second one repeats the check
+    ///
+    /// Pass one reads every object's current state and refuses the whole undo
+    /// if any has moved. That is what makes a stale record all-or-nothing, and
+    /// it is the refusal that actually happens.
+    ///
+    /// Pass two writes, and each write carries the same expected state in its
+    /// own `WHERE`, so its row count is the check. A read-then-write with no
+    /// condition on the write has a window: between deciding an object is still
+    /// in its `after` state and writing `before` over it, another writer can
+    /// commit, and the undo silently overwrites an edit it never saw. The
+    /// repeated condition is not redundant — it is the only part that survives
+    /// a concurrent commit, and it is cheap because pass one already rejected
+    /// the cases where it will fire.
+    ///
+    /// What is NOT atomic is across objects: pass two is a loop of separate
+    /// statements, so a failure on the third leaves the first two applied. That
+    /// needs a transaction, which this store's error type has no variant for,
+    /// and it is the known gap written up in the plan rather than pretended at.
+    /// The first version of this function got it wrong in the other direction —
+    /// it claimed all-or-nothing unconditionally, and a test asserting a
+    /// two-object record refuses without touching either object caught it.
     pub async fn undo(&self, id: &str, caller: &str) -> Result<usize, UndoError> {
         let record = self
             .undo_record(id)
@@ -686,10 +744,20 @@ impl Store {
             return Err(UndoError::Expired);
         }
 
-        // The check, for every object, before any write. `tag_id` is the
-        // record's own, which is what makes the check meaningful: `after` was
-        // recorded against this tag, so it has to be compared against this tag.
+        // `tag_id` is the record's own, which is what makes the check
+        // meaningful: `after` was recorded against this tag, so it has to be
+        // compared against this tag.
         let tag_id = &record.tag_id;
+
+        // Pass one: is every object still in the state the record says? A stale
+        // record is the common refusal, and refusing it before any write is
+        // what makes the all-or-nothing hold for it.
+        //
+        // This reads rather than writes, so it is a plain read and the cost is
+        // one query per object in the record. Pass two re-checks the same
+        // condition inside each write, which is what closes the window a read
+        // cannot: a concurrent commit between here and there is caught by the
+        // row count rather than by this loop.
         for e in &record.entries {
             let now_state = tag_state(self, &e.object_id, tag_id).await?;
             if !e.after.matches(&now_state) {
@@ -699,26 +767,54 @@ impl Store {
             }
         }
 
+        // Pass two: write, each statement conditional on the same expected
+        // state. A 0 here means somebody committed between the two passes, and
+        // it is reported as superseded rather than silently overwriting them.
+        //
+        // NOT atomic across objects: this is a loop of separate statements and
+        // a 0 on the third leaves the first two applied. That is the known gap,
+        // and it is named in `docs/plans/implementation-plan.md` rather than
+        // left to be discovered -- closing it needs a transaction, which this
+        // store's error type has no variant for.
         for e in &record.entries {
-            if e.before.row_existed {
-                undo_exec!(
+            let affected = if e.before.row_existed {
+                undo_affected!(
                     self,
                     "UPDATE object_tag
                      SET confidence = ?, source = ?, created_at = ?
-                     WHERE object_id = ? AND tag_id = ?",
+                     WHERE object_id = ? AND tag_id = ?
+                       AND confidence IS NOT DISTINCT FROM ?
+                       AND source     IS NOT DISTINCT FROM ?
+                       AND created_at IS NOT DISTINCT FROM ?",
                     e.before.confidence,
                     e.before.source.clone(),
                     e.before.created_at.clone(),
                     e.object_id.clone(),
-                    tag_id.to_string(),
-                );
+                    tag_id.clone(),
+                    e.after.confidence,
+                    e.after.source.clone(),
+                    e.after.created_at.clone(),
+                )
             } else {
-                undo_exec!(
+                undo_affected!(
                     self,
-                    "DELETE FROM object_tag WHERE object_id = ? AND tag_id = ?",
+                    "DELETE FROM object_tag
+                     WHERE object_id = ? AND tag_id = ?
+                       AND confidence IS NOT DISTINCT FROM ?
+                       AND source     IS NOT DISTINCT FROM ?
+                       AND created_at IS NOT DISTINCT FROM ?",
                     e.object_id.clone(),
-                    tag_id.to_string(),
-                );
+                    tag_id.clone(),
+                    e.after.confidence,
+                    e.after.source.clone(),
+                    e.after.created_at.clone(),
+                )
+            };
+
+            if affected == 0 {
+                return Err(UndoError::Superseded {
+                    object_id: e.object_id.clone(),
+                });
             }
         }
 

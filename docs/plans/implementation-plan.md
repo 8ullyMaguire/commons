@@ -2577,7 +2577,10 @@ palette, is in `ui/src/lib/api/keys.ts`, `commands.ts`, `commands-ui.ts` and
 specced in `docs/spec/t-p5-006-folders.md`. Item 7, undo for destructive
 actions, is in `crates/commons-store/src/undo.rs` with migration
 `0019_undo.sql` and the client model in `ui/src/lib/api/undo.ts`, specced in
-`docs/spec/t-p5-006-undo.md`.
+`docs/spec/t-p5-006-undo.md`. Two atomicity gaps are named there and left open,
+both needing a transaction `StoreError` has no variant for: the bulk write is
+not atomic with its undo record, and `undo`'s write loop is not atomic across
+objects.
 
 **The "done when" for this item was wrong, and the gap it hid is worth more
 than the item.** "That test exists" is satisfied by a guard that prompts on

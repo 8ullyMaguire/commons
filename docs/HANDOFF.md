@@ -957,8 +957,11 @@ Four things worth knowing before touching this:
 2. **A superseded write is refused, not applied.** Restoring `before` onto an
    object that has since changed does not put it back; it moves the object into
    a state nobody was ever in and discards the edit that superseded the one being
-   undone. `undo()` verifies every object first and writes **none** on a
-   mismatch, all-or-nothing, naming the object that moved.
+   undone. `undo()` is **two passes**: read every object's state and refuse
+   before writing anything, then write with the expected state in each
+   statement's own `WHERE` and treat the row count as the check. The repeat is
+   what survives a commit landing between the passes.
+   `IS NOT DISTINCT FROM`, not `=`, or a row of NULLs refuses itself.
 3. **`INTEGER` decodes as `i32`.** INT4 on Postgres, INT8 on SQLite. A decode
    asking for `i64` passes on SQLite and fails on Postgres; the parity test
    checks column *names* and cannot see this. Same rule as `relations.rs`.
@@ -968,12 +971,18 @@ Four things worth knowing before touching this:
 
 **Known gaps, both named rather than left to be found:**
 
-- The write and its record are **not atomic**. `bulk_apply_tag` is a single
+- **Two atomicity gaps, both needing a transaction the store cannot express.**
+  (a) The write and its record are not atomic: `bulk_apply_tag` is a single
   `INSERT ... SELECT`, so making them one transaction needs that statement on a
   connection `record_undo` also holds. The failure left is a write with no undo
-  — the safe direction, since the user is told the write happened. The fix is
-  `Store::bulk_apply_tag_undoable` and it belongs in `bulk.rs`, which owns the
-  error type.
+  — the safe direction, since the user is told the write happened. (b) `undo`'s
+  write loop is not atomic *across objects*: a failure on the third leaves the
+  first two applied. Both need a transaction, and `StoreError` has no
+  transaction variant. (a) is fixed in `bulk.rs`, which owns the error type; (b)
+  is fixed in `undo.rs` by taking one.
+  This is the one claim the first version got wrong in the dangerous direction —
+  the doc said all-or-nothing unconditionally, and a two-object stale-record test
+  caught it restoring the first object before refusing the second.
 - **No component, and no route — but the route is not this item's gap.** The
   `.svelte` toast is not written; the client model is complete and tested, ready
   the moment it is. There is also no GraphQL operation, and that is true of

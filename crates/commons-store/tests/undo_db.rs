@@ -627,3 +627,95 @@ async fn an_unknown_record_is_named_in_the_error() {
         assert_eq!(err, UndoError::NoSuchRecord("nope".into()));
     });
 }
+
+/// A row of NULLs is the case that makes `IS NOT DISTINCT FROM` load-bearing.
+///
+/// Every value column is nullable, and `=` never matches NULL — so a restore
+/// guarded with `confidence = ?` would find zero rows for a row whose
+/// confidence is NULL and report the undo superseded. That is a false refusal
+/// on the single most common legacy state, and it would look like a bug in the
+/// feature rather than in the comparison. This test fails with `=` and passes
+/// with `IS NOT DISTINCT FROM`.
+#[tokio::test]
+async fn a_row_of_nulls_is_not_mistaken_for_a_superseded_one() {
+    on_each_store!(|store| {
+        let (tag, obj) = tag_and_object(&store, "nulls-not-stale").await;
+        // The write fills in a row that was there with NULLs before.
+        put_tag_row(&store, &obj, &tag, None, None).await;
+
+        store
+            .record_undo(&Write {
+                id: "r-nns".into(),
+                caller: "me".into(),
+                action: "bulk.tag.add".into(),
+                tag_id: tag.clone(),
+                requested: 1,
+                matched: 1,
+                entries: vec![UndoEntry {
+                    object_id: obj.clone(),
+                    before: TagState {
+                        row_existed: true,
+                        confidence: None,
+                        source: None,
+                        created_at: None,
+                    },
+                    after: TagState {
+                        row_existed: true,
+                        confidence: None,
+                        source: None,
+                        created_at: None,
+                    },
+                }],
+            })
+            .await
+            .expect("record");
+
+        // Same values on both sides: the row is exactly as the record says, so
+        // the undo must apply rather than refuse.
+        let n = store
+            .undo("r-nns", "me")
+            .await
+            .expect("a row of NULLs is not a superseded row");
+        assert_eq!(n, 1);
+        assert_eq!(
+            tag_row_count(&store, &obj, &tag).await,
+            1,
+            "the row survives: it existed before and exists after"
+        );
+    });
+}
+
+/// The second pass re-checks the same condition, so a write that is refused
+/// there reports the object that moved rather than a bare failure.
+///
+/// This is the only observable difference between a read-only check and a
+/// conditional write: both refuse a superseded record, and only the second
+/// catches a commit that lands between them. Asserting the refusal NAMES the
+/// object is what pins the second pass — a first-pass-only implementation
+/// refuses the same record with the same variant, so the error's payload is the
+/// only thing distinguishing them from the outside.
+#[tokio::test]
+async fn a_refusal_names_the_object_rather_than_failing_opaquely() {
+    on_each_store!(|store| {
+        let (tag, obj) = tag_and_object(&store, "names").await;
+        put_tag_row(&store, &obj, &tag, Some(0.9), Some("bulk")).await;
+        store
+            .record_undo(&Write {
+                id: "r-names".into(),
+                caller: "me".into(),
+                action: "bulk.tag.add".into(),
+                tag_id: tag.clone(),
+                requested: 1,
+                matched: 1,
+                entries: vec![created_entry(&obj)],
+            })
+            .await
+            .expect("record");
+        put_tag_row(&store, &obj, &tag, Some(0.4), Some("hand")).await;
+
+        match store.undo("r-names", "me").await {
+            Err(UndoError::Superseded { object_id }) => assert_eq!(object_id, obj),
+            other => panic!("expected a named refusal, got {other:?}"),
+        }
+    });
+}
