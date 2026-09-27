@@ -40,8 +40,42 @@
   import Player from '$lib/components/Player.svelte';
   import { fetchObjects, type ObjectRow } from '$lib/api/client.js';
   import { mediaFilter } from '$lib/api/media.js';
+  import { positionFromUrl, positionWriter, withPosition } from '$lib/player/position.js';
 
   const objectId = $derived(page.url.searchParams.get('o') ?? '');
+
+  /**
+   * Where to start, in ms, from `?t=`.
+   *
+   * Read ONCE and frozen. Reading it as a `$derived` would make the player
+   * re-seek whenever anything rewrote the URL -- including the writes this
+   * route itself does -- so a link to 4:12 would keep yanking playback back to
+   * 4:12 for as long as the user stayed there. The position in the URL at the
+   * moment the route mounted is what the link MEANT; after that the user's own
+   * playback is what it says.
+   */
+  const startAtMs = positionFromUrl(page.url.search) * 1000;
+
+  /**
+   * The throttled writer, once per route instance.
+   *
+   * `history.replaceState` and never `pushState`: a pushed entry per tick
+   * would make the back button walk through one video in quarter-second steps,
+   * which is worse than not recording the position at all. The throttle itself
+   * is in `player/position.ts` and is table-tested there.
+   */
+  const writer = positionWriter();
+
+  function onPosition(ms: number) {
+    const d = writer.update(ms / 1000);
+    if (!d.write) return;
+    const next = withPosition(page.url.pathname + page.url.search, d.value);
+    if (next === page.url.pathname + page.url.search) return;
+    // `replaceState` needs an absolute URL in some browsers and a relative one
+    // in others, and `page.url` is already absolute -- so the one already
+    // resolved is the one that works everywhere.
+    history.replaceState(history.state, '', next);
+  }
 
   let row = $state<ObjectRow | null>(null);
   let error = $state<string | null>(null);
@@ -122,7 +156,7 @@
       from the row would be guessing, and the guess is always "proxy": a
       transcode for every file in the library, for files that needed none.
     -->
-    <Player objectId={row.id} title={row.title} />
+    <Player objectId={row.id} title={row.title} {startAtMs} onposition={onPosition} />
   {/if}
 </main>
 

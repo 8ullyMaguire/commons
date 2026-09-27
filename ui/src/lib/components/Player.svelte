@@ -80,7 +80,9 @@
     title = null,
     introMarker = null,
     proxyHeight = null,
-    caps = null
+    caps = null,
+    startAtMs = 0,
+    onposition = null
   }: {
     /** The object being played. */
     objectId: string;
@@ -92,6 +94,26 @@
     proxyHeight?: number | null;
     /** What the server said, when the caller already asked. */
     caps?: MediaCaps | null;
+    /**
+     * Where to begin, in ms. T-P5-007 §15.10: a video's position is a view
+     * state and a link to `t=4:12` is the point of that.
+     *
+     * A prop and not something the route reaches in and sets, because the
+     * player has an internal `position` that `video.currentTime` lags behind:
+     * the playhead is `position`, and writing `currentTime` directly fights
+     * the seek path (see the comment where that is explained). The start
+     * position has to go through the same `position` the scrubber writes.
+     */
+    startAtMs?: number;
+    /**
+     * Called as playback moves, so a caller can put the position in the URL.
+     *
+     * The player decides WHEN to report and the caller decides what to do with
+     * it, because the throttle is a property of the URL and the reporting
+     * cadence is a property of playback. A callback also keeps `Player` from
+     * knowing that URLs exist at all.
+     */
+    onposition?: ((ms: number) => void) | null;
   } = $props();
 
   let video: HTMLVideoElement;
@@ -343,6 +365,11 @@
       video.currentTime = intro.endMs / 1000;
       position = intro.endMs;
     }
+    // Reported LAST, so the caller hears about the position the user is
+    // actually at -- including one the intro skip or the loop just moved to.
+    // Reporting earlier would put a position in the URL that the next line
+    // invalidates, and the URL is what a share link quotes.
+    onposition?.(position);
   }
 
   /**
@@ -358,6 +385,22 @@
    * worse than not resuming at all.
    */
   function applySaved() {
+    // A `t` in the URL outranks the server's saved position, and it has to be
+    // checked HERE rather than by the caller setting `saved`: this is the one
+    // place that turns a start position into a seek, and it is the only place
+    // that knows whether the browser will honour the request yet. A link is a
+    // statement about where someone should start, and a stale server-side
+    // resume that quietly wins over it is the link lying.
+    if (startAtMs > 0) {
+      if (resumeApplied || !video || resumeAttempts >= RESUME_TRIES) return;
+      resumeAttempts += 1;
+      resumeTarget = startAtMs;
+      resumeDecided = true;
+      position = startAtMs;
+      pendingSeek = startAtMs;
+      video.currentTime = startAtMs / 1000;
+      return;
+    }
     if (resumeApplied || !saved || !video || resumeAttempts >= RESUME_TRIES) return;
     loop = saved.loop;
     loopArmed = isLoopArmed(loop);
@@ -788,6 +831,14 @@
           pendingSeek = position;
           seekStartedAt = performance.now();
           video.currentTime = position / 1000;
+          // Reported HERE, at the moment the user chose a position, and not
+          // from `on:seeked`. A seek the browser refuses never fires `seeked`
+          // at all -- no decoder, no buffered range -- so reporting from there
+          // means a scrub on an unplayable file records nothing, which is
+          // exactly when a user is most likely to copy the link and send it.
+          // The later `on:seeked` report corrects the URL if the browser
+          // disagrees, so reporting both is right rather than merely eager.
+          onposition?.(position);
         }}
         on:seeked={() => {
           resumeApplied = true;
@@ -796,6 +847,12 @@
           // the file really is, which is the only honest place for it to be.
           pendingSeek = null;
           position = video.currentTime * 1000;
+          // Reported here too, not only from `onTimeUpdate`. A seek that the
+          // browser REFUSES lands the clock back at the real position, and
+          // `onTimeUpdate` returns early while a seek is outstanding -- so
+          // without this the URL keeps the pre-seek value for a position the
+          // user just chose, which is the one case where a link must be right.
+          onposition?.(position);
         }}
         aria-label="Seek"
         data-testid="player-scrub"
