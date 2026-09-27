@@ -8,6 +8,52 @@ milestone carries an annotated `phase-*` tag.
 
 ---
 
+### Interviews: storage done, on both engines, with a correction that cannot overwrite
+
+T-P6-004, in progress. Spec `docs/spec/t-p6-004-interviews.md` — **read §6a
+first**; it is six portability bugs the two-engine test found, each of which
+produced a wrong answer rather than an error, and each of which is a shape this
+schema has now been bitten by before.
+
+Done and tested: the ASR engine seam and window arithmetic
+(`crates/commons-ml/src/asr/`), the store module and migration 0023
+(`crates/commons-store/src/interview.rs`), and **both** of the ticket's accept
+criteria. 24 store tests × 2 engines, 7 timing tests. 96 test binaries / 1684
+tests green, workspace clippy clean, tag `phase-7-040-interview-store`.
+
+**The correction criterion is the one the design turns on.** There is no
+`update_word` in the module and nothing anywhere that writes `interview_word`
+outside `replace_transcript`. A corrected word becomes a `FieldProposal`, and
+the test that matters asserts the model's words are **unchanged** afterwards —
+an implementation that wrote through would pass every other test in the file
+while destroying the evidence. Once the model's output is gone nobody can tell
+a misheard word from a typo, and a user correcting the same word twice has
+nothing to compare against.
+
+Two details that are constraints rather than choices: the field is
+`transcript_word[<ordinal>]`, not a bare ordinal (ordinal 12 of a two-hour
+interview and of a four-minute one are unrelated words), and a correction
+**outlives a re-transcription** — a model update replaces the words, and
+discarding the human decisions with them erases the reason the user re-ran it.
+
+Not done: the two engine adapters (whisper.cpp, parakeet), chapters/quotes/
+topics as `Marker`s and weighted `Tag`s, speaker attribution into
+`PersonCluster`, and the model-backed half of the timing test (written, loudly
+skipped — it is not counted as passing).
+
+**A test that could not fail, found by mutating the code it covers.**
+`dropping_a_supervised_child_leaves_no_zombie` counted `ps -eo stat= | grep -c
+'^Z'` — the whole machine's zombies — and failed at 13 against a baseline of 7
+during a run with three cargo invocations in flight, having reaped all 20 of its
+own children correctly. Rewriting it by identity exposed a second bug: in
+`ps -eo pid=,ppid=,stat=` the pid comes **first**, so `$1 == me` matches the test
+process's own row and never a child. That version passed with the reaper
+neutered — an assertion that cannot fail. With `$2`, and `wait()` removed, it
+names all 20 leaked pids. Worth knowing: Python's `Popen.__del__` reaps, so this
+condition cannot be reproduced from a Python probe at all.
+
+---
+
 ### Subtitles: complete, and four more bugs that all failed silently
 
 T-P6-002, done. Spec `docs/spec/t-p6-002-subtitles.md` — read §9 first, it is
