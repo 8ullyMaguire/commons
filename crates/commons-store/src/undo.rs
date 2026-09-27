@@ -224,7 +224,13 @@ pub struct Write {
     pub requested: i32,
     /// How many the write actually reached, after consent filtering.
     pub matched: i32,
-    /// One per object the write *changed*.
+    /// One per object the write touched.
+    ///
+    /// Which, for `bulk_apply_tag`, is every object it reached: the statement is
+    /// `ON CONFLICT DO UPDATE`, so a row that already carried the tag has its
+    /// `confidence` and `source` replaced rather than skipped. Measured rather
+    /// than assumed — a pre-existing row at `0.3 / manual` came back
+    /// `0.9 / bulk` with `applied = 1`.
     pub entries: Vec<UndoEntry>,
 }
 
@@ -299,11 +305,13 @@ impl UndoRecord {
 
     /// The count a toast should say.
     ///
-    /// `entries.len()` and not `matched`, because they are different numbers
-    /// and the difference is the bug: `matched` counts the rows the predicate
-    /// reached, and a row that already carried the tag was reached but not
-    /// changed. Saying "added beach to 40" when 12 of them already had it is
-    /// wrong in the direction that makes the user doubt the app.
+    /// `entries.len()`, and not `matched`, because the two are not the same
+    /// number even where they usually agree. `matched` counts the rows the
+    /// predicate reached *before* consent filtering removed any; `entries` is
+    /// what the write actually did and is the only count the undo can honour.
+    /// They differ on a write that hit a row the caller could not see, and the
+    /// toast has to promise what the server will do rather than what the
+    /// predicate matched.
     pub fn changed_count(&self) -> usize {
         self.entries.len()
     }
@@ -427,10 +435,10 @@ pub async fn tag_state(
 impl Store {
     /// Record a write and the state it replaced, so it can be undone.
     ///
-    /// [`Write::entries`] is the inverse, one per object the write *changed* — not per
-    /// object the write reached. An object that already carried the tag is not
-    /// in the list, because "add beach" on an object that has beach is a no-op
-    /// and the inverse of a no-op is nothing.
+    /// [`Write::entries`] is the inverse, one per object the write touched — which
+    /// for `bulk_apply_tag` is every object it reached, because
+    /// `ON CONFLICT DO UPDATE` replaces a row that already carried the tag
+    /// rather than skipping it.
     ///
     /// # Not in a transaction with the write
     ///
@@ -821,15 +829,18 @@ mod tests {
         assert!(!r.is_undoable("2026-01-01T00:00:00.000Z"));
     }
 
-    /// The count a toast shows is the number of *changes*, not the number of
-    /// objects the predicate reached. A write that reached forty objects and
-    /// changed twelve must say twelve.
+    /// The count a toast shows is what the write did, not what the predicate
+    /// matched. `matched` counts rows before consent filtering removed any, so
+    /// the two diverge on a write that reached a row the caller could not see —
+    /// and the toast has to promise what the server will actually do.
     #[test]
-    fn the_offered_count_is_the_changed_count() {
+    fn the_offered_count_is_what_the_write_did() {
         let mut r = record("2999-01-01T00:00:00.000Z");
         r.entries = vec![created("a"), created("b"), created("c")];
-        assert_eq!(r.changed_count(), 3);
-        assert_eq!(r.requested, 2, "the fixture's requested count is unrelated");
+        // `matched` deliberately larger than the entries: the shape where the
+        // two disagree, which is the one worth pinning.
+        r.matched = 5;
+        assert_eq!(r.changed_count(), 3, "the entries, not the matched count");
     }
 
     fn created(object_id: &str) -> UndoEntry {

@@ -940,8 +940,12 @@ An undo is a **recorded inverse**, not a re-derivation, and the reason is
 tag has its `confidence` and `source` *replaced* rather than gaining a row, so
 what was there is not recoverable from the row afterwards. The record stores the
 before and after state of every object the write **changed** — not every object
-it reached, because a row that already had the tag was reached but not changed,
-and its inverse is nothing.
+it reached. `bulk_apply_tag` is `ON CONFLICT DO UPDATE`, so a row that already
+had the tag has its `source` and `confidence` *replaced* — every object the
+write reaches is a row it changes, and the inverse is a real restoration, not
+nothing. (Measured, not assumed: a probe with a pre-existing row at
+`confidence 0.3 / source manual` came back `applied=1, confidence 0.9, source
+bulk`.)
 
 Four things worth knowing before touching this:
 
@@ -970,9 +974,14 @@ Four things worth knowing before touching this:
   — the safe direction, since the user is told the write happened. The fix is
   `Store::bulk_apply_tag_undoable` and it belongs in `bulk.rs`, which owns the
   error type.
-- **No route and no component.** `undo` has no GraphQL operation, so nothing can
-  call it from the client, and the `.svelte` toast is not written. The client
-  model is complete and tested, ready the moment the operation exists.
+- **No component, and no route — but the route is not this item's gap.** The
+  `.svelte` toast is not written; the client model is complete and tested, ready
+  the moment it is. There is also no GraphQL operation, and that is true of
+  every write in the project: `client.ts` is the only module allowed to name
+  `fetch`, the whole client is queries, there is no mutation document in
+  `ui/src/lib/api/` at all, and there is no server-side schema in the repo.
+  `bulk_apply_tag` has no route either. Worth knowing before someone reads the
+  missing undo route as a hole in item 7 rather than a phase-wide gap.
 
 Expiry is enforced **on read** (`undoable()` and `undo()`), never by a sweeper —
 a sweeper is a second thing to run, schedule, and notice has stopped. Rows are

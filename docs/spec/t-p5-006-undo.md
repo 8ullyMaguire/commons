@@ -68,7 +68,7 @@ The cost is one table and one insert inside a transaction that already exists.
         pub tag_id: String,          // ON THE RECORD, not a parameter
         pub requested: i32,
         pub matched: i32,
-        pub entries: Vec<UndoEntry>, // the inverse, one per CHANGED object
+        pub entries: Vec<UndoEntry>, // the inverse, one per object touched
     }
 
     pub struct UndoRecord {         // what comes back out
@@ -148,8 +148,13 @@ takes the connection; it wants the bulk module's error type, so it is bulk's
 to write rather than undo's.
 
 **An entry has no `after.row_existed`.** It is reconstructed as `true` on read,
-because an entry is only written for an object the write *changed* and a write
-that changed the row had a row afterwards. This is the one place the
+because an entry is only written for an object the write *touched* and a write
+that touched the row had a row afterwards. "Touched" is every object the write
+reached, not a subset: `ON CONFLICT DO UPDATE` replaces a row that already
+carried the tag instead of skipping it, so "reached" and "changed" are the same
+set here. That was not obvious and the spec first claimed the opposite; a probe
+against both engines settled it (`applied = 1`, `0.3 / manual` in,
+`0.9 / bulk` out). This is the one place the
 reconstruction is not literal, and it is the only place it could be otherwise:
 a `false` after would mean the write removed the row, which is an action that
 does not exist yet and would need its own entry kind. A test round-trips the
@@ -174,7 +179,14 @@ Done. `crates/commons-store/src/undo.rs`, migration `0019_undo.sql` (both
 engines), `tests/undo_db.rs` (11 tests, both engines), 7 unit tests,
 `ui/src/lib/api/undo.ts` (11 tests). 1217 Rust, 237 UI. Clippy clean.
 
-Not done, and named: the atomicity gap in section 6; the `.svelte` component
-that renders the toast (the model is done and tested, the DOM is not); and the
-GraphQL operation — `undo` has no route, so nothing can call it from the client
-yet. The client model is written to be usable the moment the operation exists.
+Not done, and named: the atomicity gap in section 6, and the `.svelte`
+component that renders the toast (the model is done and tested, the DOM is not).
+
+**On the missing route — not this item's gap.** `ui/src/lib/api/client.ts` is
+the only module permitted to name `fetch`, and the whole client is *queries*:
+there is no mutation document anywhere in `ui/src/lib/api/`, and no server-side
+schema in the repository. So "undo has no GraphQL operation" is true of every
+write in the project, `bulk_apply_tag` included, and listing it as this item's
+unfinished business would misattribute a phase-wide gap to a ticket that did not
+create it. The client model is written to be usable the moment an operation
+layer exists.

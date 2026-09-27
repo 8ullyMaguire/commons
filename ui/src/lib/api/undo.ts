@@ -26,17 +26,18 @@
 
   # Why the count comes from the server and is never re-derived here
 
-  The toast says how many objects the write *changed*, which is not the same
-  number as how many the write reached: a row that already carried the tag was
-  reached but not changed. A write that reached forty objects and changed twelve
-  is a write that changed twelve, and "Undo 40" on that toast is a promise the
-  server cannot keep -- `Store::undo` restores `entries.len()` objects, and the
-  other twenty-eight were never touched.
+  The toast's number is the one the server sends on the `ok` outcome, and the
+  client renders it. It is not recomputed from the `BulkOutcome` the write
+  returned, because those are different numbers under different conditions and
+  the client's job is not to work out which one applies -- it does not have the
+  per-object state that decides it.
 
-  So the count arrives on the `ok` outcome and the client renders it. A client
-  that recomputed it from a `BulkOutcome` would be guessing, and a guess that
-  disagrees with the server is a count the user discovers is wrong by pressing
-  the button.
+  The one condition worth knowing, because it is the reason the server has to do
+  the counting: `bulk_apply_tag`'s `ON CONFLICT DO UPDATE` *replaces* a row that
+  already carried the tag, so every object the write reaches is a row it
+  changes. "Added beach to 40" where 12 of them already had beach is 40 rows
+  whose `source` and `confidence` were overwritten, and undoing it has to put
+  all 40 back.
  */
 
 /**
