@@ -23,8 +23,10 @@ pub mod audio;
 pub mod chunker;
 pub mod engine;
 pub mod parakeet;
+pub mod pipeline;
 pub mod whisper_cpp;
 
 pub use audio::{AudioError, Pcm16kMono, SAMPLE_RATE};
 pub use chunker::{Chunk, Chunker, Stamped, CHUNK_MS, MIN_AUDIO_MS};
 pub use engine::{AsrEngine, AsrError, SpeakerId, TimedWord, Transcript};
+pub use pipeline::{transcribe_and_store, transcribe_file, RunReport};

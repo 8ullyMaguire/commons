@@ -121,6 +121,20 @@ pub enum AsrError {
     /// No audio to transcribe.
     #[error("no audio to transcribe")]
     NoAudio,
+
+    /// The audio could not be decoded.
+    #[error("could not decode the audio: {reason}")]
+    Audio { reason: String },
+
+    /// The transcript could not be stored.
+    ///
+    /// Its own variant rather than a `Model` or a `Failed`, because the two are
+    /// recoverable in different ways: a window that failed can be retried, a
+    /// row that would not write means the storage is the problem, and a user
+    /// told "the model failed" when the disk is full will not go looking at the
+    /// disk.
+    #[error("could not store the transcript: {reason}")]
+    Store { reason: String },
 }
 
 /// What every backend implements.

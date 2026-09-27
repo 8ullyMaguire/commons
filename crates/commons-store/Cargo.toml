@@ -20,6 +20,9 @@ parking_lot = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+# The ASR driver, tested here because it writes rows. `commons-ml` must not
+# depend on the store's internals, so the dependency runs this way only.
+commons-ml = { workspace = true }
 commons-scan = { workspace = true }
 regex = { workspace = true }
 toml = { workspace = true }

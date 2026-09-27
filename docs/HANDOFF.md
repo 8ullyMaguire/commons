@@ -2029,3 +2029,28 @@ Every push and every `ls-remote` to that host fails identically, while origin
 takes the commit and the tags without complaint — which is the evidence that
 this is the server and not the credentials, since the same key works for the
 other remote.
+
+### The transcription driver
+
+`commons-ml/src/asr/pipeline.rs` is what makes an `AsrEngine` usable. It owns
+the loop no adapter should: run each window, add its offset through
+`Chunker::absolutise` (the one function that owns that arithmetic), renumber the
+ordinals, and write the transcript with its window rows in one transaction.
+
+The part `chunker::run_chunks` could not do is REPORTING. `run_chunks` drops a
+failed window and moves on, which is right for producing words and wrong for
+storing a transcript — a gap with no record is a gap nobody can find. So a window
+that fails recoverably is written to `interview_windows` with `ok = false` and
+the reason, and `failed_windows` turns it into "11:20 to 12:05 was not
+transcribed". An engine that has DIED (spawn, parse, or a dead sidecar) stops the
+run instead: it would otherwise write an identical failure row for every
+remaining window.
+
+`RunReport::summary` names the first failing window rather than saying
+"something failed", and reports windows too short to transcribe rather than
+calling that a clean run with no words.
+
+Tested in `commons-store/tests/asr_pipeline_db.rs` (both engines) because it
+writes rows and `commons-ml` has no database. Five mutations, all caught:
+offset dropped, ordinals zeroed, failed window unrecorded, failed window fatal,
+model error fatal.

@@ -20,3 +20,7 @@ parking_lot = { workspace = true }
 camino = { workspace = true }
 tokio = { workspace = true }
 usearch = { workspace = true }
+
+[dev-dependencies]
+commons-store = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
