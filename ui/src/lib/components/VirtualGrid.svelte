@@ -33,6 +33,7 @@
   import { KeysetStore } from '$lib/api/keyset.js';
   import type { GridQuery } from '$lib/api/keyset.js';
   import type { ViewState } from '$lib/api/view.js';
+  import { tileShape, POSTER_RATIO } from '$lib/api/media-view.js';
 
   interface Props {
     /** The query, from the URL. Changing it resets the list. */
@@ -43,13 +44,33 @@
     store?: KeysetStore;
     /** Columns. 0 means "derive from the container width". */
     columns?: number;
+    /**
+     * The declared row ratio: what a row is shaped by, and what a row whose
+     * media is unknown falls back to.
+     *
+     * A prop and not a per-row computation, and that is the whole trick. A
+     * *proportional* grid -- every tile its own aspect, nothing cropped -- makes
+     * the row height a function of the row's contents, and a virtualizer's
+     * window is a function of the row height, so the window would depend on rows
+     * it has not loaded. The symptom is not a crash: it is a grid that scrolls
+     * to the wrong place.
+     *
+     * So the row height stays the declared ratio applied to the tile width (see
+     * `rowHeight`), and the *tile* is proportional within that box: a landscape
+     * image is drawn at its own width/height and centred, with the row's spare
+     * pixels above and below. Nothing is cropped, the scroll math is unchanged,
+     * and the cost is a little vertical slack in a row of mixed media -- which
+     * is what every photo browser does and is the honest rendering.
+     */
+    aspect?: number;
   }
 
   let {
     query,
     density = 240,
     store = new KeysetStore(),
-    columns = 0
+    columns = 0,
+    aspect = POSTER_RATIO
   }: Props = $props();
 
   /** How many rows to render above and below the viewport. */
@@ -68,7 +89,6 @@
    * fit on one screen, which is every result under about 500 items, and the
    * five tests that used 5,000 items all passed.
    */
-  const ASPECT = 2 / 3;
   const GAP = 8;
 
   /**
@@ -244,7 +264,7 @@
     if (remaining < viewport.clientHeight) refresh();
   }
 
-  const rowHeight = $derived(Math.round(density / ASPECT) + CAPTION + GAP);
+  const rowHeight = $derived(Math.round(density / aspect) + CAPTION + GAP);
 
   const total = $derived(view.totalCount ?? view.rows.length);
   const totalRows = $derived(Math.ceil(total / Math.max(1, cols)));
@@ -296,7 +316,12 @@
       data-testid="grid-window"
     >
       {#each windowed as row (row.rowIndex)}
-        <div class="grid-row" style:height="{rowHeight}px" data-testid="grid-row">
+        <div
+          class="grid-row"
+          style:height="{rowHeight}px"
+          style:--tile-aspect={aspect}
+          data-testid="grid-row"
+        >
           {#each row.items as item, i (keyFor(item, i))}
             {#if item}
               {@const index = row.rowIndex * cols + i}
@@ -308,6 +333,13 @@
                 nowhere else. A window-relative index would open the wrong image
                 for every tile below the first row.
               -->
+              <!--
+                The tile's own shape, from the row and the declared ratio.
+                Computed here rather than in a helper on the store because it is
+                one row's worth of data and this is the only place it is used --
+                a function called once per rendered tile, not once per row.
+              -->
+              {@const shape = tileShape(item, aspect)}
               <a
                 class="tile"
                 href="?id={item.id}"
@@ -315,9 +347,31 @@
                 data-testid="grid-tile"
                 data-id={item.id}
                 data-lightbox-index={index}
+                data-aspect={shape.aspect}
+                data-kind={shape.kind}
               >
                 {#if item.coverPath}
-                  <img src={item.coverPath} alt="" loading="lazy" width={density} />
+                  <!--
+                    `object-fit: contain` and an explicit height, NOT the
+                    default `cover`. `cover` is what a square tile does, and it
+                    is the thing this ticket exists to stop doing: it silently
+                    crops a 16:9 thumbnail to a 2:3 box and a person scanning
+                    the wall is being shown a picture of the media rather than
+                    the media. `contain` letterboxes into the declared row box
+                    and shows the whole frame.
+
+                    The `max-height` is what stops a very tall strip from
+                    growing its own row: the row height is fixed by `rowHeight`
+                    and the image is bounded by it, which is also why the
+                    scroll math above never has to see this.
+                  -->
+                  <img
+                    src={item.coverPath}
+                    alt=""
+                    loading="lazy"
+                    width={density}
+                    style:max-height="{rowHeight - CAPTION}px"
+                  />
                 {:else}
                   <div class="tile-placeholder" aria-hidden="true">
                     <span>{item.kind}</span>
@@ -382,11 +436,32 @@
     display: flex;
     flex-direction: column;
   }
+  /*
+    * `object-fit: contain`, and the row's box as the aspect, not a hardcoded
+    * 2/3.
+    *
+    * The hardcoded `aspect-ratio: 2 / 3; object-fit: cover` this replaces is
+    * the whole complaint of #1030: a library of mixed stills and video renders
+    * every tile as a portrait poster, so a 16:9 frame is cropped to a third of
+    * its width and a tall scan is cropped at the top and bottom. `cover` is not
+    * a rendering choice, it is a decision about what the user is allowed to
+    * see, made in a stylesheet, by whoever wrote the first line.
+    *
+    * The aspect is now a variable the component sets per row, so a caller
+    * choosing a different row shape does not have to override a rule with
+    * `!important`. `contain` rather than `cover`: a media browser is for
+    * choosing what to open, and a tile that has silently dropped a third of the
+    * frame cannot be scanned.
+    *
+    * A backdrop so the letterbox reads as "here is the shape of the frame" and
+    * not as "the image failed to load" -- the difference matters when the media
+    * IS a tall strip in a landscape row.
+  */
   .tile img,
   .tile-placeholder {
     width: 100%;
-    aspect-ratio: 2 / 3;
-    object-fit: cover;
+    aspect-ratio: var(--tile-aspect, 2 / 3);
+    object-fit: contain;
     background: #222;
     border-radius: 4px;
   }
