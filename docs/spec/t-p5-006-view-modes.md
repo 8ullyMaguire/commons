@@ -227,3 +227,51 @@ already carried `kind`, `width`, `height` and `durationMs` from the existing
 GraphQL selection, because the grid needed them for a poster layout. The
 assumption was wrong in the cheap direction — which is the only good direction,
 and is a reminder to check the existing selection before speccing a new one.
+
+**And, from the sort and the grid: two of my own tests were the broken ones, and
+one of them was load-bearing for nothing.**
+
+The clamp mutation SURVIVED the first five Playwright tests, all green. The
+reason is structural and worth stating because it is the shape of the whole
+item: the row height comes from the *declared* ratio, not from the tile's own
+aspect, so deleting the `Math.min`/`Math.max` in `clamp` leaves a 10000:1 strip
+letterboxed inside a perfectly normal-looking row. **The clamp is not
+load-bearing for layout — it is load-bearing for the number the tile reports and
+for anything that multiplies by it later.** So the assertion had to move to
+`data-aspect`, which is the only place the clamp is observable from outside. A
+test that passes while the behaviour it names is deleted is worse than no test,
+because it is a claim of coverage.
+
+**The spec's §2 prediction held, and the cost was paid where it said it would
+be.** Proportional tiles could not go into `rowHeight` — the virtualizer's
+window depends on it — so the row keeps the declared ratio and the *tile* is
+proportional inside it. The result is that `clamp` is nearly unobservable, which
+is the price, paid in testability rather than in correctness.
+
+**Two debugging findings that are now comments in the tests, because both cost a
+round each.** A cover that 404s renders as a zero-size broken image, so every
+geometry assertion measures nothing — a test that measures geometry needs
+geometry. And `expect(tiles.first()).toBeVisible()` resolves as soon as one tile
+has a box, which can be *before* the row element is in the DOM, so
+`evaluateAll` over rows returns `[]` rather than waiting. Wait for the row, not
+the tile.
+
+**The tag view needed a query that did not exist, and the reason it was a LEFT
+JOIN is the whole design.** `all_tags` returns every tag and no count, and the
+count is what makes the grid a view rather than a list. But the count must come
+from a LEFT JOIN: an inner join drops every tag nobody has applied, and a tag
+created and never used is exactly the one somebody reorganising a library wants
+to see. Then `COUNT(ot.object_id)`, not `COUNT(*)`, because a `COUNT(*)` over a
+LEFT JOIN reports **1** for a tag with no objects — off by one on precisely the
+rows the LEFT JOIN was written to preserve. Both mutations are killed by the
+same two tests, which is the correct shape: a test that pins the zero case pins
+the join and the count together, because they are one decision.
+
+**The count is deliberately NOT consent-filtered, and that is a judgement call
+worth flagging.** §14.1 governs what a caller may *see*, not what exists. A
+count that dropped unverified items would make a heavily-used tag look unused,
+and the person reorganising would delete it. Clicking a tile still goes through
+the normal filtered query, so visibility is never wrong — only the library's own
+arithmetic is. If the owner disagrees, this is the line to change, and it is one
+query rather than a policy.
+

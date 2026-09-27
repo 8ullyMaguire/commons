@@ -99,6 +99,35 @@ impl Namespace {
     }
 }
 
+/// A tag, with how many objects carry it.
+///
+/// The count is `usize` and not `i64` because a caller of this wants to print
+/// it, and every use of it is a display. The database's `COUNT` is an integer of
+/// whatever width the engine likes and is clamped at zero on the way in, so a
+/// caller never has to think about a negative count at all.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TagWithCount {
+    pub tag: Tag,
+    pub count: usize,
+}
+
+impl std::ops::Deref for TagWithCount {
+    type Target = Tag;
+
+    /// Deref, not accessor methods, and not field flattening.
+    ///
+    /// A wrapper that forces `t.tag.id` at every call site is a wrapper that
+    /// gets worked around — the first caller writes a local `let tag = &t.tag;`
+    /// and from then on the wrapper is decoration. Deref says what it means: a
+    /// `TagWithCount` *is* a tag, plus a number, and the number is reached by
+    /// name because it is the addition. What it deliberately does not do is
+    /// expose `count` through `DerefMut`, so a caller cannot accidentally write
+    /// through to something that came from a `COUNT`.
+    fn deref(&self) -> &Tag {
+        &self.tag
+    }
+}
+
 /// A tag, as stored.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tag {
@@ -722,6 +751,71 @@ impl Store {
             }
         };
         Ok(raw.into_iter().map(row_to_tag).collect())
+    }
+
+    /// Every tag, in name order, with the number of objects carrying it.
+    ///
+    /// The tag view's query (spec §10.4, #773). `all_tags` has the list; this
+    /// has the *number*, and the number is what makes the view a view rather
+    /// than a list — a tag on 40,000 objects and a tag on 3 are different
+    /// things, and somebody reorganising a library needs to see which is which
+    /// before clicking.
+    ///
+    /// **LEFT JOIN, and `COUNT(ot.object_id)` rather than `COUNT(*)`.** An
+    /// inner join drops every tag nobody has applied yet, and a tag with zero
+    /// objects is precisely the one worth seeing: it was created and never used.
+    /// Then the count has to name a column, because a `COUNT(*)` over a LEFT
+    /// JOIN counts the unmatched row too and reports 1 for a tag with no
+    /// objects at all — off by one on exactly the rows the LEFT JOIN was written
+    /// to preserve, and invisible to any fixture that only seeds applied tags.
+    ///
+    /// No consent filter on the count. The count is "how many objects carry
+    /// this tag", which is a fact about the library, and §14.1 governs what a
+    /// *caller may see*, not what exists. A count that silently dropped
+    /// unverified items would make a tag look unused when it is used, and the
+    /// person reorganising would delete it.
+    pub async fn all_tags_with_counts(&self) -> Result<Vec<TagWithCount>> {
+        type R = (
+            String,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+            f64,
+            i64,
+        );
+        let sql = "SELECT t.id, t.name, t.parent_id, t.namespace, t.color, t.importance,
+                          COUNT(ot.object_id) AS n
+                     FROM tag t
+                     LEFT JOIN object_tag ot ON ot.tag_id = t.id
+                    GROUP BY t.id, t.name, t.parent_id, t.namespace, t.color, t.importance
+                    ORDER BY t.name, t.id";
+        let raw: Vec<R> = match self {
+            Store::Sqlite(p) => sqlx::query_as(sql)
+                .fetch_all(p)
+                .await
+                .map_err(StoreError::Query)?,
+            Store::Postgres(p) => {
+                let pg = Store::bind_sql(sql);
+                sqlx::query_as::<_, R>(&pg)
+                    .fetch_all(p)
+                    .await
+                    .map_err(StoreError::Query)?
+            }
+        };
+        Ok(raw
+            .into_iter()
+            .map(|r| {
+                // `row_to_tag` rather than a second copy of the mapping: a
+                // namespace parsed differently in two places is a tag that
+                // sorts by machine-ness in one query and not in the other.
+                let count = r.6;
+                TagWithCount {
+                    tag: row_to_tag((r.0, r.1, r.2, r.3, r.4, r.5)),
+                    count: count.max(0) as usize,
+                }
+            })
+            .collect())
     }
 
     /// The whole tag tree, roots first.

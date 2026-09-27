@@ -2561,7 +2561,7 @@ unsaved-entry protection (#6466), CSV import (#1296), per-field ignore lists
 attempt navigation with an unsaved edit and assert a confirm appears.
 **Done when:** that test exists.
 
-**Progress (7 of 17).** Item 1, the selection model, and item 2, the list
+**Progress (8 of 17).** Item 1, the selection model, and item 2, the list
 table, are in `ui/src/lib/api/selection.ts` and
 `ui/src/lib/components/ListTable.svelte`. Item 3, the bulk write and its modal,
 is in `crates/commons-store/src/bulk.rs` and
@@ -2577,7 +2577,11 @@ palette, is in `ui/src/lib/api/keys.ts`, `commands.ts`, `commands-ui.ts` and
 specced in `docs/spec/t-p5-006-folders.md`. Item 7, undo for destructive
 actions, is in `crates/commons-store/src/undo.rs` with migration
 `0019_undo.sql` and the client model in `ui/src/lib/api/undo.ts`, specced in
-`docs/spec/t-p5-006-undo.md`.
+`docs/spec/t-p5-006-undo.md`. Item 8, the view modes -- tag view, secondary
+sort and per-user density -- is in `ui/src/lib/api/media-view.ts`,
+`ui/src/lib/components/TagView.svelte`, `crates/commons-store/src/sort.rs` and
+`all_tags_with_counts` in `crates/commons-store/src/tags.rs`, specced in
+`docs/spec/t-p5-006-view-modes.md`.
 
 **Both atomicity gaps the spec named are closed, and neither needed a
 transaction — which is worth recording, because the spec's own conclusion was
