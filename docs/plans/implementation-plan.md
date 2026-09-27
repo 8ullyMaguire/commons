@@ -2561,7 +2561,7 @@ unsaved-entry protection (#6466), CSV import (#1296), per-field ignore lists
 attempt navigation with an unsaved edit and assert a confirm appears.
 **Done when:** that test exists.
 
-**Progress (15 of 17).** Item 1, the selection model, and item 2, the list
+**Progress (16 of 17).** Item 1, the selection model, and item 2, the list
 table, are in `ui/src/lib/api/selection.ts` and
 `ui/src/lib/components/ListTable.svelte`. Item 3, the bulk write and its modal,
 is in `crates/commons-store/src/bulk.rs` and
@@ -2603,7 +2603,9 @@ ignore lists (#2318, #2399) are item 13, in `ui/src/lib/api/ignore-list.ts` and
 item 14, in `ui/src/lib/api/wall.ts` and `ui/src/lib/components/Wall.svelte`,
 specced in `docs/spec/t-p5-006-wall.md`. The wall is windowed per group
 in item 15, specced in `docs/spec/t-p5-006-wall-window.md`, which closes the
-per-page gap item 14 recorded.
+per-page gap item 14 recorded. The folder view (#1586, #1723) is item 16, in
+`ui/src/lib/api/folder-tree.ts`, specced in
+`docs/spec/t-p5-006-folder-view.md`; the model was already done by item 6.
 
 **Both atomicity gaps the spec named are closed, and neither needed a
 transaction — which is worth recording, because the spec's own conclusion was

@@ -420,6 +420,46 @@ the truth for every mutant and looked like four survivors. A harness that
 reports the wrong answer is worse than no harness, because it sends you looking
 for holes that are not there.
 
+### T-P5-006 item 16 -- the folder view
+
+#1586 was filed under C50 and 9.5, which turned out to mean the VIEW, not the
+model: `crates/commons-store/src/folders.rs` has been done since item 6. What
+was missing is the thing a person touches.
+
+    ui/src/lib/api/folder-tree.ts          the pure tree
+    ui/src/lib/components/FolderPane.svelte  search, trail, tree, reports
+    ui/src/routes/folders/+page.svelte     pane + wall, all state in the URL
+    ui/tests/folder-tree.test.ts           46 tests
+    ui/e2e/folders.spec.ts                 19 tests
+    scripts/mutate-folder-tree.mjs         25 mutants, all killed
+    docs/spec/t-p5-006-folder-view.md      the spec
+
+The design fact that drives the view is item 6's: a folder holds no objects, so
+opening one REPLACES the filter rather than narrowing it. The pane shows the
+running filter in a visible slot for exactly that reason -- a user who arrives
+with `?q=cat`, opens "Untagged" and gets a column of tagged items would file a
+bug.
+
+Two real bugs, both found by mutation and both producing a PLAUSIBLE navigator
+rather than a crash, which is why reading the code was not enough:
+
+- the root loop placed children as well as parents, so every folder rendered
+  twice -- once nested, once loose;
+- `reachable` was written to treat "returning to the start" as reachable. In
+  `a -> b -> a` no folder is a root, so the loop skipped both and BOTH SILENTLY
+  VANISHED. A path that returns to its start is a cycle, and a cycle has no root.
+
+A folder is a URL, and a folder that is not linkable is not a place. Opening one
+expands its ancestors, so the pane shows where you are rather than collapsing to
+one row. Broken data is reported rather than swallowed: the route fixture
+deliberately contains an orphan and a parent cycle, because a folder that
+silently never appears is the worst outcome a navigator has.
+
+Counts are deliberately a dash, not a zero -- membership is recomputed on open,
+so counting a folder is a query per folder, and a column of zeroes before the
+counts land looks like an empty library. Follow-up once the server can count
+cheaply.
+
 ### T-P5-006 item 15 -- windowing the wall, and closing 4.2
 
 Item 14 recorded its own gap: the wall virtualized per PAGE, not per pixel, so a
