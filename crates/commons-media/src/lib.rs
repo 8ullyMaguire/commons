@@ -12,6 +12,7 @@ pub mod encode;
 pub mod hwaccel;
 pub mod hwaccel_plan;
 pub mod probe;
+pub mod subtitles;
 pub mod thumbs;
 pub mod transcode;
 
@@ -23,6 +24,9 @@ pub use hwaccel::{
 };
 pub use hwaccel_plan::{AccelPlan, Planner, SourceKind};
 pub use probe::{probe, MediaInfo, ProbeError, Prober};
+pub use subtitles::{
+    cue_at, to_webvtt, Cue, Document, Format as SubtitleFormat, ParseError as SubtitleParseError,
+};
 pub use thumbs::{
     memory_budget_from_process, ArtifactError, Deferred, Generated, Generator, Kind, MemoryBudget,
     Reservation, DEFAULT_SPRITE_FRAMES, DEFAULT_SPRITE_WIDTH, DEFAULT_THUMB_WIDTH,
