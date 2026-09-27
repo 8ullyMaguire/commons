@@ -32,13 +32,15 @@ import {
   stylingHonoured,
   stylingWarning,
   subtitleOptions,
+  subtitleVttUrl,
+  trackIsDefault,
   toVttTimestamp,
   toWebVtt,
   toWebVttWithOffset,
   type SubtitleDoc,
 } from '../src/lib/player/player.js';
 
-const doc = (id: number, language: string | null, format = 'webvtt', label?: string): SubtitleDoc => ({
+const doc = (id: string, language: string | null, format = 'webvtt', label?: string): SubtitleDoc => ({
   id,
   language,
   format,
@@ -238,20 +240,20 @@ describe('subtitleOptions', () => {
   });
 
   it('puts (none) first, so "off" is the state a player opens in', () => {
-    const rows = subtitleOptions([doc(7, 'en'), doc(8, 'es')]);
+    const rows = subtitleOptions([doc("sub-7", 'en'), doc("sub-8", 'es')]);
     assert.equal(rows[0].value, NO_SUBTITLES);
     assert.equal(rows.length, 3);
   });
 
   it('labels by language, and by label when one is given', () => {
-    const rows = subtitleOptions([doc(1, 'en', 'webvtt', 'Director commentary')]);
+    const rows = subtitleOptions([doc("sub-1", 'en', 'webvtt', 'Director commentary')]);
     assert.equal(rows[1].label, 'Director commentary — En');
   });
 });
 
 describe('groupByLanguage', () => {
   it('groups by tag and keeps first-seen order', () => {
-    const groups = groupByLanguage([doc(1, 'es'), doc(2, 'en'), doc(3, 'es')]);
+    const groups = groupByLanguage([doc("sub-1", 'es'), doc("sub-2", 'en'), doc("sub-3", 'es')]);
     assert.equal(groups.length, 2);
     assert.equal(groups[0].language, 'es');
     assert.equal(groups[0].docs.length, 2);
@@ -260,7 +262,7 @@ describe('groupByLanguage', () => {
 
   it('is stable across two calls on the same data', () => {
     // The menu must not reshuffle between two renders of the same list.
-    const docs = [doc(1, 'es'), doc(2, 'en'), doc(3, 'fr')];
+    const docs = [doc("sub-1", 'es'), doc("sub-2", 'en'), doc("sub-3", 'fr')];
     assert.deepEqual(
       groupByLanguage(docs).map((g) => g.language),
       groupByLanguage(docs).map((g) => g.language)
@@ -270,17 +272,17 @@ describe('groupByLanguage', () => {
   it('keeps a null language as its own group rather than merging it', () => {
     // "No language recorded" is a different fact from a language tag, and
     // merging them hides a track that exists behind one that is named.
-    const groups = groupByLanguage([doc(1, null), doc(2, 'en')]);
+    const groups = groupByLanguage([doc("sub-1", null), doc("sub-2", 'en')]);
     assert.equal(groups.length, 2);
     assert.equal(groups[0].language, null);
   });
 });
 
 describe('selectedDoc', () => {
-  const docs = [doc(1, 'en'), doc(2, 'es')];
+  const docs = [doc("sub-1", 'en'), doc("sub-2", 'es')];
 
   it('resolves an id to its document', () => {
-    assert.equal(selectedDoc('2', docs)?.id, 2);
+    assert.equal(selectedDoc('sub-2', docs)?.id, 'sub-2');
   });
 
   it('treats (none) as no selection', () => {
@@ -291,6 +293,20 @@ describe('selectedDoc', () => {
     // A stored preference can name a document that was deleted. Rendering a
     // <track> for it would request a 404 on every cue change.
     assert.equal(selectedDoc('999', docs), null);
+  });
+
+  it('returns null for an empty selection', () => {
+    // A <select> that has never been touched can report ''. An unescaped '' in
+    // a <track src> is a request for the list route's own URL.
+    assert.equal(selectedDoc('', docs), null);
+  });
+
+  it('never coerces the id through Number', () => {
+    // The bug this replaced: Number('sub-2') is NaN, so the isFinite guard
+    // returned null for EVERY selection and the menu did nothing when used.
+    // A numeric-looking id is still just a string that has to match.
+    assert.equal(selectedDoc('2', [doc('sub-2', 'es')]), null);
+    assert.equal(selectedDoc('sub-2', [doc('sub-2', 'es')])?.id, 'sub-2');
   });
 
   it('returns null for a non-numeric selection', () => {
@@ -315,5 +331,53 @@ describe('stylingHonoured', () => {
     assert.equal(stylingHonoured('subrip'), true);
     assert.equal(stylingHonoured(null), true, 'an unknown format is not ASS');
     assert.equal(stylingWarning('webvtt'), null, 'and says nothing');
+  });
+});
+
+describe('subtitleVttUrl', () => {
+  it('is the route the server actually serves', () => {
+    // A test that only checks the client agrees with itself is worthless; this
+    // string is asserted against the real route path in the Rust route tests.
+    assert.equal(
+      subtitleVttUrl('obj-1', 'sub-1'),
+      '/media/obj-1/subtitles/sub-1.vtt'
+    );
+  });
+
+  it('escapes each half separately', () => {
+    // object_id comes from the page and document_id from the server. An
+    // unescaped one is a request for a DIFFERENT resource, not a broken one --
+    // which is why it does not announce itself.
+    assert.equal(
+      subtitleVttUrl('a b/c', 'x?y'),
+      '/media/a%20b%2Fc/subtitles/x%3Fy.vtt'
+    );
+  });
+
+  it('does not escape the .vtt suffix', () => {
+    // The suffix is part of the route, not part of the id, and the server
+    // strips exactly one. Escaping the dot would ask for a different URL.
+    assert.ok(subtitleVttUrl('o', 'd').endsWith('.vtt'));
+    assert.ok(!subtitleVttUrl('o', 'd').endsWith('%2Evtt'));
+  });
+});
+
+describe('trackIsDefault', () => {
+  it('is the store flag and nothing else', () => {
+    assert.equal(trackIsDefault({ ...doc('a', 'en'), is_default: true }), true);
+    assert.equal(trackIsDefault({ ...doc('a', 'en'), is_default: false }), false);
+  });
+
+  it('defaults to false when the list route did not send the flag', () => {
+    // A client holding only id/language/format must not start every track
+    // visible, which is what `undefined` would do under a truthiness test.
+    assert.equal(trackIsDefault(doc('a', 'en')), false);
+  });
+
+  it('does NOT treat a forced track as default', () => {
+    // A forced track is commentary meant to be shown over the user's own
+    // choice. Treating it as default would open every film with forced
+    // narration switched on.
+    assert.equal(trackIsDefault({ ...doc('a', 'en'), is_forced: true }), false);
   });
 });

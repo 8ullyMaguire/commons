@@ -522,7 +522,16 @@ export function skipIntroWindow(
 
 /** One stored subtitle document, as the client sees it. */
 export interface SubtitleDoc {
-  id: number;
+  /**
+   * The store's document id — an opaque STRING, not a row number.
+   *
+   * It was `number` and is now `string` because the server mints ids as text
+   * (`sub-<object>-<n>`), and a component written against a numeric id would
+   * have shipped `NaN` into every `<track src>` and produced a track list that
+   * loads and renders nothing. The id is the whole of the VTT URL, so a wrong
+   * one is a 404, not a wrong subtitle.
+   */
+  id: string;
   /** A BCP-47-ish tag, or null for a track with no language. */
   language: string | null;
   /** `subrip`, `webvtt`, `ass`, `mov_text` — ffprobe's spelling. */
@@ -530,6 +539,13 @@ export interface SubtitleDoc {
   /** The label to show when there is no language. */
   label?: string | null;
   cueCount?: number | null;
+  /**
+   * Flags from the store row, if the list route sent them. All default to
+   * false, so a client that only has the id, language and format still works.
+   */
+  is_default?: boolean;
+  is_forced?: boolean;
+  is_hearing_impaired?: boolean;
 }
 
 /** The "(none)" row, and the reason it exists. */
@@ -600,19 +616,30 @@ export function groupByLanguage(docs: SubtitleDoc[]): { language: string | null;
 /**
  * Which document a menu selection names.
  *
- * Returns null for `(none)`, for an id that is not in the list, and for a
- * non-numeric value. The last two matter because a stored preference can name
- * a document that was deleted, and rendering a `<track>` for it would request
- * a 404 on every cue change.
+ * Returns null for `(none)`, for an id that is not in the list, and for an
+ * empty value. The middle case matters because a stored preference can name a
+ * document that was deleted, and rendering a `<track>` for it would request a
+ * 404 on every cue change.
+ *
+ * **The comparison is by string, and that is not incidental.** This used to do
+ * `Number(value)` and match `d.id === id`, which was correct while ids were
+ * numbers and silently wrong the moment they were not: `Number("sub-2")` is
+ * `NaN`, the `Number.isFinite` guard then returned null for *every* selection,
+ * and the symptom was a subtitle menu that populated and did nothing when you
+ * picked from it. A guard that rejects the wrong shape fails quietly; a guard
+ * that rejects the right shape fails loudly in the tests instead.
+ *
+ * The empty check is not a nicety. `''` is falsy, so a `<select>` that has
+ * never been touched can report an empty value, and an unescaped `''` in a
+ * `<track src>` is a request for the list route's own URL.
  */
 export function selectedDoc(
   value: string | null | undefined,
   docs: SubtitleDoc[]
 ): SubtitleDoc | null {
   if (value === null || value === undefined || value === NO_SUBTITLES) return null;
-  const id = Number(value);
-  if (!Number.isFinite(id)) return null;
-  return docs.find((d) => d.id === id) ?? null;
+  if (value === '') return null;
+  return docs.find((d) => d.id === value) ?? null;
 }
 
 
@@ -765,4 +792,37 @@ export function stylingHonoured(format: string | null | undefined): boolean {
 export function stylingWarning(format: string | null | undefined): string | null {
   if (stylingHonoured(format)) return null;
   return 'This track uses ASS styling (position, colour, karaoke). Subtitles are shown as plain text.';
+}
+
+/**
+ * The VTT URL for one track, for the object currently being played.
+ *
+ * **One place composes this path, and it is here.** The server route is
+ * `/media/:object_id/subtitles/:document_id.vtt`, and a client that builds the
+ * string itself in a component is a client that breaks when the route changes --
+ * with no error, because a wrong `<track src>` is a 404 the browser logs and
+ * moves past. The two halves of that URL are separately escaped because
+ * `object_id` comes from the page and a document id from the server, and an
+ * unescaped one is a request for a different resource.
+ */
+export function subtitleVttUrl(objectId: string, documentId: string): string {
+  return `/media/${encodeURIComponent(objectId)}/subtitles/${encodeURIComponent(documentId)}.vtt`;
+}
+
+/**
+ * Whether a `<track>` for this document should start visible.
+ *
+ * The store's `is_default` flag, and nothing else. Browsers have their own
+ * notion of a default track and it differs between Chromium and Firefox, so
+ * setting the attribute from the row is the only way the two agree — and a user
+ * whose only track is forced narration would otherwise get a video that starts
+ * with no captions and a control they have to find.
+ *
+ * `is_forced` is NOT this. A forced track is meant to be shown *over* whatever
+ * else is selected, and the common case is that it should not replace the
+ * user's own choice; treating it as default would make every film with forced
+ * commentary open with the commentary on.
+ */
+export function trackIsDefault(doc: SubtitleDoc): boolean {
+  return doc.is_default === true;
 }
