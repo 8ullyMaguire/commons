@@ -929,3 +929,51 @@ of the three. That file tests the resolver over a literal map; it cannot tell
 whether the table exists, whether the partial index covers the roots, or whether
 a trigger fires. The harness's own header says it: "It proves the tree applies. A
 migration that applies for the wrong reason still applies."
+
+### T-P5-006 item 7 — undo for destructive actions
+
+`crates/commons-store/src/undo.rs`, migration `0019_undo.sql` on both engines,
+`tests/undo_db.rs`, `ui/src/lib/api/undo.ts`. 1217 Rust, 237 UI, clippy clean.
+
+An undo is a **recorded inverse**, not a re-derivation, and the reason is
+`bulk_apply_tag`'s `ON CONFLICT DO UPDATE`: an object that already carried the
+tag has its `confidence` and `source` *replaced* rather than gaining a row, so
+what was there is not recoverable from the row afterwards. The record stores the
+before and after state of every object the write **changed** — not every object
+it reached, because a row that already had the tag was reached but not changed,
+and its inverse is nothing.
+
+Four things worth knowing before touching this:
+
+1. **`row_existed` is stored because it cannot be derived.** All three value
+   columns are nullable (0016 added them to a table that lacked them), so three
+   NULLs are indistinguishable from no row — and a row of three NULLs is what
+   every `object_tag` row written before 0016 is. Restoring that as "absent"
+   deletes a row that existed.
+2. **A superseded write is refused, not applied.** Restoring `before` onto an
+   object that has since changed does not put it back; it moves the object into
+   a state nobody was ever in and discards the edit that superseded the one being
+   undone. `undo()` verifies every object first and writes **none** on a
+   mismatch, all-or-nothing, naming the object that moved.
+3. **`INTEGER` decodes as `i32`.** INT4 on Postgres, INT8 on SQLite. A decode
+   asking for `i64` passes on SQLite and fails on Postgres; the parity test
+   checks column *names* and cannot see this. Same rule as `relations.rs`.
+4. **`tag_id` is on the record, not a parameter.** A caller that supplies it can
+   supply the wrong one, and the staleness check still passes, because it reads
+   `after` from the record and compares against the tag the record names.
+
+**Known gaps, both named rather than left to be found:**
+
+- The write and its record are **not atomic**. `bulk_apply_tag` is a single
+  `INSERT ... SELECT`, so making them one transaction needs that statement on a
+  connection `record_undo` also holds. The failure left is a write with no undo
+  — the safe direction, since the user is told the write happened. The fix is
+  `Store::bulk_apply_tag_undoable` and it belongs in `bulk.rs`, which owns the
+  error type.
+- **No route and no component.** `undo` has no GraphQL operation, so nothing can
+  call it from the client, and the `.svelte` toast is not written. The client
+  model is complete and tested, ready the moment the operation exists.
+
+Expiry is enforced **on read** (`undoable()` and `undo()`), never by a sweeper —
+a sweeper is a second thing to run, schedule, and notice has stopped. Rows are
+never deleted: an expired record is invisible and inert, not gone.
