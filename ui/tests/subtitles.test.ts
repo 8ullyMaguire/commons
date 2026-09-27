@@ -32,6 +32,7 @@ import {
   stylingHonoured,
   stylingWarning,
   subtitleOptions,
+  subtitleLabel,
   subtitleVttUrl,
   trackIsDefault,
   toVttTimestamp,
@@ -379,5 +380,47 @@ describe('trackIsDefault', () => {
     // choice. Treating it as default would open every film with forced
     // narration switched on.
     assert.equal(trackIsDefault({ ...doc('a', 'en'), is_forced: true }), false);
+  });
+});
+
+describe('subtitleLabel', () => {
+  it('is the language when there is one', () => {
+    // `languageDisplay` gives a capitalised BCP-47 subtag, not an English
+    // name: "En", not "English". The tag is what the file declared, and
+    // inventing a display name for it means a lookup table that is wrong for
+    // every language not in it.
+    assert.equal(subtitleLabel(doc('a', 'en')), 'En');
+  });
+
+  it('distinguishes two tracks in the same language by their flags', () => {
+    // Two English tracks where one is forced narration is the case that
+    // matters, and "English" twice in a menu is useless.
+    const plain = subtitleLabel(doc('a', 'en'));
+    const forced = subtitleLabel({ ...doc('b', 'en'), is_forced: true });
+    assert.notEqual(plain, forced);
+    assert.match(forced, /forced/);
+  });
+
+  it('lists both flags when a track has both', () => {
+    const l = subtitleLabel({
+      ...doc('a', 'en'),
+      is_forced: true,
+      is_hearing_impaired: true
+    });
+    assert.match(l, /forced/);
+    assert.match(l, /hearing impaired/);
+  });
+
+  it('does NOT put the format in the label', () => {
+    // "ASS" in a menu tells a user nothing about whether they will see the
+    // styling; stylingWarning is shown next to the controls instead.
+    assert.doesNotMatch(subtitleLabel(doc('a', 'en', 'ass')), /ass/i);
+  });
+
+  it('says something for a track with no language', () => {
+    // Null is a file that declares no language, which is different from "" --
+    // a file that says it has none. Both must render, neither may be empty.
+    assert.ok(subtitleLabel(doc('a', null)).length > 0);
+    assert.ok(subtitleLabel({ ...doc('a', null), label: 'Signs' }).length > 0);
   });
 });

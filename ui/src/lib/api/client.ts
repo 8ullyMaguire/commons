@@ -432,6 +432,63 @@ export async function fetchMediaCaps(
 }
 
 /**
+ * One track, as `GET /media/:id/subtitles` sends it.
+ *
+ * `language` is `string | null` and the null is load-bearing: `null` is a file
+ * that declares no language, and `""` is a file that says it has none. The
+ * server refuses to coalesce them, so a client that maps null to `""` shows
+ * "Unknown" for a track the extractor never saw a tag for and "None" for one the
+ * tagger deliberately cleared.
+ *
+ * The id is the whole of the VTT URL, which is why this type has no `url`
+ * field: composing one in two places is how a route change breaks silently.
+ */
+export interface SubtitleTrack {
+  readonly id: string;
+  readonly label: string;
+  readonly language: string | null;
+  readonly is_default: boolean;
+  readonly is_forced: boolean;
+  readonly is_hearing_impaired: boolean;
+  /** 0 is possible and means "a real, empty track", not "unknown". */
+  readonly cue_count: number;
+  /**
+   * `subrip` / `webvtt` / `ass` / `mov_text`, as the store names it.
+   *
+   * A browser renders ASS as plain text and drops the styling silently, so this
+   * is what lets the player say so rather than showing a track that looks
+   * merely plain.
+   */
+  readonly format: string;
+}
+
+export interface SubtitleTrackList {
+  readonly tracks: readonly SubtitleTrack[];
+}
+
+/**
+ * The subtitle tracks the server holds for one object.
+ *
+ * A 404 is `null`, exactly as for `fetchMediaCaps` and `fetchPlayback`, and for
+ * the same reason: absent, not-on-disk and denied all mean "this object is not
+ * available to you", and a client cannot tell them apart -- nor should it try.
+ * Every other failure throws, because a server that is down is worth telling a
+ * user about and a file with no subtitles is not.
+ *
+ * The empty case is the common one, and it is a 200 with `tracks: []` rather
+ * than a 404: a library of files with no subtitles is a working library.
+ */
+export async function fetchSubtitleTracks(
+  objectId: string,
+  signal?: AbortSignal
+): Promise<SubtitleTrackList | null> {
+  const res = await fetch(mediaPath(objectId, '/subtitles'), { signal });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`subtitles: ${res.status}`);
+  return (await res.json()) as SubtitleTrackList;
+}
+
+/**
  * Read a file's saved position.
  *
  * A file with no saved state is not an error: it is a file nobody has played,

@@ -128,7 +128,25 @@ describe('never OFFSET (spec rule 2, stash#6455 and #6390)', () => {
       // Comments in client.ts and keyset.ts explain why offset is forbidden,
       // so only flag it where it would be USED.
       if (rel === 'lib/api/client.ts' || rel === 'lib/api/keyset.ts') continue;
-      if (/\boffset\s*[:=]|\$offset\b/.test(readFileSync(f, 'utf8'))) offenders.push(rel);
+      // The subtitle timing offset is a different thing entirely: a display
+      // nudge in milliseconds that never reaches a query, and is deliberately
+      // not persisted. Forbidding the word outright caught it as a false
+      // positive, and the two ways that get "fixed" are both bad -- renaming
+      // the subtitle offset to dodge a lint teaches that the lint is noise,
+      // and dropping the test removes a real rule about OFFSET pagination.
+      //
+      // So the rule is narrowed to what it was actually for: a name that would
+      // become a SQL OFFSET. `offsetMs`, `applyOffset`, `toWebVttWithOffset`
+      // and `offset-value` are all fine; a bare `offset:` or `$offset` is not,
+      // because a query parameter is the thing being banned.
+      const text = readFileSync(f, 'utf8');
+      // The lookarounds are what make this a whole word, so `offsetMs:` does
+      // not match while a bare `offset: 500` does -- and that one SHOULD be
+      // rejected, because a number in an `offset` field is a page offset
+      // wearing milliseconds as a disguise. A plain `\b` would not separate
+      // the two cases: `\b` matches between `t` and `M`.
+      const bareOffset = /(?<![A-Za-z0-9_$])offset\s*[:=](?![A-Za-z0-9_$])/;
+      if (bareOffset.test(text) || /\$offset\b/.test(text)) offenders.push(rel);
     }
     assert.deepEqual(offenders, [], `offset pagination in: ${offenders}`);
   });

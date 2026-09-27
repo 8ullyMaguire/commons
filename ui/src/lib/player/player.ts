@@ -826,3 +826,27 @@ export function subtitleVttUrl(objectId: string, documentId: string): string {
 export function trackIsDefault(doc: SubtitleDoc): boolean {
   return doc.is_default === true;
 }
+
+/**
+ * The label for one track, in a menu and on a `<track>` element.
+ *
+ * The language, plus the flags a viewer needs to tell two tracks apart -- two
+ * English tracks where one is forced narration is the case that matters, and
+ * "English" twice in a menu is useless.
+ *
+ * The format is deliberately NOT in here. "ASS" tells a user nothing about
+ * whether they will see the styling, and a menu entry is not where that
+ * warning belongs; `stylingWarning` is shown next to the controls instead.
+ *
+ * Pure and here rather than in the component, because this string appears in
+ * two places -- the `<select>` option and the `<track label>` attribute -- and a
+ * label that differs between the menu and the track is a bug nobody reports,
+ * because both are technically correct.
+ */
+export function subtitleLabel(doc: SubtitleDoc): string {
+  const base = languageDisplay(doc.language);
+  const flags: string[] = [];
+  if (doc.is_forced) flags.push('forced');
+  if (doc.is_hearing_impaired) flags.push('hearing impaired');
+  return flags.length ? `${base} (${flags.join(', ')})` : base;
+}

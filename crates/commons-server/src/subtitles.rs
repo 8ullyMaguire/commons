@@ -73,6 +73,14 @@ struct TrackSummary {
     /// Cue count, so a client can tell a populated track from an empty one
     /// before fetching it.
     cue_count: i64,
+    /// The stored format, as `subrip` / `webvtt` / `ass` / `mov_text`.
+    ///
+    /// Not decoration. A browser renders ASS as plain text and silently drops
+    /// the positioning, colour and karaoke, so a client that cannot see the
+    /// format cannot warn the user that the track they picked is not being shown
+    /// the way it was authored -- it just looks like a plain subtitle file with
+    /// the styling missing. `format` is what makes that warning possible at all.
+    format: String,
 }
 
 /// `GET /media/:object_id/subtitles`.
@@ -131,6 +139,7 @@ pub async fn list_tracks(
             is_forced: doc.is_forced,
             is_hearing_impaired: doc.is_hearing_impaired,
             cue_count,
+            format: doc.format.as_str().to_string(),
         });
     }
 

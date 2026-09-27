@@ -95,6 +95,9 @@ async fn a_seeded_track_is_listed_with_its_label_and_count() {
     assert_eq!(1, tracks[0]["cue_count"]);
     assert_eq!("en", tracks[0]["language"]);
     assert!(tracks[0]["label"].as_str().unwrap().contains("en"));
+    // The format travels with the list, because a client cannot warn that ASS
+    // styling is being dropped without knowing the format.
+    assert_eq!("vtt", tracks[0]["format"]);
     // The id is the whole of the VTT URL, so the client never composes a path.
     assert_eq!(format!("sub-{}-1", fixture.object_id), tracks[0]["id"]);
 }

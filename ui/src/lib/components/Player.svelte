@@ -26,7 +26,22 @@
 -->
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { fetchMediaCaps, fetchPlayback, savePlayback, type MediaCaps } from '$lib/api/client.js';
+  import {
+    fetchMediaCaps,
+    fetchPlayback,
+    fetchSubtitleTracks,
+    savePlayback,
+    type MediaCaps,
+    type SubtitleTrack
+  } from '$lib/api/client.js';
+  import SubtitleControls from '$lib/player/SubtitleControls.svelte';
+  import {
+    NO_SUBTITLES,
+    subtitleLabel,
+    subtitleVttUrl,
+    trackIsDefault,
+    type SubtitleDoc
+  } from '$lib/player/player.js';
   import {
     clipPath,
     isLoopArmed,
@@ -77,6 +92,57 @@
 
   let video: HTMLVideoElement;
   let viewport = $state({ width: 1280, height: 800 });
+  /**
+   * The subtitle tracks, and which one is showing.
+   *
+   * Fetched the same way and with the same tolerance as `caps`: a failure is
+   * `[]`, not an error. A file whose subtitles cannot be listed is a file that
+   * plays, and refusing to play it because a sidecar scan is unhappy would be a
+   * far worse outcome than a video with no captions.
+   */
+  let subTracks = $state<SubtitleDoc[]>([]);
+  let subSelected = $state<string>(NO_SUBTITLES);
+  /**
+   * The display-time subtitle offset, in ms.
+   *
+   * Deliberately NOT persisted, and not sent to the server. A stored offset
+   * makes the document wrong for the next viewer, needs its own undo, and makes
+   * "reset offset" indistinguishable from "this file has no offset". It is a
+   * property of this viewing, not of the file.
+   */
+  let subOffset = $state<number | null>(null);
+
+  /**
+   * Take the list route's answer and turn it into what the component renders.
+   *
+   * `null` (absent or denied) and a 200 with no tracks are the same thing here,
+   * deliberately: the caller cannot tell them apart and must not try. The
+   * selection is reset to Off on every load, because a stored selection naming a
+   * document this response does not contain is a selection that would render a
+   * `<track>` for a 404.
+   */
+  function applyTracks(list: { tracks: readonly SubtitleTrack[] } | null): void {
+    const next: SubtitleDoc[] = (list?.tracks ?? []).map((t) => ({
+      id: t.id,
+      language: t.language,
+      format: t.format,
+      label: t.label,
+      cueCount: t.cue_count,
+      is_default: t.is_default,
+      is_forced: t.is_forced,
+      is_hearing_impaired: t.is_hearing_impaired
+    }));
+    subTracks = next;
+    // A stored preference survives only if it still names a track that exists.
+    subSelected = subTracks.some((d) => d.id === subSelected) ? subSelected : NO_SUBTITLES;
+    // A file that declares one default track gets it; anything else opens Off,
+    // because a browser's own guess differs between engines.
+    if (subSelected === NO_SUBTITLES) {
+      const dflt = subTracks.find((d) => d.is_default);
+      if (dflt) subSelected = dflt.id;
+    }
+  }
+
   let position = $state(0);
   let duration = $state(0);
   let paused = $state(true);
@@ -523,6 +589,9 @@
       fetchMediaCaps(objectId)
         .then((c) => (resolved = c))
         .catch(() => (resolved = null));
+      fetchSubtitleTracks(objectId)
+        .then((list) => applyTracks(list))
+        .catch(() => applyTracks(null));
     }
     const tick = setInterval(() => save('tick'), 1000);
     // The resume retry's driver. `canplay` fires once; a seek it could not
@@ -573,7 +642,14 @@
   data-resume-target={resumeTarget && resumeTarget > 0 ? resumeTarget : undefined}
   data-resume-decided={resumeDecided}
 >
-  <!-- svelte-ignore a11y_media_has_caption -->
+  <!--
+    The caption tracks live INSIDE the <video>. A `<track>` that is a sibling
+    rather than a child is not associated with the element, so the browser never
+    loads it and the video plays with no captions and no error -- which is why
+    the a11y suppression below is now a description of a real fix rather than a
+    way to silence a warning. SubtitleControls owns the choice; this element
+    owns the association.
+  -->
   <video
     bind:this={video}
     src={url}
@@ -592,7 +668,25 @@
     on:pointerup={onHoldEnd}
     on:pointercancel={onHoldEnd}
     data-testid="player-video"
-  />
+  >
+    <!--
+      ONLY `<track>` may be a child of `<video>` -- a `<div>` here renders
+      nothing, silently, and the controls would simply not exist. So the tracks
+      are here and the controls are in the bar below, and both are built from
+      the same pure helpers in `player.ts`. That split is not a workaround: it
+      is where the two halves have to live, and it is why the label and
+      default-track decisions are functions rather than markup.
+    -->
+    {#each subTracks as d (d.id)}
+      <track
+        kind="subtitles"
+        src={subtitleVttUrl(objectId, d.id)}
+        srclang={d.language ?? ''}
+        label={subtitleLabel(d)}
+        default={trackIsDefault(d)}
+      />
+    {/each}
+  </video>
 
   {#if failed}
     <p class="failed" role="alert" data-testid="player-error">{failed}</p>
@@ -604,6 +698,19 @@
 
   {#if showBar}
     <div class="bar" data-testid="player-bar">
+      <!--
+        The controls, here rather than inside the <video> because only <track>
+        may be a child of a video element. The pure decisions -- which label, and
+        which track starts visible -- live in `player.ts` and are shared with the
+        <track label> attributes above, so the menu and the track cannot drift.
+      -->
+      <SubtitleControls
+        tracks={subTracks}
+        selected={subSelected}
+        offsetMs={subOffset}
+        onselect={(id) => (subSelected = id)}
+        onoffset={(ms) => (subOffset = ms)}
+      />
       {#if plan.showTitle && title}
         <span class="title" data-testid="player-title">{title}</span>
       {/if}
