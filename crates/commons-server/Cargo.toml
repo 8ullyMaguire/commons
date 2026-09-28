@@ -37,6 +37,9 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
+# T-P6-007: the /api/v1 OpenAPI document. See the workspace entry for why
+# `utoipa-axum` is deliberately absent.
+utoipa = { workspace = true }
 tower-http = { workspace = true }
 toml = { workspace = true }
 # T-P5-007 part 2B: grant lifetimes and the ISO-8601 stamps on the wire.

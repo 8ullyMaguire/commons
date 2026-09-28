@@ -74,7 +74,13 @@ const MAX_TTL_HOURS: i64 = 24 * 90;
 const MIN_TTL_HOURS: i64 = 1;
 
 /// `POST /api/share` — issue a link.
-#[derive(Debug, Deserialize)]
+///
+/// `ToSchema` since T-P6-007, for the `/api/v1` OpenAPI document. It is a
+/// `derive` rather than a hand-written `impl` because the whole point of a
+/// generated document is that it cannot drift from the type — and a hand-written
+/// schema is a second description of the same struct, which is the failure
+/// mode the generated document exists to remove.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateShare {
     pub target_kind: String,
@@ -119,6 +125,11 @@ pub struct ShareListItem {
     pub state: String,
 }
 
+#[utoipa::path(post, path = "/api/share", responses((status = 200, description = "Success")))]
+/// T-P6-007: the `/api/v1` OpenAPI document reads this. The path is
+/// the VERSIONED one even though the route also answers unversioned --
+/// a document that listed the internal path would send consumers to the
+/// surface §11.5 promises to keep unversioned.
 pub async fn create_share(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreateShare>,
@@ -184,6 +195,11 @@ pub async fn create_share(
         .into_response()
 }
 
+#[utoipa::path(get, path = "/api/share", responses((status = 200, description = "Success")))]
+/// T-P6-007: the `/api/v1` OpenAPI document reads this. The path is
+/// the VERSIONED one even though the route also answers unversioned --
+/// a document that listed the internal path would send consumers to the
+/// surface §11.5 promises to keep unversioned.
 pub async fn list_share(State(state): State<Arc<AppState>>) -> Response {
     match list_grants(&state.store).await {
         Ok(rows) => {
@@ -209,6 +225,11 @@ pub async fn list_share(State(state): State<Arc<AppState>>) -> Response {
     }
 }
 
+#[utoipa::path(delete, path = "/api/share/{id}", responses((status = 200, description = "Success")), params(("id" = String, Path)))]
+/// T-P6-007: the `/api/v1` OpenAPI document reads this. The path is
+/// the VERSIONED one even though the route also answers unversioned --
+/// a document that listed the internal path would send consumers to the
+/// surface §11.5 promises to keep unversioned.
 pub async fn revoke_share(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     match revoke_grant(&state.store, &id, Utc::now()).await {
         // 200 whether or not it was already revoked: DELETE is idempotent by
@@ -233,6 +254,11 @@ pub struct ResolvedShare {
     pub needs_password: bool,
 }
 
+#[utoipa::path(get, path = "/api/s/{token}", responses((status = 200, description = "Success")), params(("token" = String, Path)))]
+/// T-P6-007: the `/api/v1` OpenAPI document reads this. The path is
+/// the VERSIONED one even though the route also answers unversioned --
+/// a document that listed the internal path would send consumers to the
+/// surface §11.5 promises to keep unversioned.
 pub async fn resolve_share(
     State(state): State<Arc<AppState>>,
     Path(token): Path<String>,
@@ -262,6 +288,11 @@ pub async fn resolve_share(
 /// Named `access` rather than `object` because it is not a general object read:
 /// it is a capability-scoped view, and a name that sounds like a normal resource
 /// invites a future change that treats it as one.
+#[utoipa::path(get, path = "/api/s/{token}/access", responses((status = 200, description = "Success")), params(("token" = String, Path)))]
+/// T-P6-007: the `/api/v1` OpenAPI document reads this. The path is
+/// the VERSIONED one even though the route also answers unversioned --
+/// a document that listed the internal path would send consumers to the
+/// surface §11.5 promises to keep unversioned.
 pub async fn share_access(
     State(state): State<Arc<AppState>>,
     Path(token): Path<String>,

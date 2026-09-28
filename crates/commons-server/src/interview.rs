@@ -144,6 +144,11 @@ pub struct WordQuery {
 }
 
 /// `GET /media/:object_id/transcript`
+#[utoipa::path(get, path = "/media/{object_id}/transcript", responses((status = 200, description = "Success")), params(("object_id" = String, Path)))]
+/// T-P6-007: the `/api/v1` OpenAPI document reads this. The path is
+/// the VERSIONED one even though the route also answers unversioned --
+/// a document that listed the internal path would send consumers to the
+/// surface §11.5 promises to keep unversioned.
 pub async fn get_transcript(
     State(state): State<std::sync::Arc<AppState>>,
     AxumPath(object_id): AxumPath<String>,
@@ -223,6 +228,11 @@ pub async fn get_transcript(
 }
 
 /// `GET /media/:object_id/transcript/words?offset=&limit=`
+#[utoipa::path(get, path = "/media/{object_id}/transcript/words", responses((status = 200, description = "Success")), params(("object_id" = String, Path)))]
+/// T-P6-007: the `/api/v1` OpenAPI document reads this. The path is
+/// the VERSIONED one even though the route also answers unversioned --
+/// a document that listed the internal path would send consumers to the
+/// surface §11.5 promises to keep unversioned.
 pub async fn get_words(
     State(state): State<std::sync::Arc<AppState>>,
     AxumPath(object_id): AxumPath<String>,
@@ -281,6 +291,11 @@ pub async fn get_words(
 }
 
 /// `GET /media/:object_id/chapters`
+#[utoipa::path(get, path = "/media/{object_id}/chapters", responses((status = 200, description = "Success")), params(("object_id" = String, Path)))]
+/// T-P6-007: the `/api/v1` OpenAPI document reads this. The path is
+/// the VERSIONED one even though the route also answers unversioned --
+/// a document that listed the internal path would send consumers to the
+/// surface §11.5 promises to keep unversioned.
 pub async fn get_chapters(
     State(state): State<std::sync::Arc<AppState>>,
     AxumPath(object_id): AxumPath<String>,
@@ -387,6 +402,11 @@ pub struct QuoteQuery {
 ///
 /// The same pager as `get_words`, deliberately: a second pager with the same
 /// semantics and a different parameter name is a client bug waiting to happen.
+#[utoipa::path(get, path = "/media/{object_id}/quotes", responses((status = 200, description = "Success")), params(("object_id" = String, Path)))]
+/// T-P6-007: the `/api/v1` OpenAPI document reads this. The path is
+/// the VERSIONED one even though the route also answers unversioned --
+/// a document that listed the internal path would send consumers to the
+/// surface §11.5 promises to keep unversioned.
 pub async fn get_quotes(
     State(state): State<std::sync::Arc<AppState>>,
     AxumPath(object_id): AxumPath<String>,
@@ -468,6 +488,11 @@ struct TopicList {
 /// of recordings that have not been tagged is the normal state, and a 404
 /// would say "this thing does not exist" about a recording that is right
 /// there on screen. This is the same call `get_chapters` already makes.
+#[utoipa::path(get, path = "/media/{object_id}/topics", responses((status = 200, description = "Success")), params(("object_id" = String, Path)))]
+/// T-P6-007: the `/api/v1` OpenAPI document reads this. The path is
+/// the VERSIONED one even though the route also answers unversioned --
+/// a document that listed the internal path would send consumers to the
+/// surface §11.5 promises to keep unversioned.
 pub async fn get_topics(
     State(state): State<std::sync::Arc<AppState>>,
     AxumPath(object_id): AxumPath<String>,

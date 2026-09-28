@@ -84,6 +84,16 @@ struct TrackSummary {
 }
 
 /// `GET /media/:object_id/subtitles`.
+#[utoipa::path(get, path = "/media/{object_id}/subtitles", responses((status = 200, description = "Success")), params(("object_id" = String, Path)))]
+// The path ends `/{document_id}.vtt` and the route is declared as
+// `:document_id.vtt` -- an axum param with a literal suffix. Both the document
+// and the route have to spell it, and `openapi_document_matches_the_served_routes`
+// is what proves they do: a generated client that sends `/subtitles/doc-1`
+// instead of `/subtitles/doc-1.vtt` gets a 404 that looks like a missing track.
+/// T-P6-007: the `/api/v1` OpenAPI document reads this. The path is
+/// the VERSIONED one even though the route also answers unversioned --
+/// a document that listed the internal path would send consumers to the
+/// surface §11.5 promises to keep unversioned.
 pub async fn list_tracks(
     State(state): State<std::sync::Arc<AppState>>,
     AxumPath(object_id): AxumPath<String>,
@@ -153,6 +163,13 @@ pub async fn list_tracks(
     )
         .into_response()
 }
+// The path ends `/{document_id}.vtt` while the route is declared as
+// `:document_id.vtt` -- an axum param with a literal suffix. Both the
+// document and the route have to spell it, and
+// `openapi_document_matches_the_served_routes` is what proves they do: a
+// generated client that sends `/subtitles/doc-1` instead of
+// `/subtitles/doc-1.vtt` gets a 404 that reads as a missing track.
+#[utoipa::path(get, path = "/media/{object_id}/subtitles/{document_id}.vtt", responses((status = 200, description = "One WebVTT track")), params(("object_id" = String, Path), ("document_id" = String, Path)))]
 
 /// `GET /media/:object_id/subtitles/:document_id.vtt`.
 ///

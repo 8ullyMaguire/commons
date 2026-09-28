@@ -127,6 +127,11 @@ pub struct TimelineWire {
 /// cannot see the video cannot enumerate its scripts. A **200 with an empty
 /// list** would be the leak — the caller cannot tell "no scripts" from "not
 /// allowed to know" — so absent and denied both answer 404.
+#[utoipa::path(get, path = "/media/{object_id}/funscripts", responses((status = 200, description = "Success")), params(("object_id" = String, Path)))]
+/// T-P6-007: the `/api/v1` OpenAPI document reads this. The path is
+/// the VERSIONED one even though the route also answers unversioned --
+/// a document that listed the internal path would send consumers to the
+/// surface §11.5 promises to keep unversioned.
 pub async fn list(
     State(state): State<std::sync::Arc<AppState>>,
     AxumPath(object_id): AxumPath<String>,
@@ -181,6 +186,11 @@ pub async fn list(
 /// **without touching the stored script** — a zero or absent value means "not
 /// asked for", which is not the same as zero-length and must not wipe the
 /// timeline.
+#[utoipa::path(get, path = "/media/{object_id}/funscripts/{funscript_id}", responses((status = 200, description = "Success")), params(("object_id" = String, Path), ("funscript_id" = String, Path)))]
+/// T-P6-007: the `/api/v1` OpenAPI document reads this. The path is
+/// the VERSIONED one even though the route also answers unversioned --
+/// a document that listed the internal path would send consumers to the
+/// surface §11.5 promises to keep unversioned.
 pub async fn timeline(
     State(state): State<std::sync::Arc<AppState>>,
     AxumPath((object_id, funscript_id)): AxumPath<(String, String)>,

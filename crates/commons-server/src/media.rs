@@ -80,6 +80,11 @@ pub fn local_caller() -> CallerId {
 }
 
 /// `GET /media/:object_id`.
+#[utoipa::path(get, path = "/media/{object_id}", responses((status = 200, description = "Success")), params(("object_id" = String, Path)))]
+/// T-P6-007: the `/api/v1` OpenAPI document reads this. The path is
+/// the VERSIONED one even though the route also answers unversioned --
+/// a document that listed the internal path would send consumers to the
+/// surface §11.5 promises to keep unversioned.
 pub async fn get_media(
     State(state): State<std::sync::Arc<AppState>>,
     AxumPath(object_id): AxumPath<String>,

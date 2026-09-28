@@ -93,3 +93,53 @@ async fn a_share_can_be_created_through_the_versioned_api() {
         String::from_utf8_lossy(&res.body)
     );
 }
+
+/// `GET /api/v1/openapi.json` serves the document.
+///
+/// The unit tests check the document as a value; this checks it is REACHABLE.
+/// Those are different failures — a document built and never served is a
+/// document no consumer can find, and it is the failure mode a unit test cannot
+/// see.
+#[tokio::test]
+async fn the_document_is_served_at_the_versioned_path() {
+    let app = TestApp::new().await;
+    let res = app.get_json("/api/v1/openapi.json").await;
+    assert_eq!(res.status, 200, "the document must be served");
+    let body = String::from_utf8_lossy(&res.body);
+    assert!(
+        body.contains("\"openapi\""),
+        "the response is not an OpenAPI document: {}",
+        &body[..body.len().min(200)]
+    );
+    assert!(
+        body.contains("/media/{object_id}"),
+        "the document has no paths -- the `paths(...)` list is not wired up"
+    );
+    // The PATH KEYS must be OpenAPI's `{param}` form, not axum's `:param`. A
+    // generated client reads these keys and sends the names from them verbatim,
+    // so a colon here becomes a wrong parameter name at runtime.
+    //
+    // The check is on the keys specifically, not on the whole body: utoipa copies
+    // each handler's doc comment into `summary`/`description`, and those
+    // comments legitimately quote the axum form (`GET /media/:object_id`) when
+    // they are talking about the Rust route. Searching the whole document
+    // flagged that prose and would have driven someone to rewrite accurate
+    // documentation to satisfy a test.
+    let doc: serde_json::Value = serde_json::from_str(&body).expect("the document is valid JSON");
+    for (path, _item) in doc["paths"].as_object().expect("paths is an object") {
+        assert!(
+            !path.contains(':'),
+            "path key {path} uses axum's `:param` form; OpenAPI requires `{{param}}`, \
+             and a generated client would send the wrong parameter name"
+        );
+    }
+}
+
+/// And it is NOT served unversioned, because the versioned mount is the public
+/// one and an unversioned copy invites a consumer onto the path §11.5 says
+/// carries no compatibility promise.
+#[tokio::test]
+async fn the_document_is_only_served_under_the_version_prefix() {
+    let app = TestApp::new().await;
+    assert_eq!(app.get_json("/openapi.json").await.status, 404);
+}

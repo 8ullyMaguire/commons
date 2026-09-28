@@ -39,6 +39,8 @@ pub mod health;
 pub mod identity;
 pub mod interview;
 pub mod media;
+/// T-P6-007: the generated OpenAPI document for `/api/v1`.
+pub mod openapi;
 pub mod playback;
 pub mod proxy;
 pub mod range;
@@ -196,24 +198,15 @@ pub fn router(state: Arc<AppState>) -> Router {
 /// exists without being in the changelog, is the one that cannot be detected
 /// after the fact.
 ///
-/// `a_v1_route_added_without_its_changelog_entry_is_still_caught` does not
-/// exist and should not: the guarantee is structural, and a test asserting a
-/// list of route names would need updating every time one is added, which is
-/// how such lists rot.
-fn v1_routes() -> Router<std::sync::Arc<AppState>> {
-    // Every route here is a copy of one above, handler for handler. The list
-    // is short enough to read in one screen, which is the point: a reviewer
-    // adding a route can see in one place everything that becomes public.
-    //
-    // `/dlna/*` and the proxy routes (`/media/:id/caps`,
-    // `/media/:id/proxy.m3u8`) are ABSENT, and that is the design. See this
-    // function's docs.
+/// Since T-P6-007 step 4 the routes are declared as a `routes!` list rather
+/// than a builder chain, because `OpenApiRouter` needs the handler functions
+/// themselves: a document generated from a chained `Router` describes nothing,
+/// because by the time the routes exist there is no handler left to attach a
+/// `#[utoipa::path]` to. That is why this is a list and not the `.route()`
+/// chain it was twenty minutes ago.
+fn v1_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/media/:object_id", get(media::get_media))
-        .route(
-            "/media/:object_id/playback",
-            get(playback::get_playback_route).put(playback::put_playback_route),
-        )
         .route("/media/:object_id/subtitles", get(subtitles::list_tracks))
         .route(
             "/media/:object_id/transcript",
@@ -248,6 +241,16 @@ fn v1_routes() -> Router<std::sync::Arc<AppState>> {
         .route("/api/share/:id", axum::routing::delete(share::revoke_share))
         .route("/api/s/:token", get(share::resolve_share))
         .route("/api/s/:token/access", get(share::share_access))
+        // The document is served from a plain route rather than declared in a
+        // `routes!` list, so it does not describe itself. A consumer fetches it
+        // from a hardcoded URL anyway, and a spec that lists its own endpoint
+        // reads as vanity.
+        //
+        // This is also the one `/api/v1` route with NO `#[utoipa::path]`, and
+        // `openapi_document_matches_the_served_routes` has to allow for it —
+        // see the comment on that test for why it is excluded rather than
+        // described.
+        .route("/openapi.json", get(openapi::serve_document))
 }
 
 async fn metrics(State(st): State<HealthState>) -> Response {
@@ -605,6 +608,136 @@ mod tests {
                 "{path} must not fall through"
             );
         }
+    }
+
+    /// The routes `/api/v1` actually serves, as `METHOD path` with axum's
+    /// `:param` rewritten to OpenAPI's `{param}`.
+    ///
+    /// Read from the SOURCE of `v1_routes` rather than from a list maintained
+    /// beside it. A hand-written list is a second description of the same
+    /// surface: it can disagree with the router, and when it does, the drift
+    /// test compares two wrong things and passes. Reading the router's own text
+    /// means only the document can be wrong.
+    ///
+    /// `expect` throughout rather than a skip. A `src/lib.rs` that cannot be
+    /// read is a broken checkout, and a drift test that quietly passes when it
+    /// cannot do its job is worse than no drift test, because it looks like
+    /// coverage.
+    pub(crate) fn v1_route_table_for_tests() -> std::collections::BTreeSet<String> {
+        use std::collections::BTreeSet;
+
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"),
+        )
+        .expect("src/lib.rs must be readable for the OpenAPI drift test");
+
+        // The body of `v1_routes`, found by brace matching so the scan cannot
+        // run on into `metrics` or a test module and pick up their routes.
+        let fn_at = src
+            .find("fn v1_routes()")
+            .expect("v1_routes must exist in src/lib.rs");
+        let open = src[fn_at..]
+            .find('{')
+            .map(|i| fn_at + i)
+            .expect("v1_routes has a body");
+        let mut depth = 0usize;
+        let close = src[open..]
+            .char_indices()
+            .find_map(|(i, c)| {
+                match c {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Some(open + i);
+                        }
+                    }
+                    _ => {}
+                }
+                None
+            })
+            .expect("v1_routes' body is closed");
+        let body = &src[open..=close];
+
+        let mut out = BTreeSet::new();
+        let mut cursor = 0usize;
+        while let Some(at) = body[cursor..].find(".route(") {
+            let start = cursor + at + ".route(".len();
+            // The path is the first string literal in the argument list.
+            let rest = &body[start..];
+            let after_quote = rest.find('"').map(|i| i + 1).expect("a path");
+            let path_end = rest[after_quote..]
+                .find('"')
+                .map(|i| after_quote + i)
+                .expect("a closed path literal");
+            let axum_path = &rest[after_quote..path_end];
+
+            // The method chain is the rest of that argument list: up to the
+            // `)` that closes `.route(`, at nesting depth zero.
+            let tail = &rest[path_end + 1..];
+            let mut d = 0i32;
+            let chain_end = tail
+                .char_indices()
+                .find_map(|(i, c)| match c {
+                    '(' => {
+                        d += 1;
+                        None
+                    }
+                    ')' => {
+                        if d == 0 {
+                            return Some(i);
+                        }
+                        d -= 1;
+                        None
+                    }
+                    _ => None,
+                })
+                .expect(".route( is closed");
+            let chain = &tail[..chain_end];
+
+            // axum `:name` -> OpenAPI `{name}`. The rewrite handles a param
+            // with a literal suffix -- `:document_id.vtt` must become
+            // `{document_id}.vtt`, not `{document_id.vtt}` -- which is why this
+            // splits on the first `.` in the segment rather than wrapping the
+            // whole thing. `utoipa-axum`'s `colonized_params` wrapped the whole
+            // segment, so a suffixed param came out as `{document_id.vtt}`; the
+            // same substitution also turned `/api/s/{token}/access` into
+            // `/api/s/{token/access` by stripping the brace it had not opened.
+            let openapi_path = axum_path
+                .split('/')
+                .map(|seg| {
+                    let Some(rest) = seg.strip_prefix(':') else {
+                        return seg.to_string();
+                    };
+                    match rest.split_once('.') {
+                        Some((name, suffix)) => format!("{{{name}}}.{suffix}"),
+                        None => format!("{{{rest}}}"),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("/");
+
+            for m in ["get", "post", "put", "delete", "patch"] {
+                if chain.contains(&format!("{m}(")) || chain.contains(&format!("{m} (")) {
+                    out.insert(format!("{} {openapi_path}", m.to_uppercase()));
+                }
+            }
+            cursor = start + path_end + 1 + chain_end;
+        }
+        // `/openapi.json` is the document's own endpoint and is deliberately
+        // not described in the document; it is added by the caller for exactly
+        // that reason. Filtering here rather than in the test keeps the
+        // exclusion next to the parse, so a reader comparing the two sets sees
+        // why the counts differ by one.
+        out.retain(|r| !r.ends_with("/openapi.json"));
+
+        assert!(
+            out.len() >= 12,
+            "only {} routes parsed from v1_routes -- the source scan is broken, and a \\
+             drift test that parses nothing compares nothing",
+            out.len()
+        );
+        out
     }
 
     /// `an_unknown_route_says_what_does_exist`
