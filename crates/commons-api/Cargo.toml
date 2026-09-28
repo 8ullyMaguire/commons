@@ -20,8 +20,18 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
-async-graphql = { workspace = true }
-async-graphql-axum = { workspace = true }
+# T-P6-007: `async-graphql` and `async-graphql-axum` were BOTH declared here
+# and called from no .rs file in the workspace -- verified with
+# `grep -rnE '\basync_graphql::' --include=*.rs crates/` returning 0, not
+# assumed. The crate's own lib.rs says it holds "HTTP and GraphQL surfaces",
+# and it holds neither: `pub mod claim;` over `claim.rs`, 273 lines of §7.5
+# status-code translation. The GraphQL server is T-P6-007's deferred half.
+#
+# Declared-but-unused is not a neutral state. It makes §11.5's GraphQL feature
+# look closer to shipped than it is, and the plan at line 2613 has to spend a
+# sentence explaining that the UI's eleven GraphQL files are proved against a
+# MOCK. Same lesson as commons-plugin's `semver` and `uuid` in T-P6-006,
+# one size up.
 tower = { workspace = true }
 tower-http = { workspace = true }
 tokio-tungstenite = { workspace = true }

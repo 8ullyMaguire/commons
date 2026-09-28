@@ -172,15 +172,56 @@ fixture, never a shared row).
 
 ## Step 4 — the OpenAPI document, generated not hand-written
 
-Add to the workspace `Cargo.toml`:
+Add to the workspace `Cargo.toml` — **both crates, and the versions below are
+resolved, not guessed:**
 
 ```toml
 utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-axum = "0.1"
 ```
+
+`axum_extras` on its own does **not** give router integration; it gives
+`IntoParams`. The router half is the separate `utoipa-axum` crate, and a plan
+that names only `utoipa` sends the implementer looking for a missing type.
+
+**Proven combination** (built in a scratch crate, not inferred):
+`utoipa 5.5.0` + `utoipa-axum 0.1.3` + `axum 0.7.9` (this workspace's axum),
+compile clean. Note utoipa 5's *docs* target axum 0.8; the 0.1.3 axum adapter
+works against 0.7.9, and the first attempt at this failed to compile only
+because `OpenApiRouter` is **not** at the crate root in 0.1.3.
+
+The real 0.1.3 incantation, which compiles:
+
+```rust
+use utoipa_axum::{router::OpenApiRouter, routes};   // note: `router::`
+
+fn router() -> (axum::Router, utoipa::openapi::OpenApi) {
+    OpenApiRouter::new()
+        .routes(routes!(get_ping, post_ping))   // handlers, NOT method routers
+        .split_for_parts()
+}
+
+#[utoipa::path(get, path = "/api/v1/ping", responses((status = 200, body = String)))]
+async fn get_ping() -> &'static str { "ok" }
+```
+
+Two API facts that differ from the obvious guess, and both cost a compile to
+learn: `OpenApiRouter` lives under `router::`, and `routes!` takes **handler
+functions** rather than `get /path` method routers.
 
 Derive `ToSchema` on the response types in `commons-server` and build the
 document from the **router**, so the two cannot drift. Serve it at
 `GET /api/v1/openapi.json`.
+
+**Step 3 and this step interact, and the order matters.** `OpenApiRouter`
+*replaces* the router rather than wrapping the existing one, so the `/api/v1`
+sub-router from step 3 must be built as an `OpenApiRouter` from the start
+rather than mounted after the fact. If step 3 has already mounted a plain
+`axum::Router`, this step has to rebuild it — so **do step 4's router
+construction first if you prefer, or convert in one commit rather than
+rewiring twice.** The `#[utoipa::path]` attributes are additive and do not
+change handler behaviour, so the 22 existing route tests are unaffected either
+way.
 
 **The test that makes this worth doing** is spec acceptance 2, and it is a
 drift detector, not a smoke test:
