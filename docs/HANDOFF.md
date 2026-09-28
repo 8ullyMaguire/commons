@@ -2224,3 +2224,138 @@ been given one too many.
   `speaker_cluster_proposals`.
 - **`asr_timing.rs` untouched**, per the plan. It is the parent's criterion 1
   and it passes.
+
+---
+
+## Cast, DLNA, external players: a network surface is not a feature, it is a leak
+
+T-P6-005, platform spec §11.2 and §11.3. The first Phase 6 ticket that was
+genuinely new work — `dlna.rs`, `cast.rs` and `external_player.rs` were all
+absent and there was no SSDP or UPnP code anywhere in the workspace. Two of
+the three parts turned out to be pass-through, though: a resume position
+already existed (`commons-store/src/playback.rs`) and the byte-range-aware
+m3u8 proxy already existed (`commons-server/src/proxy.rs`).
+
+### An external player gets an argv, never a shell string
+
+`command_line` returns a `Vec<OsString>` and performs no I/O. A function that
+spawns a process is a function you cannot test, and the accept criterion is
+"the argv array equals an expected array", which is only assertable if the
+array is returned rather than executed.
+
+There is no quoting logic, and that is the design rather than an omission. A
+media title is data — a semicolon and a tilde and an unquoted command
+substitution is a real filename and a real scraped title — and it becomes
+code the moment it is interpolated into `sh -c "mpv ..."`. `Command` takes
+argv and does not invoke a shell, which is the whole protection. An
+implementation that quotes is an implementation that will be wrong on Windows
+and wrong about `$`, backticks and newlines on POSIX.
+`a_title_full_of_shell_metacharacters_stays_one_argument` pins the argument
+*count* as well as the text, because a builder that split the title on
+whitespace would have the same title at index 2 and a different length.
+
+Jellyfin and Plex are URL clients, so their title rides in the **fragment**
+and their resume in the query string. A fragment is not sent to the server,
+so a title containing `&`, `#` or `?` cannot corrupt the request; putting it
+in the query string would be URL injection wearing a metadata feature.
+
+### DLNA is off unless somebody types it on
+
+The requirement is not in the platform spec, and it is the one that matters.
+
+**SSDP advertises to every device on the network and has no authentication to
+gate on.** Every HTTP route in this server is protected by
+`media_path(&id, &local_caller())`, and it is the only thing that consults
+consent — but a DLNA client is on the LAN and has never authenticated, so
+there is nothing to attach a consent check to on the SSDP side. A media
+server that starts advertising a private library to the office network on
+upgrade is a security incident, and it ships by accident unless the default is
+deliberately off.
+
+So both defaults point the safe way: `enabled` is false, and `bind` is
+`127.0.0.1` even when it is on. Three tests assert that, and the third
+asserts the advertised `LOCATION` is never `0.0.0.0` — a string that only
+exists if somebody edits the default, which is the point. It makes the
+mistake a test failure rather than a field report from somebody's television.
+
+### `deny_unknown_fields` does not propagate into a nested struct
+
+`FileConfig` has carried it all along. It does **not** apply to the types that
+struct contains. So a config file saying
+
+```toml
+[dlna]
+bind = "0.0.0.0:1900"
+location_base = "http://h:8096"
+friendly_name = "x"
+enabeld = true
+```
+
+parsed cleanly, the typo was ignored, and the feature stayed off — with
+nothing in any log and no way for the user to tell a typo from a bug. That
+is precisely the failure `deny_unknown_fields` exists to prevent, applied one
+level too shallow. `DlnaConfig` now carries it itself.
+
+My first version of that test asserted the error "names the key", and it
+failed more interestingly than a plain bug: serde reported
+`missing field \`bind\`` rather than `unknown field \`enabeld'`, because it
+checks required fields first. Both are errors so the safety property held
+either way — but I had written a test asserting a message I had not
+observed, which is how a test ends up encoding a guess. It asserts what
+actually happens, and there is a second test that a valid `[dlna]` block
+loads, so the typo test cannot be satisfied by rejecting every block.
+
+### The A1 test sends real UDP, because SSDP fails silently
+
+A responder on the wrong interface, one answering on a port the client is not
+reading, one matching `ST` case-sensitively — each works on one developer's
+machine against one client and is invisible in CI. The only way to know a
+responder works is to send it a real `M-SEARCH` and read a real reply.
+
+Two of the eleven tests assert **silence** rather than an answer, which is the
+part a responder that claims to be everything else would fail: a search for a
+`MediaRenderer` goes unanswered, and so does a datagram that is not a search.
+
+`is_search_for` reads the `ST` header specifically. A search for `ssdp:all`
+still carries `HOST: 239.255.255.250:1900`, so a substring match on the
+address would answer every packet ever sent to that port.
+
+**The gate is inside `content_browse`, not in the route** — a DLNA client has
+never authenticated, so unlike an HTTP request there is no *later* check to
+catch a browse that reached past `media_path`.
+`an_absent_object_and_a_denied_object_browse_identically` compares the two
+404s byte for byte, with a second test that a browsable object is NOT a 404,
+because a handler that 404s everything satisfies the parity test on its own.
+
+`/dlna/description.xml` is deliberately **not** gated: it names no object, and
+a description a client cannot fetch means the client never learns where to
+browse.
+
+### The USN is derived, not generated
+
+A USN that changes per process makes every client treat the server as a new
+device: re-discover, re-download the description, re-walk the whole media
+list. On a library of any size that presents as "DLNA is slow", and nothing
+on the server is slow. `stable_usn` hashes `data_dir`, so two libraries on one
+machine advertise different devices and one library on two machines advertises
+the same one.
+
+My first `device_description` interpolated `friendly_name` into the UDN, which
+would have made every library on a network advertise as "The library" — and a
+client that discovered `uuid:x` and fetched a description naming something
+else re-discovers, forever.
+
+### Not in this ticket
+
+- **AirPlay** (§11.2). A separate protocol with its own pairing and discovery
+  model. Folding it in would make "a DLNA discovery test" ambiguous — two
+  protocols wearing one criterion's name.
+- **Bitcode / hardware paths for cast targets** (§11.2). A performance feature
+  with no device to measure against in CI, and a fake one would be a test of
+  a mock.
+- **`SO_REUSEADDR`** on the SSDP socket. It needs `socket2`, which is not a
+  dependency in this workspace, and the tests bind port `0` so no address is
+  ever contended. Documented as a deliberate omission with the reason, so
+  nobody "fixes" it by adding a dependency for no test gain.
+- **A cast route.** §11.2's Chromecast/AirPlay targets are a separate ticket;
+  the DLNA half of the same paragraph is what this did.

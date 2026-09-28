@@ -2984,7 +2984,32 @@ injected metadata (#2747, #2770, #966 STRM).
 server advertises and serves a browse request. External player: assert the
 generated command line matches an expected argv array exactly — never a shell
 string.
-**Done when:** both exist.
+
+**Progress: done** (2026-09-28, `f39bae6`). Both accept criteria exist:
+`tests/dlna_discovery.rs` sends a real `M-SEARCH` over a real UDP socket and
+reads a real `200 OK` with a fetchable `LOCATION` (11 tests, two of which
+assert *silence*); `tests/external_player_argv.rs` compares the argv array
+with `assert_eq!` (8 tests), plus 5 unit tests. Spec and plan written first:
+`docs/spec/t-p6-005-cast-dlna-external-players.md`,
+`docs/plans/t-p6-005-implementation-plan.md`.
+
+Two things this ticket added that the ticket text did not ask for, both because
+the spec's own requirement is a security one:
+
+1. **DLNA is off by default and loopback-bound when on.** SSDP has no
+   authentication, so there is nothing for the `media_path` consent gate to
+   attach to — every HTTP route is gated, and a DLNA client on the LAN has
+   never authenticated. A media server that advertises a private library to
+   the office network on upgrade ships by accident unless the default is
+   deliberately off.
+2. **The browse parity test** (`an_absent_object_and_a_denied_object_browse_
+   identically`), because unlike an HTTP request there is no later check to
+   catch a `content_browse` that reached past `media_path`.
+
+Not in this ticket, deliberately: AirPlay and the bitcode/hardware cast paths
+(§11.2) — no device to measure against in CI, and two protocols would make
+"a DLNA discovery test" ambiguous. DLNA serving subtitles as virtual folders
+(§5420, §3135) is the next slice of §11.2 and is still open.
 
 ### T-P6-006 — Plugin SDK completion
 
