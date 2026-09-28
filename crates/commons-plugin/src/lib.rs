@@ -71,7 +71,18 @@ impl Capability {
 
 /// A plugin's declared manifest. Parsed from the plugin's own metadata; every
 /// field is untrusted.
+///
+/// T-P6-006. `deny_unknown_fields` is the FIRST line of defence and it is
+/// only the first: it catches a misspelled KEY and nothing else. A manifest
+/// with `id: ""`, `version: ""`, `id: "../../etc/passwd"` or
+/// `api_version: 0` parses cleanly without it — eleven of the twelve
+/// malformed cases in the spec's probe are value problems, not key problems.
+/// `Manifest::validate` is what catches those, and the split is deliberate:
+/// a key this host does not understand is a schema error, and a value that
+/// makes no sense is a validation error, and a caller may want to treat them
+/// differently.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub id: String,
     pub name: String,
