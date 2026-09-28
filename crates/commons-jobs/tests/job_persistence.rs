@@ -45,12 +45,28 @@ async fn a_submitted_job_is_a_row() {
     let journal = Journal::new();
     let queue = JobQueue::new(config());
 
+    // The clock bracket. `now_string()` has SECOND resolution, and the row's
+    // `created_at` is stamped by the sink at write time, not by this test — so
+    // comparing the stored value against a timestamp taken here is a race with
+    // the second boundary. It failed exactly that way once: the write landed at
+    // 18:40:03 and the assertion read 18:40:04.
+    //
+    // The tempting fix is to assert only the *shape*, which is what
+    // `a_timestamp_is_rfc3339_in_utc` already does. That would delete the
+    // property this test exists for: the comment below is explicit that a row
+    // whose `created_at` is empty still sorts and still restores. An empty
+    // string compares as less than both bounds, so the bracket catches it —
+    // asserting only the shape would not.
+    let before = now_string();
+
     journal.record(JournalEntry::Insert(
         queue
             .submit(JobSpec::new(JobKind::Transcode, "movie.mkv"))
             .0,
     ));
     assert_eq!(journal.flush(&sink).await.unwrap(), 1);
+
+    let after = now_string();
 
     let rows = sink.load().await.unwrap();
     assert_eq!(rows.len(), 1, "{rows:?}");
@@ -68,7 +84,17 @@ async fn a_submitted_job_is_a_row() {
         .await
         .expect("row")
         .get("created_at");
-    assert_eq!(created, now_string());
+    // Compared as STRINGS, which is sound because the format is fixed-width
+    // RFC 3339 in UTC with a `Z` suffix: `now_string`'s own doc says a job row
+    // and a file row are "comparable as strings -- which is what the UI's
+    // ordering does", so lexicographic order is chronological order here. That
+    // is a property of the format, not an accident of this test.
+    assert!(
+        created >= before && created <= after,
+        "created_at {created:?} is outside the bracket [{before:?}, {after:?}] \
+         taken around the write. A value BEFORE the write means the sink stamped \
+         something other than the current time; an empty string also lands here."
+    );
 }
 
 /// `insert_job_if_absent` says whether it created a row, and that answer is
