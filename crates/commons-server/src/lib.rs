@@ -33,6 +33,10 @@ pub mod external_player;
 // database, so `contained_in` is load-bearing here -- see the module doc.
 pub mod funscript;
 pub mod health;
+/// T-P6-007: request → identity. See the module docs for why this is not the
+/// plugin capability model, and why the `local_caller()` fallback is the
+/// absence of a design rather than the design.
+pub mod identity;
 pub mod interview;
 pub mod media;
 pub mod playback;

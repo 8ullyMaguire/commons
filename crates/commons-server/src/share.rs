@@ -309,7 +309,14 @@ pub async fn share_access(
 /// Returns the row as well as the outcome, because the granted arm needs the
 /// stored `access_count` to bump it and re-reading would be a race against the
 /// very counter being written.
-async fn load_and_resolve(
+/// Resolve a token to its grant, or to the response explaining why not.
+///
+/// `pub(crate)` since T-P6-007: `identity::caller_from_request` needs the whole
+/// policy -- signature, revocation, expiry, password -- as one call rather than
+/// re-implementing four of them to get a `CallerId`. It stays crate-private
+/// because it is not an HTTP surface, and the `Err` arm is an axum `Response`,
+/// which no external caller could do anything useful with.
+pub(crate) async fn load_and_resolve(
     state: &Arc<AppState>,
     token: &str,
     password: Option<&str>,

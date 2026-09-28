@@ -102,6 +102,16 @@ impl TestApp {
         &self.state.store
     }
 
+    /// The whole state, for tests that call a function taking `&AppState`.
+    ///
+    /// Added in T-P6-007 for `identity_route.rs`, which needs to call
+    /// `caller_from_request` directly rather than only through a route — the
+    /// point of those tests is the `CallerId` that comes back, and asserting on
+    /// a status code would throw that away.
+    pub fn state(&self) -> &std::sync::Arc<commons_server::AppState> {
+        &self.state
+    }
+
     /// `GET /media/{object_id}`, with an optional `Range` header.
     pub async fn get(&self, object_id: &str, range: Option<&str>) -> TestResponse {
         let mut builder = Request::builder().uri(format!("/media/{object_id}"));
