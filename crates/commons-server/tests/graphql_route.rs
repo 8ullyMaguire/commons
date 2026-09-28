@@ -395,56 +395,61 @@ async fn a_page_size_over_the_ceiling_is_refused() {
 // Paging: refused, not ignored
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn an_after_cursor_is_refused_rather_than_silently_ignored() {
-    let app = TestApp::new().await;
-    two_tier_library(&app).await;
-    let res = graphql(
-        &app,
-        objects_document(),
-        json!({"input": {"first": 10, "after": "eyJ2IjoxfQ"}}),
-    )
-    .await;
-    assert_eq!(res.status, 200);
-    let msg = error_message(&res);
-    assert!(
-        msg.contains("after"),
-        "the message must name the field: {msg}"
-    );
-    // The load-bearing part: it says what would have happened otherwise.
-    assert!(
-        msg.contains("first page") || msg.contains("silently"),
-        "the message must say that ignoring it would return the first page \
-         again -- that is the failure being avoided, and a client cannot \
-         otherwise tell a refusal from a bug: {msg}"
-    );
-    assert!(
-        body_of(&res)["data"].is_null(),
-        "a refused cursor must not come back with a page"
-    );
-}
+// ---------------------------------------------------------------------------
+// `after:` used to be refused here, and its test was DELETED rather than
+// rewritten, because it asserted the behaviour this ticket removed. Keeping it
+// green would have meant the feature was not shipped.
+//
+// It was:
+//
+//     an_after_cursor_is_refused_rather_than_silently_ignored
+//
+// which sent `"eyJ2IjoxfQ"` and required an error. That is still an error today
+// -- `{"v":1}` has no fingerprint, so it is refused -- but for a different
+// reason and with a different message, which is the whole point: "this field is
+// not implemented" and "your cursor is malformed" call for different client
+// behaviour, and a client cannot tell them apart if the message is reused.
+//
+// Its replacement is in `after_paging.rs`:
+//   - `a_cursor_from_another_text_sort_is_refused` for the sort mismatch, and
+//   - `a_malformed_cursor_is_refused_not_ignored` for this exact input.
+//
+// Both assert the CAUSE, not merely that an error exists.
 
 #[tokio::test]
-async fn the_page_cursors_are_null_rather_than_a_string_that_would_be_refused() {
+async fn the_page_cursors_are_present_and_null_only_where_there_is_nowhere_to_go() {
     let app = TestApp::new().await;
     two_tier_library(&app).await;
     let res = graphql(&app, objects_document(), json!({"input": {"first": 10}})).await;
     let v = body_of(&res);
     let info = &v["data"]["objects"]["pageInfo"];
-    // The keys must be PRESENT and null. Omitting them is a different document,
-    // and a client that reads `endCursor` and sends it back would then be
-    // sending undefined.
+    // The keys must be PRESENT. Omitting them is a different document, and a
+    // client that reads `endCursor` and sends it back would then be sending
+    // undefined -- which the server cannot distinguish from a first page.
     assert!(
         info.get("endCursor").is_some(),
         "endCursor must be present, not omitted: {info}"
     );
     assert!(
-        info["endCursor"].is_null(),
-        "endCursor must be null, not a string this server would then refuse: {info}"
+        info.get("startCursor").is_some(),
+        "startCursor must be present, not omitted: {info}"
     );
+    // Two objects, asked for ten: the page is the whole library, so there is
+    // nowhere to resume and `endCursor` is null. **This is the assertion that
+    // was previously unconditional, and it was wrong** -- a page with a
+    // successor must carry a real cursor, or the client cannot page at all.
+    assert_eq!(info["hasNextPage"], false, "{info}");
     assert!(
-        info.get("startCursor").is_some() && info["startCursor"].is_null(),
-        "startCursor must be present-and-null: {info}"
+        info["endCursor"].is_null(),
+        "the LAST page must have a null endCursor, or a client keeps seeking \
+         past the end: {info}"
+    );
+    // Still null, still for the same reason: no previous page exists without a
+    // cursor to go back to. Forward paging did not change this -- a cursor
+    // forward is not a cursor backward.
+    assert!(
+        info["startCursor"].is_null(),
+        "startCursor stays null: {info}"
     );
     // No previous page exists without a cursor to go back to, so claiming one
     // would render a back arrow that cannot work.

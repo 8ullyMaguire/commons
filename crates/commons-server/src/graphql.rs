@@ -21,23 +21,42 @@
 //! is what `media::local_caller` exists to say. A *resolver* inventing an
 //! identity is a different act from the identity layer declining to.
 //!
-//! # `after:` is an explicit error, not a silently ignored field
+//! # `after:` is decoded, and a bad cursor is still an explicit error
 //!
-//! Keyset paging has never crossed a process boundary in this codebase:
-//! `Cursor`'s only constructor is `#[cfg(test)] pub(crate)`, `from_row` is
-//! `pub(crate)`, and **nothing in the workspace serializes a `Cursor`**. The
-//! filter has `to_url`/`from_url`; the cursor has neither, because no surface
-//! has ever needed one. GraphQL's `after:` is the first.
+//! This module used to refuse **every** non-null `after`, and the refusal was
+//! right when it was written: keyset paging had never crossed a process
+//! boundary, `Cursor`'s only constructor was `#[cfg(test)] pub(crate)`, and
+//! nothing in the workspace serialized a `Cursor`. The filter had
+//! `to_url`/`from_url` and the cursor had neither, because no surface had ever
+//! needed one.
 //!
-//! So a non-null `after` is rejected with a message naming the follow-up, and
-//! `startCursor`/`endCursor` come back `null` rather than as a string the
-//! client would send back and have refused. **Silently ignoring `after` was the
-//! alternative and it is the worst one**: a client paging with it would
-//! receive page one forever, which looks like a filter that matches everything
-//! and a scroll that does nothing. Spec §4b has the reasoning.
+//! **T-P6-009 gave the cursor a wire form** (`Cursor::to_url` / `from_url` in
+//! `commons-store`), so `after` is now decoded against the sort it was made
+//! for and honoured, and `endCursor` carries a real cursor.
 //!
-//! The **first page** — what the UI shows on load, and all four operations
-//! need — works today.
+//! The principle underneath is unchanged, and it applies one level down:
+//!
+//! - **A cursor that cannot be decoded is an error, never a first page.**
+//!   Silently ignoring `after` is the worst outcome available — a client paging
+//!   with it receives page one forever, which looks like a filter that matches
+//!   everything and a scroll that does nothing. That is why the decode failure
+//!   returns an error naming the cause rather than an empty `nodes` array.
+//! - **The refusal message CHANGED rather than disappearing, and the reason
+//!   matters.** "Not available yet" told a client the server lacked a feature.
+//!   "This cursor was made for a different sort" tells it *the client* changed
+//!   its sort mid-scroll — a different cause, and a different remedy: restart
+//!   the walk rather than retry. A client cannot tell those apart if the text
+//!   is reused, and reusing it would have been the easy thing to do.
+//!
+//! **A cursor is a position, not a capability.** It is bound to its sort by a
+//! fingerprint (T-P6-009 §2) and carries no caller, so it cannot widen
+//! visibility: the consent clause is re-evaluated per query from the caller's
+//! own grants. `resuming_does_not_widen_visibility` in
+//! `tests/after_paging.rs` is the test that holds that honest — a cursor that
+//! cached the first page's filter would pass every other test in the suite.
+//!
+//! The **first page** — what the UI shows on load — needs none of this, and
+//! still works exactly as before.
 
 use std::sync::Arc;
 
@@ -150,16 +169,6 @@ async fn objects(state: &AppState, caller: &CallerId, request: &GqlRequest) -> G
         Err(e) => return GqlResponse::error(e.message()),
     };
 
-    // Refuse rather than ignore. See the module docs.
-    if input.after.is_some() {
-        return GqlResponse::error(
-            "`after` paging is not available yet: this server has no way to \
-             encode a keyset cursor into a URL-safe value, so accepting one \
-             would have to silently return the first page. Ask for the first \
-             page with no `after`; see T-P6-008 spec §4b.",
-        );
-    }
-
     let filter = match decode_filter(input.filter.as_deref()) {
         Ok(f) => f,
         Err(e) => return GqlResponse::error(e.message()),
@@ -167,6 +176,32 @@ async fn objects(state: &AppState, caller: &CallerId, request: &GqlRequest) -> G
     let sort = match decode_sort(input.sort.as_deref(), input.direction.as_deref()) {
         Ok(s) => s,
         Err(e) => return GqlResponse::error(e.message()),
+    };
+
+    // `after` is decoded HERE, after the sort, and that order is the design
+    // rather than an accident of where the code sat. A cursor carries no sort,
+    // so `from_url` has to be *told* which sort it is being decoded for, and
+    // the only place that sort exists is the line above. Decoding first would
+    // mean decoding twice, or guessing and re-checking.
+    //
+    // The error names the CAUSE, which is what a client acts on. A refusal that
+    // said only "bad cursor" leaves the client unable to tell "my cursor is
+    // stale, restart" from "the server is broken, retry" -- and retrying a
+    // sort-mismatched cursor forever is exactly the loop the old blanket
+    // refusal existed to prevent. See the module docs.
+    let after = match input.after.as_deref() {
+        None => None,
+        Some(raw) => match commons_store::sort::Cursor::from_url(raw, &sort) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                return GqlResponse::error(format!(
+                    "bad `after` cursor: {e}. It is bound to the sort it was made \
+                     for, so a cursor from another sort -- or from another \
+                     server's cursor format -- must be discarded and the walk \
+                     restarted from the first page."
+                ))
+            }
+        },
     };
 
     // `tiers` is accepted and deliberately NOT applied. It is a narrowing hint
@@ -184,9 +219,15 @@ async fn objects(state: &AppState, caller: &CallerId, request: &GqlRequest) -> G
     // `AppState::store` is a FIELD, not a getter. Reading it as a method was
     // the first compile error here, and it is worth recording because the
     // struct's own definition (`pub store: Store`) invites the assumption.
+    // `sort` is cloned, not borrowed: `query_sorted` takes it by value (it
+    // owns the key list it will hand to the SQL builder), and the same sort is
+    // needed afterwards to fingerprint the cursor this page returns. Cloning a
+    // `Vec<(SortKey, SortOrder)>` of two `Copy` pairs is free at this size, and
+    // the alternative -- fingerprinting from a re-parsed sort -- is a second
+    // source of truth for what the sort was.
     let page = match state
         .store
-        .query_sorted(&filter, caller, sort, None, limit)
+        .query_sorted(&filter, caller, sort.clone(), after, limit)
         .await
     {
         Ok(p) => p,
@@ -209,12 +250,19 @@ async fn objects(state: &AppState, caller: &CallerId, request: &GqlRequest) -> G
             .collect(),
         page_info: PageInfo {
             has_next_page: page.has_more,
-            // Both false/`None`: there is no previous page without a cursor to
-            // go back to, and reporting `hasPreviousPage: true` on the first
-            // page would have the UI render a back arrow that cannot work.
+            // Both still false/`None`, and the reason is unchanged: there is no
+            // previous page without a cursor to go back to, and reporting
+            // `hasPreviousPage: true` would have the UI render a back arrow
+            // that cannot work. Forward paging does not change that — a cursor
+            // forward is not a cursor backward.
             has_previous_page: false,
             start_cursor: None,
-            end_cursor: None,
+            // The real cursor, fingerprinted against the sort this page was
+            // read with. `next_cursor()` is `None` whenever `has_more` is
+            // false, including for a short final page, so the last page hands
+            // back `null` for free and a client cannot seek past the end and
+            // receive an empty page that looks like a filter matching nothing.
+            end_cursor: page.next_cursor().map(|c| c.to_url(&sort)),
         },
         // Always `None`. Spec §3.
         total_count: None,
