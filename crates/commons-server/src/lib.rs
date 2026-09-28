@@ -19,6 +19,12 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 pub mod config;
+// T-P6-005. `pub` and not `pub(crate)` because the ticket's accept criterion
+// is an integration test in `tests/`, and an integration test is a separate
+// crate: it can only see `pub` items. A `pub(crate)` module would compile
+// cleanly and leave the acceptance test unable to reach the one function it
+// exists to check.
+pub mod external_player;
 // T-P6-003. This is the first route that opens a path read out of the
 // database, so `contained_in` is load-bearing here -- see the module doc.
 pub mod funscript;
