@@ -1039,3 +1039,181 @@ async fn deleting_an_object_leaves_nothing_derived_behind() {
         }
     }
 }
+
+// ---------- rejections (T-P6-004b step 4) ----------
+//
+// The point of these tests is that a refusal is a RECORD. Every one of them
+// asks the same question in a different way: does the next run get to re-ask?
+//
+// The one that matters most is
+// `a_rejected_topic_is_not_offered_again`, because the bug it prevents is not
+// a crash and not a wrong answer -- it is a model that keeps asking about
+// something a person already said no to, forever.
+
+#[tokio::test]
+async fn a_rejection_is_recorded_and_is_visible_to_the_next_run() {
+    let (lite, pg) = both_engines().await;
+    for store in [&lite, &pg] {
+        let oid = "obj-reject-record";
+        object(store, oid).await;
+
+        assert!(
+            !store.is_rejected(oid, "ml:tagger", "climate policy").await.unwrap(),
+            "nothing is rejected to begin with"
+        );
+        store
+            .reject_tag(oid, "ml:tagger", "climate policy", Some("u1"))
+            .await
+            .unwrap();
+        assert!(
+            store.is_rejected(oid, "ml:tagger", "climate policy").await.unwrap(),
+            "and after a refusal the next run can see it"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_rejected_topic_is_not_offered_again() {
+    // The re-ask. A model proposes a topic, a person says no, and the next
+    // transcription run must not put the same topic back in the queue.
+    let (lite, pg) = both_engines().await;
+    for store in [&lite, &pg] {
+        let oid = "obj-reject-reask";
+        object(store, oid).await;
+
+        // What the tagger does on every run: skip anything already refused.
+        async fn propose_unless_rejected(store: &Store, oid: &str, topic: &str) -> bool {
+            if store.is_rejected(oid, "ml:tagger", topic).await.unwrap() {
+                return false;
+            }
+            store
+                .propose_ml_tag("tagger", topic, None, 0.8)
+                .await
+                .unwrap();
+            true
+        }
+
+        assert!(propose_unless_rejected(store, oid, "carbon tax").await, "first run proposes");
+        store
+            .reject_tag(oid, "ml:tagger", "carbon tax", Some("u1"))
+            .await
+            .unwrap();
+        assert!(
+            !propose_unless_rejected(store, oid, "carbon tax").await,
+            "the second run must not re-ask"
+        );
+        assert!(
+            !propose_unless_rejected(store, oid, "carbon tax").await,
+            "nor a third"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_rejection_is_scoped_to_the_value_not_the_tag() {
+    // A topic can be wrong for one interview and right for the next. A
+    // rejection keyed on the tag would suppress it everywhere, which is the
+    // model-tagger's original sin with a new table.
+    let (lite, pg) = both_engines().await;
+    for store in [&lite, &pg] {
+        let oid = "obj-reject-scope";
+        object(store, oid).await;
+        store.reject_tag(oid, "ml:tagger", "climate policy", Some("u1")).await.unwrap();
+
+        assert!(store.is_rejected(oid, "ml:tagger", "climate policy").await.unwrap(), "same value");
+        assert!(
+            !store.is_rejected(oid, "ml:tagger", "carbon tax").await.unwrap(),
+            "a different topic is unaffected"
+        );
+        assert!(
+            !store.is_rejected(oid, "ml:captioner", "climate policy").await.unwrap(),
+            "a different source is unaffected"
+        );
+        assert!(
+            !store.is_rejected("obj-somewhere-else", "ml:tagger", "climate policy").await.unwrap(),
+            "and so is a different object"
+        );
+    }
+}
+
+#[tokio::test]
+async fn refusing_twice_records_one_refusal_not_two() {
+    // A run that races itself, or a user who clicks twice, must not fill the
+    // table with copies of one dismissal.
+    let (lite, pg) = both_engines().await;
+    for store in [&lite, &pg] {
+        let oid = "obj-reject-twice";
+        object(store, oid).await;
+        for _ in 0..3 {
+            store.reject_tag(oid, "ml:tagger", "noise", Some("u1")).await.unwrap();
+        }
+        let all = store.rejections_for(oid).await.unwrap();
+        assert_eq!(all.len(), 1, "one refusal, however many times it is filed: {all:?}");
+        assert_eq!(all[0].0, "ml:tagger");
+        assert_eq!(all[0].1, "\"noise\"", "stored JSON-encoded, like every other proposal value");
+        assert_eq!(all[0].2.as_deref(), Some("u1"));
+    }
+}
+
+#[tokio::test]
+async fn a_refusal_with_no_author_is_not_presented_as_a_human_one() {
+    // Same reasoning as `a_correction_with_no_proposer_is_not_recorded_as_a
+    // human`: a UI showing "declined by" beside a system rule is a lie.
+    let (lite, pg) = both_engines().await;
+    for store in [&lite, &pg] {
+        let oid = "obj-reject-anon";
+        object(store, oid).await;
+        store.reject_tag(oid, "ml:tagger", "anonymous refusal", None).await.unwrap();
+        let all = store.rejections_for(oid).await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].2, None, "no author recorded, and None rather than an empty string");
+    }
+}
+
+#[tokio::test]
+async fn a_refusal_of_nothing_is_refused() {
+    // "" and "   " would JSON-encode to `""` and `"   "`, and the CHECK would
+    // admit the first. Refusing at the boundary means the caller gets a named
+    // error rather than a row that suppresses nothing.
+    let (lite, pg) = both_engines().await;
+    for store in [&lite, &pg] {
+        let oid = "obj-reject-blank";
+        object(store, oid).await;
+        for blank in ["", "   "] {
+            let e = store.reject_tag(oid, "ml:tagger", blank, Some("u1")).await.unwrap_err();
+            // The `what` is "blank tag name", not "blank name" -- asserted
+            // against the real string rather than a paraphrase of it, because a
+            // test that accepts any error here would pass on a refusal for the
+            // wrong reason.
+            assert!(refused_as(&e, "blank tag name"), "a blank value is refused: {e}");
+        }
+        let e = store.reject_tag(oid, "  ", "topic", Some("u1")).await.unwrap_err();
+        assert!(refused_as(&e, "malformed namespace"), "a blank source too: {e}");
+        assert!(store.rejections_for(oid).await.unwrap().is_empty(), "nothing was recorded");
+    }
+}
+
+#[tokio::test]
+async fn a_refusal_is_auditable() {
+    // "Why is this tag not on this object?" is otherwise unanswerable: the
+    // absence of an object_tag row does not distinguish "nobody proposed it"
+    // from "somebody said no".
+    let (lite, pg) = both_engines().await;
+    for store in [&lite, &pg] {
+        let oid = "obj-reject-audit";
+        object(store, oid).await;
+        store.reject_tag(oid, "ml:tagger", "first", Some("u1")).await.unwrap();
+        store.reject_tag(oid, "ml:tagger", "second", Some("u2")).await.unwrap();
+        store.reject_tag(oid, "ml:peer", "third", Some("u1")).await.unwrap();
+
+        let all = store.rejections_for(oid).await.unwrap();
+        assert_eq!(all.len(), 3, "every refusal is listed: {all:?}");
+        let values: Vec<String> = all.iter().map(|r| r.1.clone()).collect();
+        assert!(values.contains(&"\"first\"".to_string()));
+        assert!(values.contains(&"\"second\"".to_string()));
+        assert!(values.contains(&"\"third\"".to_string()));
+
+        // Scoped: another object's refusals are not in this list.
+        assert!(store.rejections_for("obj-elsewhere").await.unwrap().is_empty());
+    }
+}

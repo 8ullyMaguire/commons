@@ -29,6 +29,7 @@
 
 use crate::db::{Result, Store, StoreError};
 use crate::search::Field;
+use sqlx::Row;
 use std::collections::{BTreeMap, HashSet};
 
 /// Where a tag came from. §5.15's honesty mechanism.
@@ -1115,6 +1116,204 @@ impl Store {
             .filter(|t| t.namespace.is_canonical())
             .collect())
     }
+    // ---------- rejections (T-P6-004b step 4) ----------
+    //
+    // The ML tag path already had its honesty mechanism before this ticket:
+    // `propose_ml_tag` writes the `ml:` namespace, so a model's opinion cannot
+    // be stored as fact, and `tagger_queue` is the queue of proposals awaiting
+    // a decision. Migration `0025_tag_rejection.sql` adds the half that was
+    // missing, and it is the half that makes the first half usable.
+    //
+    // # Why a rejection is recorded rather than performed
+    //
+    // `remove_tag` deletes the `object_tag` row. That is correct for "this tag
+    // no longer applies" and wrong for "no": deleting leaves nothing behind, so
+    // the next run proposes the same topic, the user dismisses it again, and a
+    // library that re-asks what you already told it is one you stop opening.
+    // The dismissal IS the information.
+    //
+    // So `reject_tag` writes a row rather than only deleting, and
+    // `is_rejected` is what a caller checks before re-proposing. Both are keyed
+    // on (object, source, value) rather than on the tag, because a topic can be
+    // wrong for one interview and right for the next -- a rejection keyed on
+    // the tag would suppress it everywhere.
+
+    /// Record a refusal of a proposed tag value for an object.
+    ///
+    /// Idempotent: the unique index on (object_id, source, value_json) makes a
+    /// second call for the same refusal succeed rather than accumulate rows.
+    ///
+    /// `value` is JSON-encoded here for the same reason `propose_correction`
+    /// does it: a bare string containing a quote would be unreadable back, and
+    /// this table is read by a comparison that has to match exactly.
+    pub async fn reject_tag(
+        &self,
+        object_id: &str,
+        source: &str,
+        value: &str,
+        rejected_by: Option<&str>,
+    ) -> Result<String> {
+        if source.trim().is_empty() {
+            return Err(TagError::BadNamespace(source.to_string()).into());
+        }
+        if value.trim().is_empty() {
+            return Err(TagError::BlankName.into());
+        }
+        let value_json = serde_json::to_string(value).map_err(|e| StoreError::Invalid {
+            what: "proposed value",
+            why: e.to_string(),
+        })?;
+
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = commons_core::ts::now();
+        match self {
+            Store::Sqlite(p) => {
+                sqlx::query(
+                    "INSERT OR IGNORE INTO tag_rejection
+                       (id, object_id, source, value_json, rejected_by, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                )
+                .bind(&id)
+                .bind(object_id.to_string())
+                .bind(source.to_string())
+                .bind(&value_json)
+                .bind(rejected_by.map(str::to_string))
+                .bind(&now)
+                .execute(p)
+                .await
+                .map_err(StoreError::Query)?;
+            }
+            Store::Postgres(p) => {
+                // ON CONFLICT DO NOTHING rather than INSERT OR IGNORE. OR IGNORE
+                // is SQLite-only, and its Postgres equivalent needs the conflict
+                // target spelled out -- which is also what makes this refuse
+                // THIS duplicate rather than silently swallowing every
+                // constraint violation, which is what a bare OR IGNORE does.
+                let sql = Store::bind_sql(
+                    "INSERT INTO tag_rejection
+                       (id, object_id, source, value_json, rejected_by, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?)
+                     ON CONFLICT (object_id, source, value_json) DO NOTHING",
+                );
+                sqlx::query(&sql)
+                    .bind(&id)
+                    .bind(object_id.to_string())
+                    .bind(source.to_string())
+                    .bind(&value_json)
+                    .bind(rejected_by.map(str::to_string))
+                    .bind(&now)
+                    .execute(p)
+                    .await
+                    .map_err(StoreError::Query)?;
+            }
+        }
+        Ok(id)
+    }
+
+    /// Has this exact proposal already been refused for this object?
+    ///
+    /// The check a caller makes BEFORE re-proposing. It is a function and not a
+    /// comment because a comment is not consulted by the next run.
+    pub async fn is_rejected(&self, object_id: &str, source: &str, value: &str) -> Result<bool> {
+        let value_json = serde_json::to_string(value).map_err(|e| StoreError::Invalid {
+            what: "proposed value",
+            why: e.to_string(),
+        })?;
+        let sql = match self {
+            Store::Sqlite(p) => {
+                sqlx::query_scalar::<_, bool>(
+                    "SELECT EXISTS(SELECT 1 FROM tag_rejection
+                        WHERE object_id = ? AND source = ? AND value_json = ?)",
+                )
+                .bind(object_id.to_string())
+                .bind(source.to_string())
+                .bind(&value_json)
+                .fetch_one(p)
+                .await
+                .map_err(StoreError::Query)?
+            }
+            Store::Postgres(p) => {
+                let q = Store::bind_sql(
+                    "SELECT EXISTS(SELECT 1 FROM tag_rejection
+                        WHERE object_id = ? AND source = ? AND value_json = ?)",
+                );
+                sqlx::query_scalar::<_, bool>(&q)
+                    .bind(object_id.to_string())
+                    .bind(source.to_string())
+                    .bind(&value_json)
+                    .fetch_one(p)
+                    .await
+                    .map_err(StoreError::Query)?
+            }
+        };
+        Ok(sql)
+    }
+
+    /// Every refusal recorded against an object, newest first.
+    ///
+    /// For a "what the model suggested that you turned down" surface, and for
+    /// the audit question "why is this tag not on this object" -- which is
+    /// otherwise unanswerable, since the absence of an `object_tag` row does
+    /// not distinguish "no one proposed it" from "someone said no".
+    pub async fn rejections_for(
+        &self,
+        object_id: &str,
+    ) -> Result<Vec<(String, String, Option<String>)>> {
+        // The three columns are ALIASED and the third is COALESCEd, for the
+        // reason `corrections_for` gives: without an alias Postgres returns the
+        // expression under `coalesce` and SQLite under `proposer_id`, so
+        // reading by name is engine-dependent and one arm fails at decode.
+        let sql = match self {
+            Store::Sqlite(_) => {
+                "SELECT source, value_json, COALESCE(rejected_by, '') AS rejected_by
+                   FROM tag_rejection WHERE object_id = ?
+                   ORDER BY created_at DESC"
+                    .to_string()
+            }
+            Store::Postgres(_) => Store::bind_sql(
+                "SELECT source, value_json, COALESCE(rejected_by, '') AS rejected_by
+                   FROM tag_rejection WHERE object_id = ?
+                   ORDER BY created_at DESC",
+            ),
+        };
+        // Read inside each arm, not from a shared `rows`: `SqliteRow` and
+        // `PgRow` are unrelated Rust types, so a `let rows = match self {...}`
+        // makes the arms incompatible and the error names `fetch_all` rather
+        // than the match. Mapping to a plain tuple inside the arm is what the
+        // rest of this module does.
+        macro_rules! go {
+            ($p:expr) => {{
+                let rows = sqlx::query(&sql)
+                    .bind(object_id.to_string())
+                    .fetch_all($p)
+                    .await
+                    .map_err(StoreError::Query)?;
+                let mut out = Vec::with_capacity(rows.len());
+                for r in &rows {
+                    let source: String = r.try_get("source").map_err(StoreError::Query)?;
+                    let value_json: String = r.try_get("value_json").map_err(StoreError::Query)?;
+                    let rejected_by: String = r.try_get("rejected_by").map_err(StoreError::Query)?;
+                    // Empty string back to None, so a caller cannot tell a
+                    // rejection with no author from one by a user whose id is "".
+                    out.push((
+                        source,
+                        value_json,
+                        if rejected_by.is_empty() { None } else { Some(rejected_by) },
+                    ));
+                }
+                out
+            }};
+        }
+        // `Ok(...)` rather than `.into()`: there is no `From<Vec<T>> for
+        // Result<Vec<T>, E>`, and the obvious `Ok(match ...)` does not typecheck
+        // either because the arms return a Vec and the `?` inside them is in
+        // the fn body, not the match.
+        Ok(match self {
+            Store::Sqlite(p) => go!(p),
+            Store::Postgres(p) => go!(p),
+        })
+    }
+
 }
 
 // ------------------------------------------------------------------ internal
