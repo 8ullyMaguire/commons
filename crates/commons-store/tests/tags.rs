@@ -1058,7 +1058,10 @@ async fn a_rejection_is_recorded_and_is_visible_to_the_next_run() {
         object(store, oid).await;
 
         assert!(
-            !store.is_rejected(oid, "ml:tagger", "climate policy").await.unwrap(),
+            !store
+                .is_rejected(oid, "ml:tagger", "climate policy")
+                .await
+                .unwrap(),
             "nothing is rejected to begin with"
         );
         store
@@ -1066,7 +1069,10 @@ async fn a_rejection_is_recorded_and_is_visible_to_the_next_run() {
             .await
             .unwrap();
         assert!(
-            store.is_rejected(oid, "ml:tagger", "climate policy").await.unwrap(),
+            store
+                .is_rejected(oid, "ml:tagger", "climate policy")
+                .await
+                .unwrap(),
             "and after a refusal the next run can see it"
         );
     }
@@ -1093,7 +1099,10 @@ async fn a_rejected_topic_is_not_offered_again() {
             true
         }
 
-        assert!(propose_unless_rejected(store, oid, "carbon tax").await, "first run proposes");
+        assert!(
+            propose_unless_rejected(store, oid, "carbon tax").await,
+            "first run proposes"
+        );
         store
             .reject_tag(oid, "ml:tagger", "carbon tax", Some("u1"))
             .await
@@ -1118,19 +1127,37 @@ async fn a_rejection_is_scoped_to_the_value_not_the_tag() {
     for store in [&lite, &pg] {
         let oid = "obj-reject-scope";
         object(store, oid).await;
-        store.reject_tag(oid, "ml:tagger", "climate policy", Some("u1")).await.unwrap();
+        store
+            .reject_tag(oid, "ml:tagger", "climate policy", Some("u1"))
+            .await
+            .unwrap();
 
-        assert!(store.is_rejected(oid, "ml:tagger", "climate policy").await.unwrap(), "same value");
         assert!(
-            !store.is_rejected(oid, "ml:tagger", "carbon tax").await.unwrap(),
+            store
+                .is_rejected(oid, "ml:tagger", "climate policy")
+                .await
+                .unwrap(),
+            "same value"
+        );
+        assert!(
+            !store
+                .is_rejected(oid, "ml:tagger", "carbon tax")
+                .await
+                .unwrap(),
             "a different topic is unaffected"
         );
         assert!(
-            !store.is_rejected(oid, "ml:captioner", "climate policy").await.unwrap(),
+            !store
+                .is_rejected(oid, "ml:captioner", "climate policy")
+                .await
+                .unwrap(),
             "a different source is unaffected"
         );
         assert!(
-            !store.is_rejected("obj-somewhere-else", "ml:tagger", "climate policy").await.unwrap(),
+            !store
+                .is_rejected("obj-somewhere-else", "ml:tagger", "climate policy")
+                .await
+                .unwrap(),
             "and so is a different object"
         );
     }
@@ -1145,12 +1172,22 @@ async fn refusing_twice_records_one_refusal_not_two() {
         let oid = "obj-reject-twice";
         object(store, oid).await;
         for _ in 0..3 {
-            store.reject_tag(oid, "ml:tagger", "noise", Some("u1")).await.unwrap();
+            store
+                .reject_tag(oid, "ml:tagger", "noise", Some("u1"))
+                .await
+                .unwrap();
         }
         let all = store.rejections_for(oid).await.unwrap();
-        assert_eq!(all.len(), 1, "one refusal, however many times it is filed: {all:?}");
+        assert_eq!(
+            all.len(),
+            1,
+            "one refusal, however many times it is filed: {all:?}"
+        );
         assert_eq!(all[0].0, "ml:tagger");
-        assert_eq!(all[0].1, "\"noise\"", "stored JSON-encoded, like every other proposal value");
+        assert_eq!(
+            all[0].1, "\"noise\"",
+            "stored JSON-encoded, like every other proposal value"
+        );
         assert_eq!(all[0].2.as_deref(), Some("u1"));
     }
 }
@@ -1163,10 +1200,16 @@ async fn a_refusal_with_no_author_is_not_presented_as_a_human_one() {
     for store in [&lite, &pg] {
         let oid = "obj-reject-anon";
         object(store, oid).await;
-        store.reject_tag(oid, "ml:tagger", "anonymous refusal", None).await.unwrap();
+        store
+            .reject_tag(oid, "ml:tagger", "anonymous refusal", None)
+            .await
+            .unwrap();
         let all = store.rejections_for(oid).await.unwrap();
         assert_eq!(all.len(), 1);
-        assert_eq!(all[0].2, None, "no author recorded, and None rather than an empty string");
+        assert_eq!(
+            all[0].2, None,
+            "no author recorded, and None rather than an empty string"
+        );
     }
 }
 
@@ -1180,16 +1223,31 @@ async fn a_refusal_of_nothing_is_refused() {
         let oid = "obj-reject-blank";
         object(store, oid).await;
         for blank in ["", "   "] {
-            let e = store.reject_tag(oid, "ml:tagger", blank, Some("u1")).await.unwrap_err();
+            let e = store
+                .reject_tag(oid, "ml:tagger", blank, Some("u1"))
+                .await
+                .unwrap_err();
             // The `what` is "blank tag name", not "blank name" -- asserted
             // against the real string rather than a paraphrase of it, because a
             // test that accepts any error here would pass on a refusal for the
             // wrong reason.
-            assert!(refused_as(&e, "blank tag name"), "a blank value is refused: {e}");
+            assert!(
+                refused_as(&e, "blank tag name"),
+                "a blank value is refused: {e}"
+            );
         }
-        let e = store.reject_tag(oid, "  ", "topic", Some("u1")).await.unwrap_err();
-        assert!(refused_as(&e, "malformed namespace"), "a blank source too: {e}");
-        assert!(store.rejections_for(oid).await.unwrap().is_empty(), "nothing was recorded");
+        let e = store
+            .reject_tag(oid, "  ", "topic", Some("u1"))
+            .await
+            .unwrap_err();
+        assert!(
+            refused_as(&e, "malformed namespace"),
+            "a blank source too: {e}"
+        );
+        assert!(
+            store.rejections_for(oid).await.unwrap().is_empty(),
+            "nothing was recorded"
+        );
     }
 }
 
@@ -1202,9 +1260,18 @@ async fn a_refusal_is_auditable() {
     for store in [&lite, &pg] {
         let oid = "obj-reject-audit";
         object(store, oid).await;
-        store.reject_tag(oid, "ml:tagger", "first", Some("u1")).await.unwrap();
-        store.reject_tag(oid, "ml:tagger", "second", Some("u2")).await.unwrap();
-        store.reject_tag(oid, "ml:peer", "third", Some("u1")).await.unwrap();
+        store
+            .reject_tag(oid, "ml:tagger", "first", Some("u1"))
+            .await
+            .unwrap();
+        store
+            .reject_tag(oid, "ml:tagger", "second", Some("u2"))
+            .await
+            .unwrap();
+        store
+            .reject_tag(oid, "ml:peer", "third", Some("u1"))
+            .await
+            .unwrap();
 
         let all = store.rejections_for(oid).await.unwrap();
         assert_eq!(all.len(), 3, "every refusal is listed: {all:?}");
@@ -1214,6 +1281,10 @@ async fn a_refusal_is_auditable() {
         assert!(values.contains(&"\"third\"".to_string()));
 
         // Scoped: another object's refusals are not in this list.
-        assert!(store.rejections_for("obj-elsewhere").await.unwrap().is_empty());
+        assert!(store
+            .rejections_for("obj-elsewhere")
+            .await
+            .unwrap()
+            .is_empty());
     }
 }

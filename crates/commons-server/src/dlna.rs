@@ -100,24 +100,42 @@ pub async fn bind_responder(bind: &str) -> std::io::Result<UdpSocket> {
 ///
 /// Derived from `data_dir` rather than generated, so two libraries on one
 /// machine advertise different devices and one library on two machines
-/// advertises the same one. Hashing keeps it a UUID-shaped string, which is
-/// what a client's parser expects — a bare hash of the path would be a
-/// protocol violation that some clients tolerate and others ignore.
+/// advertises the same one.
+///
+/// **Not `DefaultHasher`.** `std`'s `DefaultHasher` is explicitly documented
+/// as unspecified and subject to change between releases — its output is
+/// stable within one toolchain and nothing else. A USN is a *persistent
+/// on-disk identity*; a value that changes on a Rust upgrade makes every
+/// client re-walk the library, which is exactly the failure this function
+/// exists to prevent. So this is a fixed FNV-1a, hand-written, rather than a
+/// standard-library hash whose contract does not promise what is needed here.
 pub fn stable_usn(data_dir: &std::path::Path) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    data_dir.hash(&mut h);
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    let mut h = FNV_OFFSET;
+    for b in data_dir.to_string_lossy().as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(FNV_PRIME);
+    }
     // Formatted as a UUID because that is the shape the field is defined to
-    // carry. The version nibble is 4 and the variant is RFC-4122, which makes
-    // it a syntactically valid v4-shaped string without claiming to be one.
-    let b = h.finish();
+    // carry. The version nibble is 4 and the variant bits are RFC-4122, which
+    // makes it a syntactically valid v4-shaped string without claiming to be
+    // one — and the same two mixers produce the remaining nibbles, so the
+    // string is not a UUID-shaped number with 48 bits of entropy in the
+    // middle and zeros elsewhere.
+    let mut mixed = h;
+    let mut next = || {
+        mixed = mixed.wrapping_mul(FNV_PRIME) ^ 0x9e37_79b9_7f4a_7c15;
+        mixed
+    };
     format!(
         "uuid:{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        (b >> 32) as u32,
-        (b >> 16) as u16,
-        (b & 0xfff) as u16,
-        ((b >> 48) as u16 & 0x3fff) | 0x8000,
-        b & 0xffff_ffff_ffff
+        next() as u32,
+        (next() >> 16) as u16,
+        (next() & 0x0fff) as u16,
+        (((next() >> 48) as u16) & 0x3fff) | 0x8000,
+        next() & 0xffff_ffff_ffff
     )
 }
 
@@ -405,5 +423,82 @@ pub fn browse_response(result: Result<String, BrowseError>) -> Response {
             )
                 .into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The property the whole function exists for: the same path gives the
+    /// same USN, and a different path gives a different one.
+    ///
+    /// A real restart cannot be simulated, so the part that CAN be asserted
+    /// is asserted directly — same input, same output, twice, plus two paths
+    /// that must differ. The stability-across-releases half of the claim is
+    /// what rules out `DefaultHasher`, and that is a documentation promise
+    /// rather than a testable fact; see the comment on `stable_usn`.
+    #[test]
+    fn a_usn_is_stable_for_a_path_and_differs_between_paths() {
+        let a = stable_usn(std::path::Path::new("/srv/library"));
+        let b = stable_usn(std::path::Path::new("/srv/library"));
+        let other = stable_usn(std::path::Path::new("/srv/other"));
+
+        assert_eq!(a, b, "the same library must advertise the same device");
+        assert_ne!(a, other, "two libraries must not collide on one device");
+    }
+
+    /// A UUID-shaped string, because that is the shape the field is defined to
+    /// carry. A client that does not parse it discards the response, and the
+    /// server has no way to know that happened.
+    #[test]
+    fn a_usn_is_a_syntactically_valid_uuid() {
+        let usn = stable_usn(std::path::Path::new("/srv/library"));
+        let uuid = usn.strip_prefix("uuid:").expect("the uuid: prefix");
+        assert_eq!(uuid.len(), 36, "8-4-4-4-12: {uuid}");
+
+        let parts: Vec<&str> = uuid.split('-').collect();
+        assert_eq!(
+            parts.iter().map(|p| p.len()).collect::<Vec<_>>(),
+            vec![8, 4, 4, 4, 12],
+            "{uuid}"
+        );
+        assert!(
+            parts
+                .iter()
+                .all(|p| p.chars().all(|c| c.is_ascii_hexdigit())),
+            "hex only: {uuid}"
+        );
+        assert_eq!(parts[2].chars().next(), Some('4'), "version nibble: {uuid}");
+        assert!(
+            matches!(parts[3].chars().next(), Some('8' | '9' | 'a' | 'b')),
+            "RFC-4122 variant: {uuid}"
+        );
+    }
+
+    /// The USN and the UDN must be the SAME string. A client that discovered
+    /// `uuid:x` and then fetched a description naming something else treats
+    /// them as two devices and re-discovers forever.
+    #[test]
+    fn the_description_names_the_usn_as_its_udn() {
+        let usn = stable_usn(std::path::Path::new("/srv/library"));
+        let d = device_description("The library", &usn, "/dlna/control");
+        assert!(d.contains(&format!("<UDN>{usn}</UDN>")), "{d}");
+    }
+
+    /// Not a run of zeroes. A formatting bug that read the same variable at
+    /// every position would produce a valid-looking UUID with almost no
+    /// entropy, and two different libraries would collide on the network —
+    /// which is the exact failure `stable_usn` was written to prevent.
+    #[test]
+    fn a_usn_is_not_repeated_zeros() {
+        let usn = stable_usn(std::path::Path::new("/srv/library"));
+        let uuid = usn.strip_prefix("uuid:").expect("prefix");
+        let body: String = uuid.chars().filter(|c| *c != '-').collect();
+        let zeros = body.chars().filter(|c| *c == '0').count();
+        assert!(
+            zeros < body.len() / 2,
+            "too many zero nibbles for a hash to be real: {usn}"
+        );
     }
 }

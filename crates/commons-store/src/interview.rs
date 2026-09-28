@@ -1057,7 +1057,10 @@ ON CONFLICT (transcript_id, speaker_key) DO UPDATE SET cluster_id = excluded.clu
             } else {
                 ("?", "?", "?")
             };
-            let sql = SQL.replace("{q1}", q1).replace("{q2}", q2).replace("{q3}", q3);
+            let sql = SQL
+                .replace("{q1}", q1)
+                .replace("{q2}", q2)
+                .replace("{q3}", q3);
             let r = sqlx::query(&sql)
                 .bind(speaker_key)
                 .bind(transcript_id)
@@ -1071,11 +1074,12 @@ ON CONFLICT (transcript_id, speaker_key) DO UPDATE SET cluster_id = excluded.clu
                 // "no such cluster": a missing transcript, a missing cluster,
                 // and a real cluster from the wrong object.
                 let has_t = sqlx::query_scalar::<_, bool>(
-                    "SELECT EXISTS(SELECT 1 FROM interview_transcript WHERE id = $1)")
-                    .bind(transcript_id)
-                    .fetch_one($p)
-                    .await
-                    .map_err(StoreError::Query)?;
+                    "SELECT EXISTS(SELECT 1 FROM interview_transcript WHERE id = $1)",
+                )
+                .bind(transcript_id)
+                .fetch_one($p)
+                .await
+                .map_err(StoreError::Query)?;
                 if !has_t {
                     return Err(StoreError::Invalid {
                         what: "transcript",
@@ -1083,11 +1087,12 @@ ON CONFLICT (transcript_id, speaker_key) DO UPDATE SET cluster_id = excluded.clu
                     });
                 }
                 let has_c = sqlx::query_scalar::<_, bool>(
-                    "SELECT EXISTS(SELECT 1 FROM person_cluster WHERE id = $1)")
-                    .bind(cluster_id)
-                    .fetch_one($p)
-                    .await
-                    .map_err(StoreError::Query)?;
+                    "SELECT EXISTS(SELECT 1 FROM person_cluster WHERE id = $1)",
+                )
+                .bind(cluster_id)
+                .fetch_one($p)
+                .await
+                .map_err(StoreError::Query)?;
                 if !has_c {
                     return Err(StoreError::Invalid {
                         what: "cluster",
@@ -1127,10 +1132,14 @@ pub async fn speaker_cluster_proposals(
     macro_rules! go {
         ($p:expr, $numbered:literal) => {{
             let sql = match $numbered {
-                true => "SELECT speaker_key, cluster_id FROM interview_speaker
-                         WHERE transcript_id = $1 ORDER BY speaker_key",
-                false => "SELECT speaker_key, cluster_id FROM interview_speaker
-                          WHERE transcript_id = ? ORDER BY speaker_key",
+                true => {
+                    "SELECT speaker_key, cluster_id FROM interview_speaker
+                         WHERE transcript_id = $1 ORDER BY speaker_key"
+                }
+                false => {
+                    "SELECT speaker_key, cluster_id FROM interview_speaker
+                          WHERE transcript_id = ? ORDER BY speaker_key"
+                }
             };
             let rows = sqlx::query(sql)
                 .bind(transcript_id)
@@ -1154,7 +1163,6 @@ pub async fn speaker_cluster_proposals(
         Store::Postgres(p) => go!(p, true),
     })
 }
-
 
 #[cfg(test)]
 mod quote_weight_tests {
@@ -1185,7 +1193,10 @@ mod quote_weight_tests {
     fn a_models_weight_is_scaled_into_the_human_band() {
         assert_eq!(comparable_weight(0.0, WeightSource::Model), 0.0);
         assert_eq!(comparable_weight(1.0, WeightSource::Model), MODEL_BAND);
-        assert_eq!(comparable_weight(0.6, WeightSource::Model), 0.6 * MODEL_BAND);
+        assert_eq!(
+            comparable_weight(0.6, WeightSource::Model),
+            0.6 * MODEL_BAND
+        );
     }
 
     /// The cross-source case, and the reason this function exists.
@@ -1197,7 +1208,8 @@ mod quote_weight_tests {
     #[test]
     fn a_confident_model_outranks_a_humans_minimum() {
         assert!(
-            comparable_weight(1.0, WeightSource::Model) > comparable_weight(1.0, WeightSource::Human),
+            comparable_weight(1.0, WeightSource::Model)
+                > comparable_weight(1.0, WeightSource::Human),
             "a model at full confidence ({}) beats a human's 1 ({})",
             comparable_weight(1.0, WeightSource::Model),
             comparable_weight(1.0, WeightSource::Human)
@@ -1220,11 +1232,13 @@ mod quote_weight_tests {
             "a model at zero is zero, not a human's minimum"
         );
         assert!(
-            comparable_weight(0.0, WeightSource::Model) < comparable_weight(1.0, WeightSource::Human),
+            comparable_weight(0.0, WeightSource::Model)
+                < comparable_weight(1.0, WeightSource::Human),
             "and it does not beat a human's minimum"
         );
         assert!(
-            comparable_weight(0.0, WeightSource::Model) < comparable_weight(5.0, WeightSource::Human),
+            comparable_weight(0.0, WeightSource::Model)
+                < comparable_weight(5.0, WeightSource::Human),
             "nor a human's maximum"
         );
     }
@@ -1238,7 +1252,11 @@ mod quote_weight_tests {
             MODEL_BAND,
             "a salience of 2.0 is nonsense and is clamped"
         );
-        assert_eq!(comparable_weight(-1.0, WeightSource::Model), 0.0, "and so is a negative");
+        assert_eq!(
+            comparable_weight(-1.0, WeightSource::Model),
+            0.0,
+            "and so is a negative"
+        );
     }
 
     /// The test the plan asks for: an INTERLEAVED list must come out in

@@ -1220,18 +1220,16 @@ impl Store {
             why: e.to_string(),
         })?;
         let sql = match self {
-            Store::Sqlite(p) => {
-                sqlx::query_scalar::<_, bool>(
-                    "SELECT EXISTS(SELECT 1 FROM tag_rejection
+            Store::Sqlite(p) => sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM tag_rejection
                         WHERE object_id = ? AND source = ? AND value_json = ?)",
-                )
-                .bind(object_id.to_string())
-                .bind(source.to_string())
-                .bind(&value_json)
-                .fetch_one(p)
-                .await
-                .map_err(StoreError::Query)?
-            }
+            )
+            .bind(object_id.to_string())
+            .bind(source.to_string())
+            .bind(&value_json)
+            .fetch_one(p)
+            .await
+            .map_err(StoreError::Query)?,
             Store::Postgres(p) => {
                 let q = Store::bind_sql(
                     "SELECT EXISTS(SELECT 1 FROM tag_rejection
@@ -1292,13 +1290,18 @@ impl Store {
                 for r in &rows {
                     let source: String = r.try_get("source").map_err(StoreError::Query)?;
                     let value_json: String = r.try_get("value_json").map_err(StoreError::Query)?;
-                    let rejected_by: String = r.try_get("rejected_by").map_err(StoreError::Query)?;
+                    let rejected_by: String =
+                        r.try_get("rejected_by").map_err(StoreError::Query)?;
                     // Empty string back to None, so a caller cannot tell a
                     // rejection with no author from one by a user whose id is "".
                     out.push((
                         source,
                         value_json,
-                        if rejected_by.is_empty() { None } else { Some(rejected_by) },
+                        if rejected_by.is_empty() {
+                            None
+                        } else {
+                            Some(rejected_by)
+                        },
                     ));
                 }
                 out
@@ -1313,7 +1316,6 @@ impl Store {
             Store::Postgres(p) => go!(p),
         })
     }
-
 }
 
 // ------------------------------------------------------------------ internal

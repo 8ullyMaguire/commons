@@ -742,15 +742,27 @@ async fn a_quote_survives_a_re_transcription() {
     both_engines!(|s| {
         let uid = Uuid::new_v4();
         let mut row = transcript(&s, uid).await;
-        replace_transcript(&s, &row, &words(3), &[]).await.expect("write");
-
-        propose_quote(&s, &row.object_id, 0, 500, "a memorable line", 4.0, WeightSource::Human)
+        replace_transcript(&s, &row, &words(3), &[])
             .await
-            .expect("quote");
+            .expect("write");
+
+        propose_quote(
+            &s,
+            &row.object_id,
+            0,
+            500,
+            "a memorable line",
+            4.0,
+            WeightSource::Human,
+        )
+        .await
+        .expect("quote");
 
         // A different model, and different words entirely.
         row.model_id = "large.en".to_string();
-        replace_transcript(&s, &row, &words(5), &[]).await.expect("re-run");
+        replace_transcript(&s, &row, &words(5), &[])
+            .await
+            .expect("re-run");
 
         assert_eq!(
             words_for(&s, &row.id).await.unwrap().len(),
@@ -778,13 +790,25 @@ async fn quotes_come_back_in_time_order() {
         let row = transcript(&s, uid).await;
         // Inserted out of order on purpose.
         for (start, text) in [(9000, "third"), (1000, "first"), (5000, "second")] {
-            propose_quote(&s, &row.object_id, start, start + 400, text, 2.0, WeightSource::Human)
-                .await
-                .expect("quote");
+            propose_quote(
+                &s,
+                &row.object_id,
+                start,
+                start + 400,
+                text,
+                2.0,
+                WeightSource::Human,
+            )
+            .await
+            .expect("quote");
         }
         let quotes = quotes_for(&s, &row.object_id).await.expect("quotes");
         let texts: Vec<&str> = quotes.iter().map(|q| q.text.as_str()).collect();
-        assert_eq!(texts, ["first", "second", "third"], "in time order: {texts:?}");
+        assert_eq!(
+            texts,
+            ["first", "second", "third"],
+            "in time order: {texts:?}"
+        );
     });
 }
 
@@ -794,11 +818,27 @@ async fn a_zero_length_or_inverted_quote_is_refused() {
         let uid = Uuid::new_v4();
         let row = transcript(&s, uid).await;
         // A zero-length quote exists, renders, and carries no information.
-        assert!(propose_quote(&s, &row.object_id, 100, 100, "x", 1.0, WeightSource::Human).await.is_err());
-        assert!(propose_quote(&s, &row.object_id, 500, 100, "x", 1.0, WeightSource::Human).await.is_err());
+        assert!(
+            propose_quote(&s, &row.object_id, 100, 100, "x", 1.0, WeightSource::Human)
+                .await
+                .is_err()
+        );
+        assert!(
+            propose_quote(&s, &row.object_id, 500, 100, "x", 1.0, WeightSource::Human)
+                .await
+                .is_err()
+        );
         // ... and so does one that starts before the media does.
-        assert!(propose_quote(&s, &row.object_id, -1, 100, "x", 1.0, WeightSource::Human).await.is_err());
-        assert_eq!(quote_count(&s, &row.object_id).await.unwrap(), 0, "nothing was written");
+        assert!(
+            propose_quote(&s, &row.object_id, -1, 100, "x", 1.0, WeightSource::Human)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            quote_count(&s, &row.object_id).await.unwrap(),
+            0,
+            "nothing was written"
+        );
     });
 }
 
@@ -810,8 +850,16 @@ async fn a_blank_quote_is_refused() {
     both_engines!(|s| {
         let uid = Uuid::new_v4();
         let row = transcript(&s, uid).await;
-        assert!(propose_quote(&s, &row.object_id, 0, 100, "   ", 1.0, WeightSource::Human).await.is_err());
-        assert!(propose_quote(&s, &row.object_id, 0, 100, "", 1.0, WeightSource::Human).await.is_err());
+        assert!(
+            propose_quote(&s, &row.object_id, 0, 100, "   ", 1.0, WeightSource::Human)
+                .await
+                .is_err()
+        );
+        assert!(
+            propose_quote(&s, &row.object_id, 0, 100, "", 1.0, WeightSource::Human)
+                .await
+                .is_err()
+        );
     });
 }
 
@@ -824,14 +872,32 @@ async fn a_quote_is_trimmed_and_a_duplicate_does_not_become_a_second_row() {
     both_engines!(|s| {
         let uid = Uuid::new_v4();
         let row = transcript(&s, uid).await;
-        propose_quote(&s, &row.object_id, 0, 500, "  padded  ", 1.0, WeightSource::Human)
-            .await
-            .expect("first");
+        propose_quote(
+            &s,
+            &row.object_id,
+            0,
+            500,
+            "  padded  ",
+            1.0,
+            WeightSource::Human,
+        )
+        .await
+        .expect("first");
         let stored = &quotes_for(&s, &row.object_id).await.unwrap()[0];
         assert_eq!(stored.text, "padded", "stored trimmed: {:?}", stored.text);
 
         assert!(
-            propose_quote(&s, &row.object_id, 0, 500, "padded", 1.0, WeightSource::Human).await.is_err(),
+            propose_quote(
+                &s,
+                &row.object_id,
+                0,
+                500,
+                "padded",
+                1.0,
+                WeightSource::Human
+            )
+            .await
+            .is_err(),
             "the identical quote is refused rather than duplicated"
         );
         assert_eq!(quote_count(&s, &row.object_id).await.unwrap(), 1);
@@ -845,12 +911,28 @@ async fn both_weight_sources_round_trip_and_keep_their_own_scale() {
     both_engines!(|s| {
         let uid = Uuid::new_v4();
         let row = transcript(&s, uid).await;
-        propose_quote(&s, &row.object_id, 0, 500, "human's pick", 3.0, WeightSource::Human)
-            .await
-            .expect("human");
-        propose_quote(&s, &row.object_id, 1000, 1500, "model's pick", 0.6, WeightSource::Model)
-            .await
-            .expect("model");
+        propose_quote(
+            &s,
+            &row.object_id,
+            0,
+            500,
+            "human's pick",
+            3.0,
+            WeightSource::Human,
+        )
+        .await
+        .expect("human");
+        propose_quote(
+            &s,
+            &row.object_id,
+            1000,
+            1500,
+            "model's pick",
+            0.6,
+            WeightSource::Model,
+        )
+        .await
+        .expect("model");
 
         let quotes = quotes_for(&s, &row.object_id).await.expect("quotes");
         let human = quotes.iter().find(|q| q.text == "human's pick").unwrap();
@@ -892,7 +974,9 @@ async fn a_non_finite_weight_is_refused() {
         let row = transcript(&s, uid).await;
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             assert!(
-                propose_quote(&s, &row.object_id, 0, 500, "x", bad, WeightSource::Human).await.is_err(),
+                propose_quote(&s, &row.object_id, 0, 500, "x", bad, WeightSource::Human)
+                    .await
+                    .is_err(),
                 "{bad} must not be storable"
             );
         }
@@ -995,9 +1079,7 @@ async fn appearance_count(store: &commons_store::db::Store, cluster_id: &str) ->
 /// because `replace_transcript` is async and fallible: called as a bare
 /// statement it is never awaited, nothing lands, and the failure surfaces later
 /// as "no transcript tr-<uuid>" pointing at the wrong function entirely.
-async fn interview_with_a_seen_person(
-    s: &commons_store::db::Store,
-) -> (TranscriptRow, String) {
+async fn interview_with_a_seen_person(s: &commons_store::db::Store) -> (TranscriptRow, String) {
     let uid = Uuid::new_v4();
     let row = transcript(s, uid).await;
     replace_transcript(s, &row, &words(4), &windows(1))
@@ -1021,7 +1103,8 @@ async fn a_speaker_cluster_proposal_is_proposed_not_applied() {
             .expect("a cluster seen in this object is proposable");
 
         assert_eq!(
-            appearance_count(&s, &cid).await, before,
+            appearance_count(&s, &cid).await,
+            before,
             "proposing a merge must not perform one"
         );
 
@@ -1085,10 +1168,14 @@ async fn a_voice_with_no_proposal_still_lists_with_nothing_proposed() {
         let props = commons_store::interview::speaker_cluster_proposals(&s, &row.id)
             .await
             .expect("read back");
-        let unproposed: Vec<&String> =
-            props.iter().filter(|p| p.1.is_none()).map(|p| &p.0).collect();
+        let unproposed: Vec<&String> = props
+            .iter()
+            .filter(|p| p.1.is_none())
+            .map(|p| &p.0)
+            .collect();
         assert_eq!(
-            unproposed, vec!["SPEAKER_00"],
+            unproposed,
+            vec!["SPEAKER_00"],
             "an unproposed voice lists with None, not as an absent row: {props:?}"
         );
     });
@@ -1105,11 +1192,10 @@ async fn a_cluster_from_another_object_is_refused() {
         let elsewhere = make_object(&s, Uuid::new_v4()).await;
         let foreign = cluster_seen_in(&s, Uuid::new_v4(), Some(&elsewhere)).await;
 
-        let e = commons_store::interview::propose_speaker_cluster(
-            &s, &row.id, "SPEAKER_00", &foreign,
-        )
-        .await
-        .expect_err("a person from another object is not proposable here");
+        let e =
+            commons_store::interview::propose_speaker_cluster(&s, &row.id, "SPEAKER_00", &foreign)
+                .await
+                .expect_err("a person from another object is not proposable here");
         assert!(
             format!("{e}").contains("no appearance in this transcript's object"),
             "and the error says why, rather than 'no such cluster': {e}"
@@ -1131,14 +1217,20 @@ async fn a_missing_transcript_and_a_missing_cluster_are_told_apart() {
         let (row, cid) = interview_with_a_seen_person(&s).await;
 
         let e = commons_store::interview::propose_speaker_cluster(
-            &s, "tr-does-not-exist", "SPEAKER_00", &cid,
+            &s,
+            "tr-does-not-exist",
+            "SPEAKER_00",
+            &cid,
         )
         .await
         .expect_err("no such transcript");
         assert!(format!("{e}").contains("transcript"), "{e}");
 
         let e = commons_store::interview::propose_speaker_cluster(
-            &s, &row.id, "SPEAKER_00", "pc-does-not-exist",
+            &s,
+            &row.id,
+            "SPEAKER_00",
+            "pc-does-not-exist",
         )
         .await
         .expect_err("no such cluster");
@@ -1147,9 +1239,10 @@ async fn a_missing_transcript_and_a_missing_cluster_are_told_apart() {
         // A cluster nobody has ever seen is refused as out-of-scope, not as
         // missing: it exists, it just is not in this library.
         let unseen = cluster_seen_in(&s, Uuid::new_v4(), None).await;
-        let e = commons_store::interview::propose_speaker_cluster(&s, &row.id, "SPEAKER_00", &unseen)
-            .await
-            .expect_err("a cluster with no appearance is not proposable");
+        let e =
+            commons_store::interview::propose_speaker_cluster(&s, &row.id, "SPEAKER_00", &unseen)
+                .await
+                .expect_err("a cluster with no appearance is not proposable");
         assert!(format!("{e}").contains("no appearance"), "{e}");
     });
 }
