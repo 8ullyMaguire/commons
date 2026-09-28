@@ -2102,3 +2102,125 @@ flakiness everywhere at once. Reproduced deterministically with
 Fixed in `tests/harness/mod.rs` with a `tokio::sync::Mutex` held around the
 schema build only — dropped on return, so the tests themselves still run in
 parallel. Not by raising `max_connections`, which was never the constraint.
+
+---
+
+## The interview derivation: a refusal is a record, and a proposal is not a merge
+
+T-P6-004b, the unblocked follow-on to T-P6-004. Seven steps; the three that
+remainder of this section covers are the ones where the interesting thing was
+what turned out NOT to need building.
+
+### A refusal is a record, not a deletion
+
+The ML tag path already had its honesty mechanism before this ticket.
+`propose_ml_tag` writes the `ml:` namespace, so a model's opinion cannot be
+stored as fact, and `tagger_queue` is the queue of proposals awaiting a
+decision. Neither needed building.
+
+What was missing is the other half of the decision, and without it the first
+half is not usable. `remove_tag` deletes the `object_tag` row — right for
+"this tag no longer applies", wrong for "no". Deleting leaves nothing behind,
+so the next run proposes the same topic, the user dismisses it again, and a
+library that re-asks what you already told it is one you stop opening. The
+dismissal IS the information.
+
+So `tag_rejection` (migration `0025`) records it, and `is_rejected` is what a
+caller checks BEFORE re-proposing — a function, not a comment, because a
+comment is not consulted by the next run. `rejections_for` answers a question
+that was otherwise unanswerable: "why is this tag not on this object?" The
+absence of an `object_tag` row does not distinguish "nobody proposed it" from
+"somebody said no".
+
+Keyed on `(object_id, source, value_json)` and NOT on the tag. A topic can be
+wrong for one interview and right for the next; a rejection keyed on the tag
+would suppress it everywhere, which is the model-tagger's original sin with a
+new table.
+
+### Diarisation proposes a cluster merge and performs none
+
+No new table. `interview_speaker` already carried the proposal, and its
+nullable `cluster_id` already meant "not yet proposed".
+
+`propose_speaker_cluster` writes the diariser's opinion there and does nothing
+else. It does not touch `person_cluster.appearance_count` and writes no
+`appearance` row, because automatic cluster merging is unrecoverable once a
+client has rendered a merged person card (spec §4.4) — the two people are gone
+from the UI and only the database remembers they were ever separate.
+
+`SPEAKER_00` is not stable across transcripts. The same person is
+`SPEAKER_00` here and `SPEAKER_03` there, and nothing but a face can tell you
+so, which is the whole reason this is a proposal and not an assignment.
+
+**The cross-object leak was real, and the first version of the function had
+it.** The scoping check joins `appearance`, because `person_cluster` has no
+`object_id` of its own — a check against that table alone would be a check of
+nothing. My first statement was:
+
+```sql
+SELECT t.id, ?, c.id FROM interview_transcript t, person_cluster c
+ WHERE t.id = ? AND EXISTS (... a.cluster_id = c.id AND a.object_id = t.object_id)
+```
+
+Note what is missing: any predicate tying `c` to the cluster the caller named.
+The inserted `cluster_id` comes from `c.id` in the SELECT, so the statement
+asked "does SOME cluster have an appearance in this object" and then wrote THAT
+cluster. It returned `Ok` for a person from a different library, and would have
+linked a voice in one interview to a face in another.
+
+`a_cluster_from_another_object_is_refused` caught it, which is what it was
+written for — the plan anticipated this class of bug by name, calling it "the
+same scoping bug `a_correction_is_scoped_to_one_object` catches for
+corrections". The correction-side test passed throughout, because the
+correction query never had this shape to begin with.
+
+### A migration syntax error reds out an entire test binary
+
+Worth writing down because the report does not name the migration.
+
+Migration `0025` originally added its CHECK with a trailing
+`ALTER TABLE tag_rejection ADD CONSTRAINT ...`. I verified that against the
+system `sqlite3` binary — 3.53.4, which accepts it — and confirmed the
+constraint actually fired. Then the suite reported 27 of 30 tests in
+`tags.rs` failing, including tests with nothing to do with rejections.
+
+sqlx links its OWN bundled SQLite, and that build rejects
+`ALTER TABLE ... ADD CONSTRAINT` with `near "CONSTRAINT": syntax error`. The
+harness applies migrations before any test body runs, so a syntax error in
+migration N panics the whole binary and the report is a list of unrelated
+failures pointing nowhere near the schema. The CHECK is now inline in the
+`CREATE TABLE`, which is valid on both engines and is what every other
+migration here does.
+
+Same shape as the FLOAT4/FLOAT8 trap that has got through this repository
+three times: green on the path you tested, broken on the path that runs. The
+difference is that this one is louder, which is no comfort.
+
+### The server ships quotes and topics, and says which are proposals
+
+`GET /media/:id/quotes?offset=&limit=` and `GET /media/:id/topics`, both gated
+on the same 404 `GET /media/:id` uses. Rather than a new test asserting that,
+`/quotes` and `/topics` were added to the suffix list inside
+`an_absent_object_and_a_denied_object_answer_byte_identical_404s`, which
+already loops over `/chapters` and `/transcript/words`. One place checks the
+gate, so a new route that forgets it is caught there automatically.
+
+The quotes pager IS the words pager — same shape, same `truncated` contract,
+same clamp-before-query. Topics ship `proposed: bool` read off the TAG's
+namespace rather than inferred from a null confidence, because a model that
+does not score its own output still proposed it.
+
+One spelling to know: `weight_source` is `"human"` or `"model"`, NOT `"ml"`.
+`ml` is the tag *namespace*. A client that has to know both vocabularies has
+been given one too many.
+
+### What is deliberately not done
+
+- **No merge path.** A proposal is a to-do list, and acting on one is a UI
+  affordance a client has not asked for yet. Writing the automatic merge and
+  then taking it away later is harder than never writing it.
+- **No rejection surface in the server.** `rejections_for` and `is_rejected`
+  exist and are tested; nothing routes to them yet. The same is true of
+  `speaker_cluster_proposals`.
+- **`asr_timing.rs` untouched**, per the plan. It is the parent's criterion 1
+  and it passes.

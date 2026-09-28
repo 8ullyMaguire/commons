@@ -2932,9 +2932,9 @@ itself and the page in front of it.
 **Spec:** `docs/spec/t-p6-004b-interview-derivation.md`.
 **Plan:** `docs/plans/t-p6-004b-implementation-plan.md`.
 
-**Progress:** not started. Written after T-P6-004's two accept criteria were
-verified met. Two findings from writing the plan, both of which would
-otherwise have become wasted work:
+**Progress:** **done** (phase `phase-7-060-interview-derivation`). All seven
+steps implemented. The two plan findings below both held, and both saved
+work as predicted:
 
 - **the tag weight column already exists** — `tag.importance REAL NOT NULL
   DEFAULT 1.0` (`0001_core.sql:196`), plumbed to `Tag.importance` at
@@ -2943,12 +2943,32 @@ otherwise have become wasted work:
   two columns that mean the same thing.
 - **`FieldProposal` already carries `source`, `proposer_kind` and
   `confidence`** (`domain.rs:238-242`), so a model topic needs no new type and
-  no migration.
+  no migration. A third finding, found the same way during step 4: the
+  `ml:` namespace and `tagger_queue` already WERE the honesty mechanism, and
+  the only thing genuinely missing was the refusal record
+  (`tag_rejection`, migration `0025`).
 
-The ticket's real content is one thing: **a human's weight and a model's
+The ticket's real content was one thing: **a human's weight and a model's
 weight are not the same unit**, and mixing them in a ranking is a silent
-failure — nothing errors, the ordering is just wrong. The plan tests that
-before writing the ranking code.
+failure — nothing errors, the ordering is just wrong. The plan tested that
+before the ranking code, and it held.
+
+Two bugs the tests caught, both recorded in `docs/HANDOFF.md`:
+
+- **`propose_speaker_cluster` had the cross-object leak its own test exists to
+  catch.** The inserted `cluster_id` came from `c.id` in the SELECT, and no
+  predicate tied `c` to the cluster the caller named, so the statement asked
+  "does SOME cluster have an appearance in this object" and wrote THAT one.
+  It returned `Ok` for a person from another library.
+- **Migration `0025` originally used `ALTER TABLE ... ADD CONSTRAINT`,** which
+  system `sqlite3` 3.53.4 accepts and sqlx's bundled SQLite rejects. Every
+  manual check passed; the failure surfaced as 27 of 30 unrelated tests in
+  `tags.rs` failing, because a migration error panics the whole binary before
+  any test body runs.
+
+T-P6-004b is now the unblocked follow-on for the Q&A page that T-P6-004 split
+out. No merge path and no server surface for rejections or speaker proposals
+were written — both are deliberately left; see `docs/HANDOFF.md`.
 
 ### T-P6-005 — Cast, DLNA, external players
 
