@@ -47,10 +47,11 @@ macro_rules! read_marker {
                 what: "marker id",
                 why: e.to_string(),
             })?,
-            object_id: Uuid::parse_str(&object_id).map_err(|e| StoreError::Invalid {
-                what: "marker object_id",
-                why: e.to_string(),
-            })?,
+            // Taken verbatim. Parsing it as a Uuid is what the previous version
+            // did, and the scanner writes `o-pending-<uuid>`, so every row read
+            // back failed -- a marker could be written against a real object and
+            // then never read again.
+            object_id,
             title,
             start_ms,
             end_ms,
@@ -276,14 +277,7 @@ pub async fn insert_marker(store: &Store, marker: &Marker) -> Result<()> {
             why: "a marker with no title cannot be listed".to_string(),
         });
     }
-    if !overlaps_nothing(
-        store,
-        &marker.object_id.to_string(),
-        marker.start_ms,
-        marker.end_ms,
-    )
-    .await?
-    {
+    if !overlaps_nothing(store, &marker.object_id, marker.start_ms, marker.end_ms).await? {
         return Err(StoreError::Invalid {
             what: "marker range",
             why: format!(
@@ -303,7 +297,7 @@ pub async fn insert_marker(store: &Store, marker: &Marker) -> Result<()> {
             let sql = SQL.replace("{p}", &placeholders(8, $numbered));
             sqlx::query(&sql)
                 .bind(marker.id.to_string())
-                .bind(marker.object_id.to_string())
+                .bind(marker.object_id.clone())
                 .bind(&marker.title)
                 .bind(marker.start_ms)
                 .bind(marker.end_ms)
@@ -405,7 +399,7 @@ pub async fn markers_for(store: &Store, object_id: &str) -> Result<Vec<Marker>> 
 /// with a title on one marker and a range on another.
 pub async fn chapter_interview(
     store: &Store,
-    object_id: &Uuid,
+    object_id: &str,
     words: &[Word],
     opts: ChapterOptions,
     title_for: &dyn Fn(usize, &Chapter) -> String,
@@ -439,7 +433,7 @@ pub async fn chapter_interview(
         };
         let marker = Marker {
             id: Uuid::new_v4(),
-            object_id: *object_id,
+            object_id: object_id.to_string(),
             title: chapter.title.clone(),
             start_ms: chapter.start_ms,
             end_ms: Some(chapter.end_ms),
@@ -475,7 +469,7 @@ pub async fn propose_chapter_tag(
 /// Used when a transcript is re-run: the old chapters described the old
 /// transcript's timings, and leaving them means a chapter list whose times no
 /// longer match the transcript beside it.
-pub async fn replace_chapters(store: &Store, object_id: &Uuid, chapters: &[Marker]) -> Result<()> {
+pub async fn replace_chapters(store: &Store, object_id: &str, chapters: &[Marker]) -> Result<()> {
     let id = object_id.to_string();
     let sql_lite = "DELETE FROM marker WHERE object_id = ?";
     let sql_pg = "DELETE FROM marker WHERE object_id = $1";

@@ -233,6 +233,37 @@ pub fn strip_sidecars(text: &str) -> String {
 /// before migrating, which is the state every real deployment is in, and to
 /// leave the ordering bug for a migration that can address it without editing
 /// history. See `docs/plans/implementation-plan.md`, T-P5-001.
+/// A semaphore held for the whole of a Postgres schema build.
+///
+/// The server is shared and small. Every test that calls [`postgres_store`]
+/// creates a fresh schema and applies the *entire* migration tree to it, and
+/// `0001_core.sql` is large enough that a dozen concurrent applications exhaust
+/// the server's shared memory — which surfaces as
+/// `applying 0001_core.sql: error returned from database: out of shared memory`
+/// and looks, from the failure alone, exactly like a broken migration.
+///
+/// It was never a broken migration, and it is not rare: this ran green in
+/// isolation for months and failed in the full run roughly one time in three,
+/// which is the worst possible failure shape. The tests that fail are whichever
+/// ones lost the race, so the same test fails on one run and passes on the next
+/// and the report is a list of unrelated storage tests.
+///
+/// A `tokio::sync::Mutex`, not a `std::sync::Mutex`: it is held across `.await`
+/// points, and clippy is right that the blocking one is unsound there. It is
+/// held only for the *build* — `postgres_store` drops it on return, so the tests
+/// themselves still run in parallel and only the migration applies queue up.
+static PG_MIGRATION_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Take the gate, waiting however long it takes.
+///
+/// A future, not a guard: the call site is `let _slot = pg_migration_slot().await`,
+/// and the guard is bound to the returned future's parent scope. An `async fn`
+/// that returned the guard would tie the guard's lifetime to the future, which
+/// is the shape that does not compile.
+fn pg_migration_slot() -> impl std::future::Future<Output = tokio::sync::MutexGuard<'static, ()>> {
+    PG_MIGRATION_GATE.lock()
+}
+
 pub async fn postgres_store() -> Store {
     let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
         panic!(
@@ -242,6 +273,7 @@ pub async fn postgres_store() -> Store {
              whole ticket is the equality. scripts/verify.sh sets it."
         )
     });
+    let _slot = pg_migration_slot().await;
     let admin = PgPool::connect(&url).await.unwrap();
     let schema = format!("search_{}", Uuid::new_v4().simple());
     sqlx::query(&format!("CREATE SCHEMA {schema}"))

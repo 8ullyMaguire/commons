@@ -25,8 +25,16 @@ macro_rules! both_engines {
     }};
 }
 
-async fn make_object(store: &commons_store::db::Store, uid: Uuid) -> Uuid {
-    let id = uid.to_string();
+/// A per-test object id, and the object row behind it.
+///
+/// The id is `o-<hex>` and not a bare UUID, because that is what the scanner
+/// writes — `reconcile.rs` mints `o-pending-<uuid>`. An earlier version of this
+/// fixture used `Uuid` throughout, which passed against a schema that accepts
+/// any text and would have failed the moment a real object's id was used: a
+/// chapter written against a real object, never read back. The `Marker` type
+/// carries `object_id` as a `String` for exactly this reason.
+async fn make_object(store: &commons_store::db::Store, uid: Uuid) -> String {
+    let id = format!("o-{}", uid.simple());
     let now = chrono::Utc::now().to_rfc3339();
     // Portable upsert, because `INSERT OR REPLACE` is SQLite-only syntax and
     // Postgres refuses it at the `OR` with an offset that names nothing.
@@ -67,13 +75,13 @@ async fn make_object(store: &commons_store::db::Store, uid: Uuid) -> Uuid {
         commons_store::db::Store::Sqlite(p) => go!(p, false),
         commons_store::db::Store::Postgres(p) => go!(p, true),
     }
-    uid
+    id
 }
 
-fn marker(object: Uuid, title: &str, start: i64, end: Option<i64>) -> Marker {
+fn marker(object: &str, title: &str, start: i64, end: Option<i64>) -> Marker {
     Marker {
         id: Uuid::new_v4(),
-        object_id: object,
+        object_id: object.to_string(),
         title: title.to_string(),
         start_ms: start,
         end_ms: end,
@@ -87,7 +95,7 @@ fn marker(object: Uuid, title: &str, start: i64, end: Option<i64>) -> Marker {
 async fn a_marker_is_written_and_read_back_with_its_times() {
     both_engines!(|s| {
         let object = make_object(&s, Uuid::new_v4()).await;
-        let m = marker(object, "Cold open", 0, Some(42_000));
+        let m = marker(&object, "Cold open", 0, Some(42_000));
         insert_marker(&s, &m).await.expect("write");
         let got = markers_for(&s, &object.to_string()).await.expect("read");
         assert_eq!(got.len(), 1);
@@ -106,7 +114,7 @@ async fn markers_come_back_in_time_order_not_insertion_order() {
         // there are three, and the assertion is which one LEADS.
         let object = make_object(&s, Uuid::new_v4()).await;
         for (title, start) in [("third", 30_000), ("first", 0), ("second", 15_000)] {
-            insert_marker(&s, &marker(object, title, start, Some(start + 1_000)))
+            insert_marker(&s, &marker(&object, title, start, Some(start + 1_000)))
                 .await
                 .expect("write");
         }
@@ -124,10 +132,10 @@ async fn an_overlapping_marker_is_refused() {
         // The player's next button would send the user BACKWARDS. A chapter
         // list that renders perfectly and navigates wrongly is the failure.
         let object = make_object(&s, Uuid::new_v4()).await;
-        insert_marker(&s, &marker(object, "one", 0, Some(10_000)))
+        insert_marker(&s, &marker(&object, "one", 0, Some(10_000)))
             .await
             .expect("first");
-        let err = insert_marker(&s, &marker(object, "two", 5_000, Some(15_000)))
+        let err = insert_marker(&s, &marker(&object, "two", 5_000, Some(15_000)))
             .await
             .expect_err("an overlap must be refused");
         assert!(err.to_string().contains("overlaps"), "{err}");
@@ -152,10 +160,10 @@ async fn a_marker_that_abuts_its_neighbour_is_not_an_overlap() {
         // goes undetected. Confirmed by mutation: with the start clause made
         // inclusive, an earlier draft of this test still passed.
         let forward = make_object(&s, Uuid::new_v4()).await;
-        insert_marker(&s, &marker(forward, "one", 0, Some(10_000)))
+        insert_marker(&s, &marker(&forward, "one", 0, Some(10_000)))
             .await
             .expect("first");
-        insert_marker(&s, &marker(forward, "two", 10_000, Some(20_000)))
+        insert_marker(&s, &marker(&forward, "two", 10_000, Some(20_000)))
             .await
             .expect("abutting markers are not overlapping");
         assert_eq!(
@@ -166,10 +174,10 @@ async fn a_marker_that_abuts_its_neighbour_is_not_an_overlap() {
         // The same two ranges, second one written first: now `existing.start`
         // equals `new.end`, so only the FIRST clause can be the one refusing it.
         let backward = make_object(&s, Uuid::new_v4()).await;
-        insert_marker(&s, &marker(backward, "two", 10_000, Some(20_000)))
+        insert_marker(&s, &marker(&backward, "two", 10_000, Some(20_000)))
             .await
             .expect("the later range, written first");
-        insert_marker(&s, &marker(backward, "one", 0, Some(10_000)))
+        insert_marker(&s, &marker(&backward, "one", 0, Some(10_000)))
             .await
             .expect("a marker ending exactly where the existing one starts");
         assert_eq!(
@@ -187,10 +195,10 @@ async fn a_marker_with_no_end_runs_to_the_end_of_the_media() {
         // that -- a NULL end treated as "no overlap" would let a chapter sit
         // inside another.
         let object = make_object(&s, Uuid::new_v4()).await;
-        insert_marker(&s, &marker(object, "open", 5_000, None))
+        insert_marker(&s, &marker(&object, "open", 5_000, None))
             .await
             .expect("open-ended");
-        let err = insert_marker(&s, &marker(object, "later", 10_000, Some(20_000)))
+        let err = insert_marker(&s, &marker(&object, "later", 10_000, Some(20_000)))
             .await
             .expect_err("a later marker overlaps an open-ended one");
         assert!(err.to_string().contains("overlaps"), "{err}");
@@ -203,16 +211,16 @@ async fn a_marker_that_cannot_be_seeked_to_is_refused() {
         // A negative start, an end at or before the start, and no title: all
         // three render as a chapter that does nothing.
         let object = make_object(&s, Uuid::new_v4()).await;
-        assert!(insert_marker(&s, &marker(object, "x", -1, Some(100)))
+        assert!(insert_marker(&s, &marker(&object, "x", -1, Some(100)))
             .await
             .is_err());
-        assert!(insert_marker(&s, &marker(object, "x", 100, Some(100)))
+        assert!(insert_marker(&s, &marker(&object, "x", 100, Some(100)))
             .await
             .is_err());
-        assert!(insert_marker(&s, &marker(object, "x", 100, Some(50)))
+        assert!(insert_marker(&s, &marker(&object, "x", 100, Some(50)))
             .await
             .is_err());
-        assert!(insert_marker(&s, &marker(object, "  ", 100, Some(200)))
+        assert!(insert_marker(&s, &marker(&object, "  ", 100, Some(200)))
             .await
             .is_err());
         assert!(markers_for(&s, &object.to_string())
@@ -227,7 +235,7 @@ async fn one_objects_markers_do_not_appear_on_another() {
     both_engines!(|s| {
         let a = make_object(&s, Uuid::new_v4()).await;
         let b = make_object(&s, Uuid::new_v4()).await;
-        insert_marker(&s, &marker(a, "on-a", 0, Some(1_000)))
+        insert_marker(&s, &marker(&a, "on-a", 0, Some(1_000)))
             .await
             .unwrap();
         assert!(markers_for(&s, &b.to_string()).await.unwrap().is_empty());
@@ -240,7 +248,7 @@ async fn a_deleted_object_takes_its_chapters() {
         // The FK has a cascade, and an orphan chapter on a deleted recording is
         // a row that shows up in every chapter list forever.
         let object = make_object(&s, Uuid::new_v4()).await;
-        insert_marker(&s, &marker(object, "gone", 0, Some(1_000)))
+        insert_marker(&s, &marker(&object, "gone", 0, Some(1_000)))
             .await
             .unwrap();
         macro_rules! del {

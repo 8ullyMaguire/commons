@@ -23,47 +23,12 @@ use std::path::{Path, PathBuf};
 
 // --- sidecars: no process ---------------------------------------------------
 
-/// A directory under the target dir, unique per test, so a test that writes a
-/// sidecar cannot collide with another that writes a different one at the same
-/// name. `std::env::temp_dir` is not used: it is shared with every other process
-/// on the machine, and a stale file from a killed run is how a test passes once
-/// and fails forever after.
-fn scratch(tag: &str) -> PathBuf {
-    // Unique per CALL, not per test and not per process, and both of those
-    // narrower keys have already produced a failure.
-    //
-    // Per process (`commons-extract-{tag}-{pid}`) collides because **pids are
-    // reused**: the same test binary run twice, weeks or minutes apart, gets
-    // the same pid and the same directory, and the second run's
-    // `remove_dir_all` deletes the first run's stub while a sibling thread is
-    // still `exec`ing it. That is `ETXTBSY -- "Text file busy"`, which surfaces
-    // as a spawn failure in a test named for a deadlock that never happened.
-    //
-    // A monotonic counter is per-process, so on its own it does not survive the
-    // pid reuse either; the nanosecond timestamp is what makes the name unique
-    // across runs, and the counter is what makes it unique across threads
-    // within one run -- two calls in the same nanosecond are possible on
-    // different cores, and neither key is sufficient alone.
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "commons-extract-{tag}-{}-{n}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0),
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
-}
-
-fn write(dir: &Path, name: &str, body: &str) -> PathBuf {
-    let p = dir.join(name);
-    std::fs::write(&p, body).expect("write fixture");
-    p
-}
+// Scratch dirs and fixtures come from the shared helper, which deletes the
+// directory on drop -- a test that panics used to leave one behind, and enough
+// of them filled the disk and made unrelated tests fail.
+#[path = "scratch/mod.rs"]
+mod scratch;
+use scratch::{scratch, write};
 
 const SRT: &str =
     "1\n00:00:01,000 --> 00:00:03,000\nHello\n\n2\n00:00:04,000 --> 00:00:06,500\nWorld\n";
@@ -486,7 +451,7 @@ fn a_path_with_a_nul_byte_is_rejected_before_the_process_is_built() {
     // same check for the same reason; two functions disagreeing about it would
     // mean one of them is missing it.
     let dir = scratch("nul");
-    let mut p = dir.clone().into_os_string();
+    let mut p = dir.to_path_buf().into_os_string();
     p.push("a\0b.mkv");
     let path = PathBuf::from(p);
     // The error is a spawn failure or a ffmpeg failure depending on the

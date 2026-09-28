@@ -399,7 +399,16 @@ pub struct Locator {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Marker {
     pub id: Uuid,
-    pub object_id: Uuid,
+    /// The owning object, as the scanner minted it.
+    ///
+    /// A `String`, not a `Uuid`, and that is deliberate even though every other
+    /// id in this module is a `Uuid`: the scanner writes ids like
+    /// `o-pending-<uuid>`, so a `Uuid` here could never match a real object and
+    /// every chapter would attach to nothing. `marker.object_id` is `TEXT` in
+    /// the schema and the other stores (`subtitles`, `funscript`) already carry
+    /// it as a `String`; this struct was the only one that had not been
+    /// reconciled with that.
+    pub object_id: String,
     pub title: String,
     pub start_ms: i64,
     pub end_ms: Option<i64>,

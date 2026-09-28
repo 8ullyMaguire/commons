@@ -23,6 +23,7 @@ pub mod config;
 // database, so `contained_in` is load-bearing here -- see the module doc.
 pub mod funscript;
 pub mod health;
+pub mod interview;
 pub mod media;
 pub mod playback;
 pub mod proxy;
@@ -107,6 +108,15 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(playback::get_playback_route).put(playback::put_playback_route),
         )
         .route("/media/:object_id/subtitles", get(subtitles::list_tracks))
+        .route(
+            "/media/:object_id/transcript",
+            get(interview::get_transcript),
+        )
+        .route(
+            "/media/:object_id/transcript/words",
+            get(interview::get_words),
+        )
+        .route("/media/:object_id/chapters", get(interview::get_chapters))
         .route(
             "/media/:object_id/subtitles/:document_id.vtt",
             get(subtitles::get_vtt),

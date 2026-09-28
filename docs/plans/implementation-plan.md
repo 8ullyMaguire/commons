@@ -2910,19 +2910,22 @@ word becomes a proposal, not a silent overwrite.
 
 **Spec:** `docs/spec/t-p6-004-interviews.md`.
 
-**Progress:** the storage layer, the engine seam, BOTH engine adapters and both
-accept criteria are done and tested (`crates/commons-ml/src/asr/`,
-`crates/commons-store/src/interview.rs`, migration 0023; 24 store tests x 2
-engines, 12 whisper parser tests, 11 parakeet sidecar tests over a real pipe,
-7 timing tests). parakeet is a Python sidecar, not in-process — spec §3.1 was
-revised in place to say so and why. Remaining: chapters/quotes/topics as
-`Marker`s and weighted `Tag`s, speaker attribution into `PersonCluster`, and the
-model-backed half of the timing test.
+**Progress:** the storage layer, the engine seam, BOTH engine adapters, the
+transcription driver and the three read routes are done and tested
+(`crates/commons-ml/src/asr/`, `crates/commons-store/src/interview.rs`,
+`crates/commons-server/src/interview.rs`, migrations 0023). parakeet is a Python
+sidecar, not in-process — spec §3.1 was revised in place to say so and why.
+Chapters as `Marker`s exist (`commons-store/src/marker.rs`, single forward pass
+enforcing min/max/silence, both engines). Remaining: quotes and topics as
+weighted `Tag`s, speaker attribution into `PersonCluster`, and the model-backed
+half of the timing test (the hand-checked fixture).
 
 **Split out of this ticket:** the *Q&A search* page. The deliverable that makes
 it possible is a searchable word-level transcript, and a search UI built before
 any transcript exists would be speculative. Recorded here so it is a named
-follow-on rather than a silently dropped half of the ticket.
+follow-on rather than a silently dropped half of the ticket. The transcript and
+words it would query now exist and are served, so what is left is the search
+itself and the page in front of it.
 
 ### T-P6-005 — Cast, DLNA, external players
 

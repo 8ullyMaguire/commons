@@ -2054,3 +2054,51 @@ Tested in `commons-store/tests/asr_pipeline_db.rs` (both engines) because it
 writes rows and `commons-ml` has no database. Five mutations, all caught:
 offset dropped, ordinals zeroed, failed window unrecorded, failed window fatal,
 model error fatal.
+
+### The interview routes
+
+`crates/commons-server/src/interview.rs` serves three routes — `GET
+/media/:id/transcript`, `GET /media/:id/transcript/words`, `GET
+/media/:id/chapters` — and the design constraint that shapes all three is that
+**absent, off-disk, denied and not-yet-transcribed must be indistinguishable.**
+Not "all four are 404" but the same bytes: a client that can tell them apart can
+walk the library and learn what a user has and what they are refused. A 403 is a
+leak, and so is a 200 with an empty transcript.
+
+The test that pins this, in `crates/commons-server/tests/interview_route.rs`,
+gives the *denied* fixture a transcript before asking for it. Without that seed
+it passes with the access gate deleted: an ungated request falls through to "no
+transcript", which is also a 404, and the two bodies still match — the
+comparison was between two answers from the same branch. Confirmed by mutation,
+removing `media_path(&id, &caller)` from all three routes.
+
+Two response properties that a JSON route gets wrong quietly, both now tested:
+an unscored word serialises as `null` and not `0.0` (a zero puts it last in a
+"least confident" sort, which is a claim about the word rather than about the
+engine), and an open-ended chapter's `end_ms` is `null` and not `0` (a zero
+renders as a zero-length chapter at the top of the recording).
+
+### `Marker.object_id` was a `Uuid`, and no marker could ever have been read
+
+`marker.object_id` is `TEXT` in the schema and every other store (`subtitles`,
+`funscript`) carries it as a `String`. `Marker` was the only type in
+`commons-core::domain` that had `Uuid` there, and the scanner mints ids like
+`o-pending-<uuid>` — so `Uuid::parse_str` on the column failed for every row
+written against a real object, and a chapter could be written and never read
+back. It is now a `String`, and the fixture that found it uses an `o-<hex>` id
+like production rather than a bare UUID.
+
+### The suite was failing one run in three, for a reason that read like a bug
+
+`interview_db.rs` passes 24/24 alone and failed 11/24 in `cargo test --workspace`
+with `applying 0001_core.sql: error returned from database: out of shared
+memory`. Not a migration defect: every test builds a **fresh schema and applies
+the whole tree to it**, and a dozen concurrent applications exhaust a 128MB
+`shared_buffers`. The failing set changes between runs — the tests that lose the
+race — so the report is a list of unrelated storage tests and looks like
+flakiness everywhere at once. Reproduced deterministically with
+`for i in 1 2 3; do cargo test --test interview_db & done; wait`.
+
+Fixed in `tests/harness/mod.rs` with a `tokio::sync::Mutex` held around the
+schema build only — dropped on return, so the tests themselves still run in
+parallel. Not by raising `max_connections`, which was never the constraint.

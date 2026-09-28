@@ -31,6 +31,10 @@ use commons_media::subtitles::{self, Cue, Format};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "scratch/mod.rs"]
+mod scratch;
+use scratch::scratch;
+
 fn ffmpeg() -> PathBuf {
     std::env::var("COMMONS_FFMPEG")
         .map(Into::into)
@@ -63,29 +67,6 @@ fn which(bin: &str) -> Option<PathBuf> {
     std::env::split_paths(&path)
         .map(|d| d.join(bin))
         .find(|p| p.is_file())
-}
-
-fn scratch(tag: &str) -> PathBuf {
-    // Unique per CALL. A per-process key is not enough because **pids are
-    // reused**: two runs of this binary weeks apart get the same pid and the
-    // same directory, and the second run's `remove_dir_all` deletes a stub a
-    // sibling thread is still `exec`ing -- `ETXTBSY -- "Text file busy"`,
-    // which surfaces as a spawn failure in an unrelated test. The counter makes
-    // it unique across threads in one run, the timestamp across runs; neither
-    // key is sufficient alone.
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!(
-        "commons-subrt-{tag}-{}-{n}-{nanos}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
 }
 
 /// A cue list with awkward timings: odd milliseconds, a cue that starts at
