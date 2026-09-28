@@ -153,3 +153,71 @@ Every path returns `Err`. None defaults, and none "repairs":
 `Cursor::from_url(input.after, &sort)`, and return `pageInfo.endCursor` as
 `last_row.to_url()`. Then the UI's existing `endCursor` plumbing works with no
 UI change at all — which is worth checking before assuming it needs one.
+
+---
+
+## 8. Addendum — what the implementation changed, at `0e57b77`
+
+Three things this spec got wrong or did not foresee, recorded here because the
+spec is the document a future implementer reads before writing code.
+
+### 8a. The hazard is cross-SORT, and the spec said only "cross-sort" without saying which
+
+§2 said a wrong-sort cursor "binds cleanly, runs, returns rows, and pages
+wrongly". That is **half** true, and the half that is false matters:
+
+- **Cross-type** (`date` cursor seeked in `rating_sum`): binds a `Value::Str` to
+  an INTEGER column. The comparison is never true, so the result is an **empty
+  page** — visible, if unhelpful.
+- **Cross-sort among text keys**: `Date`, `Title`, `Kind` and `AddedAt` are
+  **all** `Value::Str` and all arity 2. `o.title < '2026-01-01'` is a valid text
+  comparison that **returns rows**, and the page is computed with the wrong
+  column. Nothing errors.
+
+So the second is the dangerous one, and the two are distinguished only by the
+value types — which is why §6.2 requires the mismatch test to use two *text*
+sorts. A test using `Date` vs `RatingSum` would pass with no fingerprint at all.
+
+### 8b. `serde` cannot derive this format. Both directions are hand-written.
+
+The two-element array `["s", "2026-01-01"]` is not a derivable shape for a
+newtype enum. `#[serde(tag = "t", content = "v")]` — the closest available —
+produces an object, and was tried before being rejected: `from_url` refused the
+array form, which is how the mismatch surfaced.
+
+Separately, **serde's derived struct `Deserialize` consumes fields in
+DECLARATION order**, so the envelope's `v, f, k` order is load-bearing on the
+*read* side too — and `serde_json::json!` sorts keys alphabetically, so the
+natural way to write a test fixture emits `f, k, v` and fails with an error
+pointing at a column *inside the fingerprint*. `Wire::parse` therefore reads the
+three fields by name. The format on the wire is unchanged; only the reader's
+strictness about it is gone.
+
+### 8c. §6.7's absence tests were vacuous as first written, and passing is not evidence
+
+§6.7 asked for two tests about things that are *not* there. Both were written as
+source greps and **both passed against the exact regressions they exist to
+catch**:
+
+- the `#[cfg(test)]` check matched the **doc comment above the attribute**,
+  which contains that literal text;
+- the sweep treated any `#[cfg(test)]` earlier in a file as proof that a later
+  line was in a test.
+
+Fixed to read attribute lines only, and comment lines only. Each now fails its
+mutation. The general rule, which is the third time this codebase has tripped it:
+**a grep that can match a comment is not a search for the thing, and a test that
+has never failed has not been tested.**
+
+§6.1's round-trip is also weaker than it looks — both halves of the wire format
+are in the same crate, so a round trip proves they agree, not that either is
+right. That is why §6's golden test is now **literal bytes** rather than
+interpolating `sort.fingerprint()`: the interpolated version was a round trip in
+disguise and would have caught nothing. Both claims are verified by mutation —
+tag/value swap and a zero-length NULL tuple each fail it.
+
+### 8d. The spec's own 8-hex fingerprint is not what `format!("{h:08x}")` gives
+
+`08` is a *minimum* width, so the 64-bit FNV-1a printed all 16 digits. The spec
+says 8, so `h as u32` makes the truncation explicit. Found by the golden test,
+which is precisely the test that exists to notice when the format changes.

@@ -341,3 +341,117 @@ wire format would be evidence of nothing.
    `~/code/rust/commons` by `git merge --ff-only` and **verify by comparing
    trees** — `git rev-parse HEAD^{tree}` on both — not by reading the merge
    output.
+
+---
+
+## Step 8 — DONE, with three findings the plan did not predict
+
+Steps 1–5 are committed at `0e57b77`. Three things cost more time than the code
+and are recorded here because the plan did not foresee them.
+
+### 8a. TWO ABSENCE TESTS WERE VACUOUS, and both passed against their regression
+
+Step 5 wrote two tests for claims about something *not* being there. Both were
+wrong in the same way, and the plan's own stated lesson is the reason they were
+wrong:
+
+- `the_cursor_constructor_is_still_test_only` searched the 40 lines above
+  `fn new` for the text `#[cfg(test)]`. **That string is in the doc comment
+  immediately above the attribute** — a comment which explains that the
+  constructor is `#[cfg(test)]`. So the window matched the prose and passed
+  with the attribute deleted.
+- `no_production_code_builds_a_cursor_outside_from_row_and_from_url` classified
+  a hit as "in tests" whenever *anything earlier in the file* contained
+  `#[cfg(test)]` — true of nearly every file in a crate with one test module at
+  the bottom. A production caller added above that module scored as a test hit.
+
+Both were green against exactly the regressions they exist to catch. Mutations
+confirm it: removing the `#[cfg(test)]` gate, and adding a production caller,
+each left both tests passing.
+
+Fixed to read **attribute lines only** (non-doc, non-blank, contiguous) and
+**comment lines only**, and both now fail their mutation.
+
+**The rule, stated so it is not re-learned: a grep that can match a comment is
+not a search for the thing.** This is the same lesson as §4's "grep finds paths
+in PROSE", and it is the third time in this codebase that a source-grepping
+invariant has been wrong. Where a property is about absence, the mutation is the
+only proof the test is real — the test cannot prove itself by passing.
+
+### 8b. A production `Cursor::new` caller is a COMPILE error, not a grep finding
+
+While mutating, the injected production call failed to compile:
+`no associated function or constant named 'new' found for struct Cursor`.
+`#[cfg(test)]` already forbids it.
+
+So the sweep test guards something the compiler enforces. **It is kept** — a
+compile error is a louder failure than a test failure but it stops at the first
+offending crate, whereas the sweep reports *which file* across all of them — and
+its mutation is therefore the *combination*: remove the gate AND add the caller,
+which is the only way that state can exist. That combination fails both absence
+tests.
+
+Worth knowing: the plan said these tests were "the plan's falsifiable claim for
+§5". They were not falsifiable in the form written, and a test that cannot fail
+is worse than no test because it is read as evidence.
+
+### 8c. serde cannot derive the wire shape the spec calls for, twice over
+
+Two separate surprises, both in the same enum:
+
+1. **The two-element array `["s", "2026-01-01"]` is not a derivable shape.**
+   `#[serde(tag = "t", content = "v")]` — the closest thing available —
+   produces `{"t":"s","v":"x"}`, an object. It was tried, and `from_url`
+   rejected the array form outright, which is how the mismatch surfaced. Both
+   directions are hand-written now (~40 lines), and the comment records that the
+   derive was tried and is the wrong shape rather than leaving a reader to
+   re-derive it. `from_value`/`to_value` are exhaustive matches with no `_ =>`,
+   so adding a `Value` variant is a compile error in both.
+2. **serde's derived struct `Deserialize` consumes fields in DECLARATION
+   order.** The envelope is `v, f, k`; `serde_json::json!` sorts keys
+   alphabetically and emitted `f, k, v`, so every test in the file failed at the
+   fixture with `Shape("expected value at line 1 column 22")` — an error
+   pointing at a *column inside the fingerprint*, which reads as a fingerprint
+   bug and is not one. `Wire::parse` now reads the three fields by name from a
+   `serde_json::Value`, so a producer may emit them in any order; writing still
+   emits declaration order, and the golden test pins the bytes.
+
+**The fixture bug wore the costume of a decoder bug**, and the way it was found
+was noticing that the error's column number was in the wrong field. Debugging by
+printing the actual decoded bytes — rather than reasoning about what serde must
+have done — is what located it in one step.
+
+### 8d. Two smaller corrections, made rather than allowed
+
+- `format!("{h:08x}")` is a **minimum** width, not a truncation: it printed all
+  16 hex digits of the 64-bit hash. The spec and the doc comment both promise 8,
+  so `h as u32` makes the truncation explicit. Caught by the golden-literal
+  test, which is exactly the test that exists to notice a format change.
+- clippy's `len_without_is_empty` on `Sort::len` is **not** silenced with a
+  bare `#[allow]`. A `Sort` with no keys cannot be constructed, so an
+  `is_empty` could only ever return `false` — a lie with a doc comment. The
+  `#[allow]` carries the reason instead.
+
+## Step 6 — gate: DONE, 3/3 clean
+
+```
+RUN 1 PASS: passed=1938 failed=0 ignored=1 suites=110
+RUN 2 PASS: passed=1938 failed=0 ignored=1 suites=110
+RUN 3 PASS: passed=1938 failed=0 ignored=1 suites=110
+```
+
+`cargo clippy --workspace --all-targets` 0 warnings. `cargo fmt --all --check`
+clean. Three runs, not two, per the plan's own reasoning: the last ticket's first
+pair was 1 clean then 1 failed.
+
+**The count reconciles exactly, which is the check that matters.** The baseline
+was 1919 and this ticket adds 19 tests — 6 in `sort.rs`'s module and 13 in
+`cursor_wire.rs`. 1919 + 19 = 1938, with the suite count going 109 → 110. So no
+test was lost or double-counted by the split of the two absence tests out of the
+integration file.
+
+That reconciliation was worth doing, because my first attempt to count the new
+tests by name-filtering the log returned **41** — it had matched 12 unrelated
+tests in other crates whose names also begin `one_`/`two_`. The suite was never
+short; the count was. A count that over-reports is the same failure as one that
+under-reports, and both come from trusting a filter instead of a reconciliation.

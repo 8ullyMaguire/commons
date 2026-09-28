@@ -81,24 +81,71 @@ fn the_wire_form_is_the_documented_bytes() {
     // derive attributes are invisible until one changes, and a cursor that
     // stops decoding is a paging feature that silently stops working.
     //
-    // Once GraphQL's `after` is wired up (T-P6-009 spec §7) the UI will decode
-    // this too, and both sides have to change together.
-    let (sort, cursor) = date_cursor();
+    // # This must NOT build its expectation from the code under test
+    //
+    // The first version interpolated `sort.fingerprint()` and
+    // `CURSOR_WIRE_VERSION` into the expected string. That makes it a
+    // round-trip: it proves the encoder and decoder agree, which the round-trip
+    // test already does, and it proves **nothing** about the format itself. A
+    // change that altered the wire shape *and* nothing else would sail through.
+    //
+    // So the bytes below are LITERAL: the fingerprint, the version and the key
+    // order are all written out. If `order_by()` changes, this fails — which is
+    // the point. Pinning the format is not free (it means a deliberate format
+    // change must edit this literal), and a free check that verifies nothing is
+    // the more expensive option.
+    let sort = Sort::date_desc();
+    let cursor = Cursor::from_url(
+        &envelope(
+            "82c4706c",
+            serde_json::json!([["s", "2026-01-01T00:00:00Z"], ["s", "o-7"]]),
+        ),
+        &sort,
+    )
+    .expect("the fixture decodes");
+
     let wire = cursor.to_url(&sort);
     let json =
         String::from_utf8(commons_store::filter_ast::base64url_decode(&wire).expect("we wrote it"))
             .expect("base64 of utf8");
+
     assert_eq!(
         json,
-        format!(
-            r#"{{"v":{},"f":"{}","k":[["s","2026-01-01T00:00:00Z"],["s","o-7"]]}}"#,
-            CURSOR_WIRE_VERSION,
-            sort.fingerprint()
-        ),
-        "the wire shape changed; anything that decodes a cursor must change with it"
+        // LITERAL: v=1, f=the FNV-1a low 32 bits of "o.date DESC, o.id ASC",
+        // and two two-element arrays whose first element is the variant tag.
+        r#"{"v":1,"f":"82c4706c","k":[["s","2026-01-01T00:00:00Z"],["s","o-7"]]}"#,
+        "the wire shape changed; anything that decodes a cursor must change \
+         with it. If this is an INTENDED change, update this literal and the \
+         spec together."
+    );
+
+    // And the base64 alphabet itself, pinned: no `+`, `/` or `=`, because this
+    // goes in a query parameter. Asserted on the full wire string rather than
+    // only the decoded bytes, since the alphabet is the part `+` and `/` would
+    // break and JSON hides it.
+    assert!(
+        !wire.contains('+') && !wire.contains('/') && !wire.contains('='),
+        "a URL parameter may not contain +, / or =: got {wire}"
+    );
+
+    // A NULL key is `["n"]` -- one element, not zero. A zero-length tuple would
+    // serialise as `[]`, and `[]` inside `k` is indistinguishable from an empty
+    // key list, so the two would collide.
+    let null_cursor = Cursor::from_url(
+        &envelope("82c4706c", serde_json::json!([["n"], ["s", "o-7"]])),
+        &sort,
+    )
+    .expect("a NULL cursor decodes");
+    let null_json = String::from_utf8(
+        commons_store::filter_ast::base64url_decode(&null_cursor.to_url(&sort))
+            .expect("we wrote it"),
+    )
+    .expect("base64 of utf8");
+    assert!(
+        null_json.contains(r#""k":[["n"],["s","o-7"]]"#),
+        "NULL must be a one-element [\"n\"] and not [] : got {null_json}"
     );
 }
-
 #[test]
 fn the_wire_form_is_url_safe() {
     // It goes in a query parameter, so the alphabet matters: `+` and `/` are

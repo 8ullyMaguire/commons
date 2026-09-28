@@ -6,6 +6,46 @@ The API is versioned by path prefix. `/api/v1/*` is the public surface for
 scripts and external tools; `docs/spec/t-p6-007-public-api.md` §6 states the
 compatibility promise in prose, and this file records what changed.
 
+## Unreleased — T-P6-009 (cursor wire form)
+
+> **Not a version bump, and nothing here is an HTTP surface.** T-P6-009 adds a
+> *capability* to the store — a keyset cursor that can cross a process boundary
+> — and no route changed. Following T-P6-008's reasoning: versioning here is by
+> path prefix, and a change to an internal encoding is not a change to
+> `/api/v1`.
+
+### Added
+
+- `Cursor::to_url(&Sort)` and `Cursor::from_url(&str, &Sort)` in
+  `commons-store::cursor_wire`. Canonical JSON, base64url, the same two steps
+  `Filter::to_url` takes.
+
+  **The wire form carries a fingerprint of the sort it was made for**, and both
+  functions take the sort. This is not defence in depth — it is the only guard.
+  `after_binds` checks cursor *length* against `all_keys().len()`, so a
+  `date_desc` cursor handed to a `title ASC` sort has matching arity and
+  matching value types (`Date`, `Title`, `Kind` and `AddedAt` are all
+  `Value::Str`), binds cleanly, and pages **with the wrong column**. Nothing
+  errors. A cross-*type* mismatch — a date cursor in a `rating_sum` sort — is
+  the benign case: it yields an empty page.
+
+- `Sort::fingerprint()` — the low 32 bits of FNV-1a over `order_by()`. Derived
+  from `order_by()` rather than a hand-written label per sort, because a label
+  is a second thing to forget and forgetting is silent. **It is a fingerprint,
+  not a security boundary**: it guards correctness, not authority.
+
+- `Sort::key_types()` and `KeyType` — what each sort key's column holds, so a
+  decoded cursor can be checked against the sort it claims. `Cursor::values`
+  and `Cursor::from_validated` are `pub(crate)`.
+
+### Not changed, deliberately
+
+- **`Cursor::new` is still `#[cfg(test)] pub(crate)`.** `from_url` is the only
+  production way to make one, and it validates. A public constructor would
+  reintroduce, at the API surface, the one failure the type exists to prevent.
+  Two tests assert this by reading the source, because absence is not provable
+  by compiling.
+
 ## Unreleased — T-P6-008
 
 > **Not `1.1.0`,** although the plan for this ticket said so. The versioning here

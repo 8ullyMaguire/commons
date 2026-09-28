@@ -329,7 +329,7 @@ does:
 | F5 | `performers` | `appearance` → `performer` exists; nothing aggregates per object, and a naive join multiplies rows and breaks the keyset page |
 | F6 | `folder` | no folder column. `file.path` holds it, and one file backs N objects via `segment`, so which file's path is the folder? |
 | F7 | `producer` | needs a join to `producer.name`. Cheap, and the **one** of these that is genuinely just this ticket's work — except that it adds a join to the hot-path page query, which §5.16's own reasoning about the page query's shape should rule on first |
-| F8 | `after` (the cursor) | **not a field — a store capability that does not exist.** §4b has the measurement. The encoding must bind the cursor to the sort it was made for, because `Sort::new` appends `id` as a trailing tiebreak and so the arity is a function of the sort |
+| ~~F8~~ | ~~`after` (the cursor)~~ | **DONE in T-P6-009.** `Cursor::to_url(sort)` / `Cursor::from_url(s, sort)` now exist in `commons-store`. The encoding carries a fingerprint of the sort, because the measurement in §4b is sharper than this row states: the dangerous mismatch is cross-SORT among the four text-valued keys, not cross-TYPE, and nothing errors. Wiring `after:` into the resolver is T-P6-009 spec §7 and is still to do |
 
 **F8 is a different kind of entry from F1–F7 and is called out for that reason.**
 Those are questions about which column answers a field, and each is answerable
