@@ -3088,6 +3088,67 @@ Jellyfin-compatible read API (#2747). Client SDK. Changelog (#69). Playground at
 omitting the consent attestation field returns an error, not a default.
 **Done when:** the missing-attestation test exists.
 
+**Progress: boundary landed, feature halves not** (`eb778d4`, from `a16a3a0`).
+Steps 0, 1, 2 and 5 of `docs/plans/t-p6-007-implementation-plan.md` are done.
+Still open: the `/api/v1` prefix (step 3) and the OpenAPI document (step 4).
+The spec's own §4 puts GraphQL, Jellyfin, upload and the SDK out of this
+ticket; **the ticket's stated "done when" — the missing-attestation test — is
+therefore not met, and the ticket is not closed.**
+
+**What was already there, which the ticket does not say.** §11.5 reads as five
+absent features. Four are, and the fifth exists undocumented: 22 routes in one
+binary, one crate serving HTTP, zero versioned prefixes, zero OpenAPI.
+
+**`async-graphql` and `async-graphql-axum` were declared and called nowhere**
+— `grep -rnE '\basync_graphql::' --include=*.rs crates/` returns 0, and both
+are gone from `Cargo.lock` entirely. T-P6-006's `semver`/`uuid` finding one
+size up. `commons-api`'s lib.rs said it held "HTTP and GraphQL surfaces" and
+held neither; the doc is corrected, because a comment describing a surface
+that does not exist is the same defect one level further from the compiler.
+
+**The real gap was one call site.** `Role` (5 variants, `may_curate`,
+`may_write`), `CallerId`, `filter_ast` and `ShareGrant` are all complete and
+all used — 163 references to `Role`. `grep -c Role crates/commons-server/`
+returned **0**: the server's entire auth model was `media::local_caller()`, a
+function returning a hardcoded constant. The authorization model was fully
+specified and never consulted. Now: `grep -c Role` is 7, and
+`identity::caller_from_request` resolves a bearer token to a share grant.
+
+**A share grant names its own consent tiers, and my first version did not.**
+Returning `CallerId { account_id: Some(..), .. }` with an empty allowlist
+makes the caller the library **OWNER** — `consent_clause` branches three ways
+and an account with no allowlist is the owner. So the first version made every
+`View` link *wider* than a visitor. Fixed: `View` → `ConsentTiers::PUBLIC`,
+`ViewDownload` → `ConsentTiers::OWNER`, neither ever `quarantined` or
+`denied`. A `denied` object is a takedown, and a link that served one would be
+a takedown with a hole in it.
+
+**The test that caught it asserted the bug.** The first version of
+`a_live_view_link_reaches_a_denied_object` demanded that a `View` link reach a
+`denied` object, and got 404/404 — the 404s being the code right. It also took
+two wrong fixtures first, both recorded in the test's doc comment, both
+failing in the direction that reads as "the feature is broken":
+`unverified` (anonymous got **200**, because `local_caller` carries an account
+and so resolves to OWNER, not PUBLIC) then `denied` (404/404). The combination
+that works is `ViewDownload` × `unverified`. Same lesson as
+`codebase-invariant-testing`: a fixture of only publicly-visible tiers cannot
+test a permission.
+
+**All 17 `media_route.rs` tests and the other 205 in the crate pass UNEDITED**,
+which was the plan's falsifiable claim for why the fallback is safe.
+
+Also: `CHANGELOG.md` (did not exist) with the `v1` compatibility promise as a
+table, and the DLNA/proxy routes recorded as deliberately unversioned and
+absent from the OpenAPI document — a route missing from a public API on purpose
+needs to say so somewhere, or the next reader treats it as an oversight.
+
+**Two invented API names, both caught before costing a commit:**
+`Scope::permits_serving()` (the real one is `can_download()`) and a `uri`
+parameter nothing read. And `utoipa`'s router integration is a *separate
+crate*, `utoipa-axum`; `axum_extras` only gives `IntoParams`. The pairing
+`utoipa 5.5.0` + `utoipa-axum 0.1.3` + `axum 0.7.9` was verified by compiling
+it in a scratch crate, and in 0.1.3 `OpenApiRouter` lives under `router::`.
+
 ---
 
 ## Phase 7 — Federation and consent
