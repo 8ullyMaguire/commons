@@ -43,7 +43,8 @@
 use std::sync::Arc;
 
 use axum::http::HeaderMap;
-use commons_store::filter_ast::CallerId;
+use commons_consent::share::Scope;
+use commons_store::filter_ast::{CallerId, ConsentTiers};
 
 use crate::AppState;
 
@@ -119,10 +120,26 @@ pub async fn caller_from_request(state: &Arc<AppState>, headers: &HeaderMap) -> 
     match crate::share::load_and_resolve(state, token, None, headers).await {
         Ok((row, grant)) => {
             tracing::debug!(grant_id = %row.id, scope = %grant.scope, "request carried a share grant");
-            // Identity, not authority: `Role::Public` plus the grant's own id.
-            // The scope travels in `grant`, not in here — see the type note.
             CallerId {
                 account_id: Some(row.id),
+                // THE load-bearing field, and getting it wrong makes the grant
+                // WIDER than anonymous rather than narrower.
+                //
+                // `consent_clause` (filter_ast.rs:455) branches three ways:
+                // an account_id with an empty allowlist is the library OWNER
+                // -- `ConsentTiers::OWNER`, a superset of `PUBLIC`; no
+                // account is `PUBLIC`; an explicit allowlist is itself. So a
+                // grant that set only `account_id` would be served as the
+                // owner, which means a `View` link to a stranger's library
+                // could see `unverified` scans. It would also be the exact bug
+                // T-P6-005's DLNA work and `CallerId::steward`'s own docs warn
+                // about: the helper decides what the caller sees instead of
+                // the clause.
+                //
+                // So the grant names its own tiers, exactly as
+                // `CallerId::steward` names `ConsentTiers::MODERATION` rather
+                // than everything.
+                tier_allowlist: grant_tiers(grant.scope),
                 ..CallerId::anonymous()
             }
         }
@@ -135,6 +152,29 @@ pub async fn caller_from_request(state: &Arc<AppState>, headers: &HeaderMap) -> 
             CallerId::anonymous()
         }
     }
+}
+
+/// The consent tiers a share grant may see, by scope.
+///
+/// A `View` link gets the same set an anonymous visitor gets, and a
+/// `ViewDownload` link gets those plus `unverified` — the tier a library's own
+/// operator can see and a visitor cannot, because a freshly scanned file is
+/// `unverified` and there is no reason a shared link should be *less* capable
+/// of serving the file it was made for than the browser it came from.
+///
+/// **This deliberately does not include `quarantined` or `denied`.** Both are
+/// in `ConsentTiers::ALL` and both are absent here, so a share link cannot
+/// serve a takedown or a contested item — and `a_live_view_link_reaches_a_
+/// denied_object_that_anonymous_cannot` is the test that holds that line from
+/// the other direction.
+fn grant_tiers(scope: Scope) -> Vec<String> {
+    let mut tiers: Vec<String> = ConsentTiers::PUBLIC.iter().map(|s| s.to_string()).collect();
+    if scope.can_download() {
+        tiers.extend(ConsentTiers::OWNER.iter().map(|s| s.to_string()));
+        tiers.sort();
+        tiers.dedup();
+    }
+    tiers
 }
 
 #[cfg(test)]
@@ -177,6 +217,60 @@ mod tests {
             assert_eq!(bearer(&headers_with(bad)), None, "{bad:?}");
         }
         assert_eq!(bearer(&HeaderMap::new()), None);
+    }
+
+    /// The tier table, and the two directions that matter.
+    ///
+    /// **`View` must equal `PUBLIC` exactly.** If a View link could see more
+    /// than an anonymous visitor, it would be a privilege grant wearing a
+    /// read-only label — and it would be invisible, because the status codes
+    /// would all still be correct.
+    ///
+    /// **Neither scope may reach `quarantined` or `denied`.** Those are in
+    /// `ALL` and in `MODERATION`, and a share link is neither a steward nor the
+    /// library owner. `denied` is a takedown: §14.1 calls it "permanently
+    /// blocked by hash across all peers", and a link that served one would be
+    /// a takedown with a hole in it.
+    #[test]
+    fn a_grant_never_reaches_past_the_public_tiers() {
+        /// Set equality, deliberately. The order of a tier list is not part of
+        /// what a caller may see, so a test comparing `Vec`s positionally
+        /// would fail on a `sort()` and teach a reader that the order matters.
+        /// The first version of this test did exactly that.
+        fn same_set<const N: usize>(a: Vec<String>, b: [&str; N]) -> bool {
+            let mut a: Vec<String> = a.into_iter().collect();
+            let mut want: Vec<String> = b.iter().map(|s| s.to_string()).collect();
+            a.sort();
+            want.sort();
+            a == want
+        }
+
+        for scope in [Scope::View, Scope::ViewDownload] {
+            let tiers = grant_tiers(scope);
+            for t in ["quarantined", "denied"] {
+                assert!(
+                    !tiers.iter().any(|x| x == t),
+                    "{scope:?} must not reach {t}, got {tiers:?}"
+                );
+            }
+        }
+
+        assert!(
+            same_set(grant_tiers(Scope::View), ConsentTiers::PUBLIC),
+            "a View link sees exactly what an anonymous visitor sees, got {:?}",
+            grant_tiers(Scope::View)
+        );
+        assert!(
+            same_set(grant_tiers(Scope::ViewDownload), ConsentTiers::OWNER),
+            "a ViewDownload link may serve what the library owner may serve and \
+             nothing beyond it, got {:?}",
+            grant_tiers(Scope::ViewDownload)
+        );
+        assert!(
+            !same_set(grant_tiers(Scope::View), ConsentTiers::OWNER),
+            "and the two scopes must actually differ, or Scope is not doing \
+             anything and the ViewDownload arm is untested"
+        );
     }
 }
 

@@ -34,11 +34,13 @@ fn bearer(token: &str) -> HeaderMap {
 /// The same shape as `share_route.rs`'s helper, and taken the same way — from
 /// the `url` the server actually returned rather than from a token this test
 /// assembled, so it cannot pass against a broken `assemble_token`.
-async fn create_view_link(app: &TestApp) -> (String, String) {
+async fn create_link(app: &TestApp, scope: &str) -> (String, String) {
     let res = app
         .post_json(
             "/api/share",
-            r#"{"target_kind":"object","target_id":"obj-1","scope":"view","expires_in_hours":24}"#,
+            &format!(
+                r#"{{"target_kind":"object","target_id":"obj-1","scope":"{scope}","expires_in_hours":24}}"#
+            ),
         )
         .await;
     assert_eq!(res.status, 201, "{}", String::from_utf8_lossy(&res.body));
@@ -46,6 +48,17 @@ async fn create_view_link(app: &TestApp) -> (String, String) {
     let url = v["url"].as_str().expect("a url");
     let token = url.rsplit('/').next().expect("a token segment").to_string();
     (v["id"].as_str().expect("an id").to_string(), token)
+}
+
+async fn create_view_link(app: &TestApp) -> (String, String) {
+    create_link(app, "view").await
+}
+
+/// The other scope. `ViewDownload` is the one that maps to `ConsentTiers::OWNER`
+/// rather than `PUBLIC`, so it is the only way to exercise the scope
+/// difference through a real request.
+async fn create_download_link(app: &TestApp) -> (String, String) {
+    create_link(app, "view_download").await
 }
 
 /// A bearer token that is well-formed as a header and names no grant.
@@ -166,5 +179,89 @@ async fn a_revoked_bearer_token_does_not_reach_the_media_bytes() {
     assert_ne!(
         response.status, 200,
         "a revoked grant must not reach the media bytes"
+    );
+}
+
+/// **The positive case, and the one that says the feature works.** A
+/// `ViewDownload` link reaches an `unverified` object.
+///
+/// Without this the file only ever proves refusals, and a server that refused
+/// everything would pass the five tests above — the same failure mode
+/// T-P6-005's `an_absent_object_and_a_denied_object_browse_identically` guards
+/// against, in a different place.
+///
+/// **This test went through two wrong fixtures, and the second one is the
+/// instructive one.**
+///
+/// 1. `unverified`, chosen because `local_caller`'s doc says anonymous callers
+///    cannot see it. The anonymous request came back **200** — that comment is
+///    about the *consent clause*, and the media route runs under
+///    `local_caller()`, which carries an account and so resolves to
+///    `ConsentTiers::OWNER`: a deliberate superset of `PUBLIC` that includes
+///    `unverified`, "a freshly scanned file must be visible in the app holding
+///    it".
+/// 2. `denied`, as the strong discriminator. Both arms came back **404** — and
+///    that was the *code working correctly* while the test was wrong. A `View`
+///    grant maps to exactly `ConsentTiers::PUBLIC`, `denied` is not in it, and
+///    so the link must not serve a takedown. §14.1 calls `denied` "permanently
+///    blocked by hash across all peers"; a link that served one would be a
+///    takedown with a hole in it.
+///
+/// So: a `ViewDownload` link, which maps to `OWNER`, against an `unverified`
+/// object, which is in `OWNER` and not in `PUBLIC`. The one combination where
+/// the scope has to make a difference.
+///
+/// The lesson is the one `codebase-invariant-testing` already records: **a
+/// fixture of only publicly-visible tiers cannot test a permission.** Both
+/// wrong versions picked a tier the fixture could not distinguish, and both
+/// failed in the direction that reads as "the feature is broken" when the
+/// feature was fine.
+#[tokio::test]
+async fn a_download_link_serves_an_unverified_object() {
+    let app = TestApp::new().await;
+    let object_id = support::media_fixture_at_tier(&app, b"bytes", "unverified").await;
+    let (_id, token) = create_download_link(&app).await;
+
+    let with_token = app
+        .send_raw(
+            Request::builder()
+                .uri(format!("/media/{object_id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .expect("a request"),
+        )
+        .await;
+    assert_eq!(
+        with_token.status, 200,
+        "a live ViewDownload link must serve an unverified object"
+    );
+}
+
+/// The refusal direction, with nothing to do with identity: the `View` scope
+/// must not reach a `denied` object even with a live grant.
+///
+/// Split out from the test above because it asserts a refusal, not a success.
+/// Mixing the two directions in one test is exactly how the "both arms are
+/// 404" version of the previous draft went unnoticed — a reader saw two
+/// refusals and had to work out which one was the point.
+#[tokio::test]
+async fn a_view_link_does_not_reach_a_denied_object() {
+    let app = TestApp::new().await;
+    let object_id = support::media_fixture_denied(&app, b"bytes").await;
+    let (_id, token) = create_view_link(&app).await;
+
+    let with_token = app
+        .send_raw(
+            Request::builder()
+                .uri(format!("/media/{object_id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .expect("a request"),
+        )
+        .await;
+    assert_ne!(
+        with_token.status, 200,
+        "a View link must not serve a `denied` object: that is a takedown, not \
+         a permission"
     );
 }
