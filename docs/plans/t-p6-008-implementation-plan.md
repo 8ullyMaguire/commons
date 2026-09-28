@@ -682,9 +682,16 @@ count the files and say which test moved.
 
 Then:
 
-1. `CHANGELOG.md` — a `1.1.0` section for the GraphQL surface, stating that
+1. `CHANGELOG.md` — a section for the GraphQL surface, stating that
    `/graphql` is the UI transport and is **not** part of the `/api/v1`
    compatibility promise.
+
+   **Done as `Unreleased`, not `1.1.0` as this step specified.** The versioning
+   is by path prefix and `1.0.0` is the version of `/api/v1/*`. `/graphql` is
+   deliberately not under that prefix — a test asserts `/api/v1/graphql` is a
+   404 — so the versioned public API did not change and `1.1.0` would advertise
+   a change that did not happen. A version heading is a claim about the API,
+   not about the commit, and the commit has a tag.
 2. `docs/spec/t-p6-007-public-api.md` §4 — strike the GraphQL bullet with a
    pointer here, so the deferral list stops naming finished work.
 3. `docs/HANDOFF.md` and the vault.

@@ -165,10 +165,32 @@ Rationale:
 
 ## 4. What is explicitly NOT here
 
-- **GraphQL.** Deferred with its boundary named, because the UI's 11 files are
+- **GraphQL. DONE — closed by T-P6-008** (`2eb3fff`). This bullet originally
+  read: *"Deferred with its boundary named, because the UI's 11 files are
   currently proved against a mock and converting them to a live server is a
   change to *every* UI test that touches those endpoints. That is its own
-  ticket, and doing it here would mean touching 11 UI test suites blind.
+  ticket, and doing it here would mean touching 11 UI test suites blind."*
+
+  Two things about that estimate turned out to be wrong, and the second one
+  matters more:
+
+  1. **It was not 11 test suites.** One file in `ui/tests/` needed to reach a
+     live server — `graphql-live.test.ts`, 7 tests. The other 925 UI tests were
+     untouched, because the client's own logic is properly tested with an
+     injected transport and that did not need to change.
+  2. **The cost was in the opposite place from where the estimate put it.** The
+     work was not in converting tests, it was in the wire format having no
+     enforcement behind it: with no GraphQL library, a document requesting a
+     field the server does not serve gets `null` rather than a validation error.
+     That is a property of the whole surface, not of any test.
+
+  What did have to be built by hand: the four operations, the operation-name
+  dispatcher, the wire types, and — the part a mock would have hidden — the
+  `rename_all = "camelCase"` mapping on every output struct. Serde derives none
+  of those names from snake_case, so a wrong one is **not an error: it is a
+  `null` the UI renders as "no cover" forever.** One test file now proves the
+  real client can read the real server, and removing that one attribute kills
+  exactly the tests that read the connection.
 - **Jellyfin.** Has an external contract; see §2.
 - **Upload endpoints.** Need §14.1 consent attestation and a multipart body
   limit policy; §14.1 is unstarted.

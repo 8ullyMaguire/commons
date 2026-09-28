@@ -8,6 +8,13 @@ compatibility promise in prose, and this file records what changed.
 
 ## Unreleased — T-P6-008
 
+> **Not `1.1.0`,** although the plan for this ticket said so. The versioning here
+> is by path prefix: `/api/v1/*` is the public surface and `1.0.0` is its
+> version. `/graphql` is deliberately **not** under `/api/v1` (there is a test
+> asserting `/api/v1/graphql` is a 404), so nothing about the versioned public
+> API changed and bumping it would advertise a change that did not happen. A
+> heading is a claim about the API, not about the commit.
+
 `POST /graphql`, the UI's transport. Not a public surface: see "Deliberately NOT
 under `/api/v1`" below.
 
