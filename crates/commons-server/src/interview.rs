@@ -341,3 +341,173 @@ fn internal_error() -> Response {
     )
         .into_response()
 }
+
+// ---------- quotes and topics (T-P6-004b step 6) ----------
+
+use commons_store::tags::Namespace;
+
+/// Cap on a page of quotes. Matches `MAX_WORDS`: both are "a screenful", and a
+/// second constant would be a second answer to "how much is too much".
+const MAX_QUOTES: i64 = 200;
+
+#[derive(Debug, Serialize)]
+struct QuoteOut {
+    id: String,
+    start_ms: i32,
+    end_ms: i32,
+    text: String,
+    weight: f64,
+    /// `human` or `model` -- the stored spelling, via `WeightSource::as_str`,
+    /// so the wire value and the CHECK constraint in migration 0024 cannot
+    /// drift apart. A separate field rather than folded into `weight`: the
+    /// scales are 1-5 and 0.0-1.0, and a client that cannot tell them apart
+    /// will average them.
+    weight_source: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct QuotePage {
+    object_id: String,
+    quotes: Vec<QuoteOut>,
+    total: i64,
+    /// Same contract as `get_words`: the client is told there is more rather
+    /// than handed a page it cannot page.
+    truncated: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct QuoteQuery {
+    #[serde(default)]
+    offset: i64,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+/// `GET /media/:object_id/quotes?offset=&limit=`
+///
+/// The same pager as `get_words`, deliberately: a second pager with the same
+/// semantics and a different parameter name is a client bug waiting to happen.
+pub async fn get_quotes(
+    State(state): State<std::sync::Arc<AppState>>,
+    AxumPath(object_id): AxumPath<String>,
+    Query(q): Query<QuoteQuery>,
+) -> Response {
+    // The gate `GET /media/:id` uses. Absent, off-disk and denied are one
+    // answer; a new route that forgets this re-opens a library-probing hole.
+    match state.store.media_path(&object_id, &local_caller()).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return not_found(),
+        Err(e) => {
+            tracing::error!(object_id = %object_id, error = %e, "interview: media_path failed");
+            return internal_error();
+        }
+    }
+    let store = &state.store;
+    // Clamp BEFORE reading, for the reason `get_words` does: a negative offset
+    // is a `LIMIT -1 OFFSET -5`, which one engine refuses and the other
+    // answers as "no limit".
+    let offset = q.offset.max(0);
+    let limit = q.limit.unwrap_or(MAX_QUOTES).clamp(1, MAX_QUOTES);
+
+    let all = match commons_store::interview::quotes_for(store, &object_id).await {
+        Ok(q) => q,
+        Err(_) => return not_found(),
+    };
+    // The store returns quotes in TIME ORDER, which is the only order a
+    // "moments worth going back to" list can be read in.
+    let total = all.len() as i64;
+    let quotes: Vec<QuoteOut> = all
+        .into_iter()
+        .skip(offset as usize)
+        .take(limit as usize)
+        .map(|q| QuoteOut {
+            id: q.id,
+            start_ms: q.start_ms,
+            end_ms: q.end_ms,
+            text: q.text,
+            weight: q.weight,
+            weight_source: q.weight_source.as_str(),
+        })
+        .collect();
+    let truncated = offset + (quotes.len() as i64) < total;
+
+    (
+        StatusCode::OK,
+        axum::Json(QuotePage {
+            object_id,
+            quotes,
+            total,
+            truncated,
+        }),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Serialize)]
+struct TopicOut {
+    id: String,
+    name: String,
+    /// §5.15: a model's topic is a suggestion and the response says so
+    /// explicitly. A client must not have to infer it from a missing field or
+    /// from a namespace it is expected to parse -- this is the same argument
+    /// the module already makes for `confidence: null` vs `0`.
+    proposed: bool,
+    confidence: Option<f64>,
+    source: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct TopicList {
+    object_id: String,
+    topics: Vec<TopicOut>,
+}
+
+/// `GET /media/:object_id/topics`
+///
+/// An object with no topics is an EMPTY LIST and a 200, not a 404. A library
+/// of recordings that have not been tagged is the normal state, and a 404
+/// would say "this thing does not exist" about a recording that is right
+/// there on screen. This is the same call `get_chapters` already makes.
+pub async fn get_topics(
+    State(state): State<std::sync::Arc<AppState>>,
+    AxumPath(object_id): AxumPath<String>,
+) -> Response {
+    match state.store.media_path(&object_id, &local_caller()).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return not_found(),
+        Err(e) => {
+            tracing::error!(object_id = %object_id, error = %e, "interview: media_path failed");
+            return internal_error();
+        }
+    }
+    let store = &state.store;
+    // `object_tags_full` rather than `object_tags`: the proposed flag is a
+    // property of the TAG's namespace, so a route that read only the
+    // application rows would have to re-join to answer it.
+    let pairs = match store.object_tags_full(&object_id).await {
+        Ok(p) => p,
+        Err(_) => return not_found(),
+    };
+    let topics: Vec<TopicOut> = pairs
+        .into_iter()
+        .map(|(tag, app)| {
+            // The namespace is the record of WHO applied it, so `proposed` is
+            // read off the tag and not inferred from a null confidence: a
+            // model that does not score its own output still proposed it.
+            let proposed = matches!(tag.namespace, Namespace::Ml(_));
+            TopicOut {
+                id: tag.id,
+                name: tag.name,
+                proposed,
+                confidence: app.confidence,
+                source: app.source,
+            }
+        })
+        .collect();
+
+    (
+        StatusCode::OK,
+        axum::Json(TopicList { object_id, topics }),
+    )
+        .into_response()
+}

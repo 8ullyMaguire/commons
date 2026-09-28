@@ -117,6 +117,11 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(interview::get_words),
         )
         .route("/media/:object_id/chapters", get(interview::get_chapters))
+        // T-P6-004b. Both are gated on the same 404 `GET /media/:id` uses --
+        // absent, off-disk and denied stay indistinguishable, or these two
+        // routes become the cheapest way to probe a library.
+        .route("/media/:object_id/quotes", get(interview::get_quotes))
+        .route("/media/:object_id/topics", get(interview::get_topics))
         .route(
             "/media/:object_id/subtitles/:document_id.vtt",
             get(subtitles::get_vtt),

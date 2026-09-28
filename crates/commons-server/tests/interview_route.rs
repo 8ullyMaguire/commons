@@ -431,3 +431,267 @@ async fn an_object_with_no_chapters_is_an_empty_list_not_a_404() {
     assert_eq!(json(&r)["chapters"].as_array().unwrap().len(), 0);
     assert_eq!(json(&r)["object_id"], fixture.object_id);
 }
+
+// ---------- quotes and topics (T-P6-004b step 6) ----------
+
+#[tokio::test]
+async fn quotes_and_topics_answer_the_same_404_as_the_other_routes() {
+    // The oracle, extended rather than duplicated. A new route that forgets the
+    // gate is the cheapest way to reopen a library-probing hole, and "I wrote a
+    // test" is not the same as "I added it to the one place the gate is
+    // checked".
+    let app = TestApp::new().await;
+    let denied = media_fixture_denied(&app, b"0123456789").await;
+    seed_transcript(&app, &denied, 4).await;
+    let absent = Uuid::new_v4().to_string();
+
+    for suffix in ["/quotes", "/topics"] {
+        let a = app.get_raw(&format!("/media/{absent}{suffix}")).await;
+        let b = app.get_raw(&format!("/media/{denied}{suffix}")).await;
+        assert_eq!(a.status, StatusCode::NOT_FOUND, "{suffix}");
+        assert_eq!(b.status, StatusCode::NOT_FOUND, "{suffix}");
+        assert_eq!(
+            a.body, b.body,
+            "{suffix} must not distinguish absent from denied: {:?} vs {:?}",
+            String::from_utf8_lossy(&a.body),
+            String::from_utf8_lossy(&b.body)
+        );
+    }
+}
+
+#[tokio::test]
+async fn quotes_are_paged_and_the_flag_says_whether_more_exist() {
+    // The same contract as words, on the same pager. A client that gets a page
+    // with no way to know there is more is a client that shows four moments out
+    // of ten and calls that the whole interview.
+    let app = TestApp::new().await;
+    let fixture = media_fixture(&app, b"0123456789").await;
+    for i in 0..6 {
+        commons_store::interview::propose_quote(
+            app.store(),
+            &fixture.object_id,
+            i * 1000,
+            i * 1000 + 500,
+            &format!("moment {i}"),
+            3.0,
+            commons_store::interview::WeightSource::Human,
+        )
+        .await
+        .expect("the quote the route will list");
+    }
+
+    let first = app
+        .get_json(&format!("/media/{}/quotes?limit=4", fixture.object_id))
+        .await;
+    assert_eq!(json(&first)["quotes"].as_array().unwrap().len(), 4);
+    assert_eq!(json(&first)["total"], 6, "the total, not the page");
+    assert_eq!(json(&first)["truncated"], true);
+
+    let last = app
+        .get_json(&format!(
+            "/media/{}/quotes?offset=4&limit=4",
+            fixture.object_id
+        ))
+        .await;
+    assert_eq!(json(&last)["quotes"].as_array().unwrap().len(), 2);
+    assert_eq!(json(&last)["truncated"], false, "the end is not truncation");
+
+    let past = app
+        .get_json(&format!(
+            "/media/{}/quotes?offset=999&limit=4",
+            fixture.object_id
+        ))
+        .await;
+    assert_eq!(past.status, StatusCode::OK);
+    assert_eq!(json(&past)["quotes"].as_array().unwrap().len(), 0);
+    assert_eq!(json(&past)["truncated"], false);
+}
+
+#[tokio::test]
+async fn a_quote_carries_the_scale_it_was_scored_on() {
+    // Human weights are 1-5 and model weights are 0.0-1.0. A client that reads
+    // `weight` without knowing which is looking at a "3" that could be 3/5 or
+    // 3/1, and the two are not the same claim.
+    let app = TestApp::new().await;
+    let fixture = media_fixture(&app, b"0123456789").await;
+    for (text, weight, src) in [
+        ("a person's highlight", 4.0, commons_store::interview::WeightSource::Human),
+        ("a model's salient span", 0.9, commons_store::interview::WeightSource::Model),
+    ] {
+        commons_store::interview::propose_quote(
+            app.store(),
+            &fixture.object_id,
+            0,
+            100,
+            text,
+            weight,
+            src,
+        )
+        .await
+        .expect("the quote");
+    }
+
+    let r = app.get_json(&format!("/media/{}/quotes", fixture.object_id)).await;
+    let body = json(&r);
+    let quotes = body["quotes"].as_array().unwrap();
+    assert_eq!(quotes.len(), 2);
+
+    let human = quotes
+        .iter()
+        .find(|q| q["text"] == "a person's highlight")
+        .expect("the person's quote");
+    assert_eq!(human["weight_source"], "human");
+    assert_eq!(human["weight"], 4.0);
+
+    let model = quotes
+        .iter()
+        .find(|q| q["text"] == "a model's salient span")
+        .expect("the model's quote");
+    assert_eq!(
+        model["weight_source"], "model",
+        "the stored spelling, not a second vocabulary the client has to know"
+    );
+    assert_eq!(model["weight"], 0.9);
+}
+
+#[tokio::test]
+async fn a_quote_limit_beyond_the_maximum_is_capped_rather_than_honoured() {
+    let app = TestApp::new().await;
+    let fixture = media_fixture(&app, b"0123456789").await;
+    commons_store::interview::propose_quote(
+        app.store(),
+        &fixture.object_id,
+        0,
+        100,
+        "one",
+        1.0,
+        commons_store::interview::WeightSource::Human,
+    )
+    .await
+    .unwrap();
+    // A client asking for a million quotes must not get a million quotes. The
+    // cap is server-side because a client-side one is not enforced.
+    let r = app
+        .get_json(&format!("/media/{}/quotes?limit=1000000", fixture.object_id))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(json(&r)["quotes"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_negative_quote_offset_is_clamped_rather_than_forwarded() {
+    // `LIMIT -1 OFFSET -5` is a syntax error on Postgres and "no limit" on
+    // SQLite, so an unclamped parameter is a 500 on one engine and a full table
+    // read on the other.
+    let app = TestApp::new().await;
+    let fixture = media_fixture(&app, b"0123456789").await;
+    commons_store::interview::propose_quote(
+        app.store(),
+        &fixture.object_id,
+        0,
+        100,
+        "one",
+        1.0,
+        commons_store::interview::WeightSource::Human,
+    )
+    .await
+    .unwrap();
+    let r = app
+        .get_json(&format!("/media/{}/quotes?offset=-5", fixture.object_id))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(json(&r)["quotes"].as_array().unwrap().len(), 1, "clamped to zero");
+}
+
+#[tokio::test]
+async fn an_object_with_no_quotes_is_an_empty_list_not_a_404() {
+    // Most recordings have no quotes yet. A 404 would say "this does not
+    // exist" about a recording that is on screen right now.
+    let app = TestApp::new().await;
+    let fixture = media_fixture(&app, b"0123456789").await;
+    let r = app.get_json(&format!("/media/{}/quotes", fixture.object_id)).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(json(&r)["quotes"].as_array().unwrap().len(), 0);
+    assert_eq!(json(&r)["total"], 0);
+}
+
+#[tokio::test]
+async fn a_model_proposed_topic_says_so() {
+    // §5.15: a model's topic is a suggestion, and the response says so in a
+    // field. A client must not have to infer it from a null confidence or by
+    // parsing a namespace -- the same argument the module already makes for
+    // `confidence: null` vs `0`.
+    let app = TestApp::new().await;
+    let fixture = media_fixture(&app, b"0123456789").await;
+
+    // Two binds, the same two calls a tagger makes: the tag is created with an
+    // `ml:` namespace, then applied to the object.
+    let tag = app
+        .store()
+        .propose_ml_tag("tagger", "climate policy", None, 0.8)
+        .await
+        .expect("the proposed tag");
+    app.store()
+        .apply_tag(&fixture.object_id, &tag.id, Some(0.8), Some("tagger"))
+        .await
+        .expect("apply it to the object");
+
+    let r = app
+        .get_json(&format!("/media/{}/topics", fixture.object_id))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let body = json(&r);
+    let topics = body["topics"].as_array().unwrap();
+    assert_eq!(topics.len(), 1, "{topics:?}");
+    assert_eq!(topics[0]["name"], "climate policy");
+    assert_eq!(
+        topics[0]["proposed"], true,
+        "a model's topic is marked as proposed, not left for the client to infer"
+    );
+    assert_eq!(topics[0]["confidence"], 0.8);
+    assert_eq!(topics[0]["source"], "tagger");
+}
+
+#[tokio::test]
+async fn a_person_applied_topic_is_not_marked_proposed() {
+    // The other half of the same field: `proposed: false` has to be reachable,
+    // or the flag only ever carries one value and proves nothing.
+    let app = TestApp::new().await;
+    let fixture = media_fixture(&app, b"0123456789").await;
+    // `create_tag` produces a CANONICAL tag: `Tag::new` is the only constructor
+    // and it hard-codes the namespace, which is what makes "a person chose
+    // this name" a property of the type rather than of this call site.
+    let tag = app
+        .store()
+        .create_tag("a topic I chose", None)
+        .await
+        .expect("a canonical tag");
+    app.store()
+        .apply_tag(&fixture.object_id, &tag.id, None, None)
+        .await
+        .expect("apply it to the object");
+
+    let r = app
+        .get_json(&format!("/media/{}/topics", fixture.object_id))
+        .await;
+    let body = json(&r);
+    let topics = body["topics"].as_array().unwrap();
+    assert_eq!(topics.len(), 1, "{topics:?}");
+    assert_eq!(topics[0]["name"], "a topic I chose");
+    assert_eq!(topics[0]["proposed"], false, "a person's tag is not a proposal");
+    assert_eq!(
+        topics[0]["confidence"], serde_json::Value::Null,
+        "and it has no confidence, which is not the same as 0.0"
+    );
+}
+
+#[tokio::test]
+async fn an_object_with_no_topics_is_an_empty_list_not_a_404() {
+    // The same call `get_chapters` makes, and the same reason: an untagged
+    // library is the normal state, not a missing object.
+    let app = TestApp::new().await;
+    let fixture = media_fixture(&app, b"0123456789").await;
+    let r = app.get_json(&format!("/media/{}/topics", fixture.object_id)).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(json(&r)["topics"].as_array().unwrap().len(), 0);
+}
