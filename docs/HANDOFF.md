@@ -272,9 +272,11 @@ a regex that quietly stopped matching.
 were sitting in `commons-scan` and `commons-store` while every run before them
 reported green. See section 9 below.
 
-`crates/commons-api` is still an empty placeholder crate. There is no GraphQL
-server, so the UI is verified against a stubbed network. That is Phase 4+ work
-and is not a Phase 2 blocker.
+`crates/commons-api` is no longer an empty placeholder — that was written at
+Phase 2 and is now false. T-P6-008 (at `2eb3fff`) put a `POST /graphql` server
+in `commons-server` and the wire types in `commons-api`, and one UI test now
+runs the real client against the real binary. The rest still stub the network,
+which is correct for testing the client and wrong for testing the wire.
 
 ## Phase 5 so far
 
@@ -1755,12 +1757,21 @@ Four things worth knowing before touching this:
   modal is `showModal()`, so a toast raised while it is open is unclickable, and
   item 3's own code already says why ("a toast that outlives a window the user
   has closed reports a failure against a dialog they are no longer in"). There
-  is also no GraphQL operation, and that is true of
-  every write in the project: `client.ts` is the only module allowed to name
-  `fetch`, the whole client is queries, there is no mutation document in
-  `ui/src/lib/api/` at all, and there is no server-side schema in the repo.
-  `bulk_apply_tag` has no route either. Worth knowing before someone reads the
-  missing undo route as a hole in item 7 rather than a phase-wide gap.
+  **This paragraph was written when the claim was true, and it is now false in
+  three places**, so read it as history rather than as state. When written: there
+  was no mutation document in `ui/src/lib/api/`, no server-side schema, and no
+  route for `bulk_apply_tag`. T-P6-008 (`2eb3fff`) changed all three —
+  `BULK_APPLY_TAG` and `CREATE_ALL_MISSING` are mutation documents in
+  `client.ts`, the schema is hand-rolled in `commons-api/src/graphql.rs`, and
+  `bulkApplyTag` resolves at `POST /graphql`.
+
+  The *invariant* is the part that still holds, and it is the reason the gap
+  was ever real: `client.ts` is still the only module allowed to name `fetch`,
+  because a second HTTP path is a second place for a base URL, a header, an
+  auth token and an error shape to disagree. The missing **undo** route is
+  still a hole, and it is now the only write in the project with nowhere to go —
+  worth knowing before someone reads it as a phase-wide gap rather than one
+  missing operation.
 
 Expiry is enforced **on read** (`undoable()` and `undo()`), never by a sweeper —
 a sweeper is a second thing to run, schedule, and notice has stopped. Rows are

@@ -6,6 +6,56 @@ The API is versioned by path prefix. `/api/v1/*` is the public surface for
 scripts and external tools; `docs/spec/t-p6-007-public-api.md` §6 states the
 compatibility promise in prose, and this file records what changed.
 
+## Unreleased — T-P6-008
+
+`POST /graphql`, the UI's transport. Not a public surface: see "Deliberately NOT
+under `/api/v1`" below.
+
+### Added
+
+- `POST /graphql` — the four operations the UI actually sends (`Objects`,
+  `BulkTags`, `BulkApplyTag`, `CreateAllMissing`), resolved by hand.
+
+  **No GraphQL library.** `async-graphql` 7.x declares axum 0.8 and this
+  workspace is on 0.7, so the wire types and the operation-name dispatcher are
+  hand-rolled. The cost is real and is stated in `commons-api/src/graphql.rs`:
+  there is no selection-set enforcement, so a document requesting a field the
+  server does not serve receives `null` rather than a validation error. The
+  alternative was 149 compile errors.
+
+- The consent gate is resolved **once**, in the handler, and passed into each
+  resolver. `BulkTags` is the one operation that takes no caller, and the reason
+  is written down at the call site rather than left to be inferred: `tag` has no
+  `consent_record` join, because nothing about a tag is something a share link
+  could grant or withhold.
+
+### Changed
+
+- Three client fields are **refused rather than ignored**, each with a message
+  naming the field. `BulkTarget.excluded` and `PageInput.tiers` because honouring
+  them is impossible without either writing a filter the store does not have or
+  quietly widening what a caller sees, and `PageInput.after` because no cursor
+  encoding exists anywhere in this workspace. A malformed filter or an unknown
+  sort key is likewise an error: the default for a malformed filter is
+  "everything", which is a privacy bug wearing a parse error's clothes.
+
+### Deliberately NOT under `/api/v1`
+
+- `/graphql` is the UI's transport, not a versioned script surface. Putting it
+  inside `v1_routes()` would add a `POST` endpoint to the OpenAPI document that
+  carries the compatibility promise. A test asserts `/api/v1/graphql` is a 404.
+
+### Known gaps
+
+- `after:` paging is not available. Keyset paging has never crossed a process
+  boundary here — `Cursor`'s only constructor is `pub(crate)` and nothing
+  serializes one — so a non-null `after` is an explicit error and the page
+  cursors come back `null`. The first page, which is what the UI shows on load,
+  works. Spec §4b.
+- `create_all_missing` threads the caller through and **the store ignores it**
+  (`let _ = caller;`). Honest for a local library, wrong for a shared one, and
+  this is the first GraphQL write path.
+
 ## 1.0.0 — T-P6-007
 
 The first versioned public API.

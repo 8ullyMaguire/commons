@@ -574,13 +574,57 @@ built on the strength of that measurement would have been a **second** HTTP
 surface for a feature that deliberately has one, and it would have looked
 correct.
 
-## Step 6 — the two missing routes' tests must not be a mock's job
+## Step 6 — DONE (`2eb3fff`): the two missing routes' tests must not be a mock's job
 
 `client.ts` has a `setTransport` injector, and its default transport is a real
 `fetch`. **After this ticket, at least one test must exercise the real client
 against the real server** — that is the difference between "the schema compiles"
 and "the UI works". If the UI test harness cannot reach a live server cheaply,
 that is a finding to record, not a reason to fall back to the mock.
+
+## Step 6 amendment — what the live test found, and what it had to be careful about
+
+`ui/tests/graphql-live.test.ts` spawns the real `commons-server` binary on a
+real port and points the real `query()` at it. 7 tests, all passing.
+
+**The mutation is what makes it a test rather than a demonstration.** Removing
+`#[serde(rename_all = "camelCase")]` from `ObjectConnection` — one attribute —
+kills exactly the three tests that read the connection and leaves the four that
+do not touch it green. That discrimination is the evidence: the suite is
+measuring the wire, not re-asserting the client's own TypeScript types back at
+itself.
+
+Three things it had to get right, each of which would have made the test pass
+for the wrong reason or fail for a confusing one:
+
+1. **It imports `OBJECTS_QUERY`, `fetchObjects` and `fetchTags`** rather than
+   retyping them. A copy is a second statement of the query: someone widens the
+   selection set and the copy keeps passing against the old shape — which is
+   the exact drift the step exists to catch.
+2. **It spawns with `--mode library --data-dir <tempdir>`.** Without `--mode`
+   the server picks its own default, which on a developer machine is the *real*
+   library directory. A test that reads someone's actual library is a test that
+   must never be able to fail silently.
+3. **It polls `/healthz` rather than sleeping**, because a fixed sleep is either
+   too short (a flake on a busy machine) or too long (a slow suite), and the
+   failure mode of the first is a test that fails for no reason and gets
+   deleted.
+
+**Two of my own assertions were wrong before they were right**, both the same
+mistake: `fetchObjects` returns `{ objects: Connection }` and `fetchTags`
+returns `{ tags: [...] }` — the GraphQL data shape with the wrapper included.
+Asserting `res.nodes` instead of `res.objects.nodes` would have been a test that
+passes by throwing `undefined is not an array`: a failure that reads as a server
+bug and is actually a misread of the client's return type.
+
+**It skips loudly when the binary is absent**, printing the path it looked for.
+The Postgres parity tests refuse to skip and are right to, because the ticket
+*is* the equality; the difference is that this one needs a build artifact, and a
+build is not the ticket. A silent skip is the one option both harnesses reject.
+
+**`run-tests.mjs` ignores its filter argument** — `run-tests.mjs graphql-live`
+runs all 925 UI tests. Pre-existing, recorded rather than fixed; changing the
+runner is not this ticket's business.
 
 ## Step 7 — gate, docs, tag, mirror
 
@@ -658,3 +702,47 @@ git rev-list --count HEAD..origin/main   # 0
 `git -c diff.external= diff` is required on this host — `git diff` is
 configured with `diff.external = difft` and a plain `git diff | grep -c '^+'`
 returns **0** for a large diff.
+
+---
+
+## Step 7 result
+
+**Gate, run twice as this step requires** (a flake at 2% per spawn shows up in
+roughly one run in three, and a second run is the only thing separating "fixed"
+from "not observed yet"):
+
+```
+RUN 1 GATE PASS: passed=1919 failed=0 ignored=1 suites=109
+RUN 2 GATE PASS: passed=1919 failed=0 ignored=1 suites=109
+```
+
+`ignored=1` is a `commons_media` **doc-test** (`subtitles::to_store_cues`), not
+a lost test. Worth recording that an earlier count reported `ignored=0`: the
+awk sums fields after splitting on spaces and semicolons, which is off by one
+on a `0 passed` line, and the error is silent. The log is the authority — a gate
+that reports a number its own input contradicts is worse than no gate.
+
+**Two suites only run with `DATABASE_URL` set**, and the harness refuses to skip:
+
+> DATABASE_URL must be set and reachable. §3.5 makes two engines a property of
+> the product, so a parity test that skips when the database is absent is a
+> parity test that never runs — and the whole ticket is the equality.
+
+That is correct and worth keeping, but it means a bare `cargo test --workspace`
+in a shell without the env var **aborts the run partway through** rather than
+finishing with 7 failures — which is how the count came to be 1550 once instead
+of 1919. The abort is the harness working; the confusing part is that it looks
+like a crash.
+
+**Docs updated in this step:** `docs/spec/t-p6-008-graphql.md` (status CLOSED,
+§2 corrected, §4b added, F8 added to the follow-up table), `CHANGELOG.md` (an
+`Unreleased — T-P6-008` section stating the no-library cost and the three
+refused fields), `README.md` (the endpoint, why it is not under `/api/v1`, and
+the live test — whose existence is the only reason the UI's wire format is
+tested at all).
+
+**F8 is the follow-up this ticket hands on**, and it is the only one that needs
+its own ticket rather than a row in a table: a cursor encoding is a new public
+constructor on a type built so it cannot be hand-assembled, and it must bind the
+cursor to its sort because §5.16 makes the sort attacker-controlled. Getting
+that wrong does not produce an error; it produces the wrong page, silently.

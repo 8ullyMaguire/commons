@@ -7,6 +7,29 @@ with §3.3 (the shell is a browser), §5.16 (filters in the URL) and §14.1
 **Predecessor:** T-P6-007 closed the REST boundary and named this as its
 deferred GraphQL half. This ticket is that half.
 
+**Status: CLOSED at `2eb3fff`** — steps 1–6 of 7 shipped; step 7 (gate, docs,
+tag, mirror) is this commit. `POST /graphql` serves the four operations, with
+the consent gate resolved once in the handler and passed down.
+
+Two things this ticket changed about its own scope, both found by reading rather
+than by planning, and both written up where the next reader will hit them:
+
+- **§4b — `after:` is not implemented, and cannot be without a store change.**
+  Keyset paging has never crossed a process boundary in this codebase:
+  `Cursor`'s only constructor is `#[cfg(test)] pub(crate)`, `from_row` is
+  `pub(crate)`, and nothing in the workspace serializes a `Cursor` at all. A
+  non-null `after` is an explicit error rather than a silently ignored field,
+  and `startCursor`/`endCursor` come back `null`.
+- **§2 — the "two missing REST routes" finding was wrong.** `/api/bulk/tag` and
+  `/api/thumbs` appear in `client.ts` exactly once each, and both are inside
+  **comments**. There is nothing to build; both removals were deliberate.
+
+**No GraphQL library.** `async-graphql` 7.x requires axum 0.8 and this
+workspace is on 0.7, so the wire types and the operation-name dispatcher are
+hand-rolled. The cost is stated in `commons-api/src/graphql.rs` and it is real:
+there is no selection-set enforcement, so a document asking for a field the
+server does not serve is answered with `null` rather than a validation error.
+
 ---
 
 ## 1. What the ticket says, and what is actually there
@@ -306,6 +329,17 @@ does:
 | F5 | `performers` | `appearance` → `performer` exists; nothing aggregates per object, and a naive join multiplies rows and breaks the keyset page |
 | F6 | `folder` | no folder column. `file.path` holds it, and one file backs N objects via `segment`, so which file's path is the folder? |
 | F7 | `producer` | needs a join to `producer.name`. Cheap, and the **one** of these that is genuinely just this ticket's work — except that it adds a join to the hot-path page query, which §5.16's own reasoning about the page query's shape should rule on first |
+| F8 | `after` (the cursor) | **not a field — a store capability that does not exist.** §4b has the measurement. The encoding must bind the cursor to the sort it was made for, because `Sort::new` appends `id` as a trailing tiebreak and so the arity is a function of the sort |
+
+**F8 is a different kind of entry from F1–F7 and is called out for that reason.**
+Those are questions about which column answers a field, and each is answerable
+by a decision plus a query. F8 needs a new public constructor on a type whose
+entire design premise is that it *cannot* be hand-assembled, and it needs a
+security judgement attached: `sort.rs` states that §5.16's shareable URLs make
+the sort name attacker-controlled by construction, so a cursor encoding that
+does not bind the cursor to its sort is the "wrong arity, silently wrong page"
+failure reintroduced at the wire. **It deserves its own ticket and its own
+review**, not a line in a table of field questions.
 
 **F7 is deliberately not done in this ticket even though it is the easiest**,
 because a join added to the page query is a change to the hot path that

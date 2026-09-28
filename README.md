@@ -362,8 +362,26 @@ when the last one finishes.
 The frontend shell (`ui/`) is a SvelteKit 2 + TypeScript app with one GraphQL
 client, a keyset-paginated store, and a fixed-row-height virtualized grid. Every
 list view lives entirely in the query string, so a filter is a bookmark. A
-5,000-item library renders 11 rows and 55 tiles; 43 unit tests and 11 browser
+5,000-item library renders 11 rows and 55 tiles; 925 unit tests and 11 browser
 tests cover it, and 0 type errors.
+
+**The UI talks to `POST /graphql`, and there is no GraphQL library behind it.**
+`async-graphql` 7.x requires axum 0.8 and this workspace is on 0.7, so the four
+operations the UI sends — `Objects`, `BulkTags`, `BulkApplyTag`,
+`CreateAllMissing` — are resolved by hand. The cost is real and worth stating
+before anyone reaches for the library: there is no selection-set enforcement, so
+a document asking for a field the server does not serve is answered with `null`
+rather than a validation error. The endpoint is deliberately **not** under
+`/api/v1`; that prefix carries the compatibility promise documented in
+`docs/spec/t-p6-007-public-api.md` §6, and a UI transport does not belong inside
+it.
+
+One of those seven UI test files is not a mock: `ui/tests/graphql-live.test.ts`
+spawns the real `commons-server` binary on a real port and points the real
+client at it over real HTTP. Everything else injects a transport, which is
+correct for testing the client and wrong for testing the *wire* — two
+implementations written by the same author agree with each other whether or not
+either matches what ships.
 
 ## The scanner
 
