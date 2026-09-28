@@ -455,3 +455,35 @@ tests by name-filtering the log returned **41** — it had matched 12 unrelated
 tests in other crates whose names also begin `one_`/`two_`. The suite was never
 short; the count was. A count that over-reports is the same failure as one that
 under-reports, and both come from trusting a filter instead of a reconciliation.
+
+## Step 7 — DONE: docs, tag, mirror
+
+- `CHANGELOG.md` — a section for the cursor wire form. **No version bump**:
+  versioning here is by path prefix, `/api/v1` is the public surface, and no
+  route changed. Same reasoning T-P6-008 applied when it refused `1.1.0`.
+- `docs/spec/t-p6-008-graphql.md` — the F8 row struck, with the sharper hazard
+  (cross-sort, not cross-type) and the fact that wiring `after:` into the
+  resolver is spec §7 and still to do.
+- `docs/HANDOFF.md` — new item 11, "A grep that matches a comment is not a
+  search for the thing". The section was headed "Six" while holding nine items
+  before this; it is now **Eleven**, and the numbering was verified sequential
+  rather than assumed. A heading that miscounts its own list is the same class
+  of defect as a test that cannot fail.
+- Tag `phase-7-130-cursor-wire`, pushed to origin and forgejo.
+- Mirrored to `~/code/rust/commons` by `git merge --ff-only`, then **verified by
+  comparing `HEAD^{tree}`** on both, which is the only check that means anything.
+
+**One operational note worth keeping.** `pushall.sh` reported
+
+```
+remote: main is at 14e5a9350, local is 8dd63b475 -- NOT PUSHED
+==> one or both remotes did not receive everything. Not reporting success.
+```
+
+after forgejo returned `HTTP 524` — a gateway timeout, not a rejection. The tag
+had landed; the branch had not. **The script refused to report success, which is
+the whole reason the failure was visible**: a wrapper that trusted its own exit
+code would have let this go unnoticed and the next loop would have found a
+half-pushed tag. One retry succeeded, and `git ls-remote` on both remotes then
+agreed with local at `8dd63b475`. Verified by `ls-remote`, not by the push's
+exit code.
