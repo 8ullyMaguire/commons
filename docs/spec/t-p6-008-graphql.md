@@ -51,6 +51,49 @@ part of Playwright fixture names and route stubs. They must not be counted
 toward this ticket's surface, and a plan that says "11 files" will send the next
 person looking for 11 files to change.
 
+## 1b. The field mapping is the ticket, and it is mostly `null`
+
+The previous version of this section claimed the client's `ObjectRow` "mirrors
+the store's structs field for field". **It does not, and the gap is the real
+work.** Measured at `09176b8`:
+
+| the client selects | the store can supply | how |
+|---|---|---|
+| `id`, `kind`, `title` | yes | `ObjectRow` already carries them |
+| `date` | yes | `object.date`, **not selected today** |
+| `organized` | yes | `object.organized`, not selected today |
+| `rating` | **no** | `object.rating_sum` / `rating_count` are a sum and a count; there is no `rating` column, and `rating.stars` is per-account, so a single `rating` is an aggregate that does not exist yet |
+| `coverPath` | **no** | no such column anywhere; `custom_field`/`custom_field_value` is the only place it could live, and nothing defines those field names |
+| `width`, `height` | **no** | no such columns on `object`, `file` or `segment` |
+| `durationMs` | **partial** | `segment.start_ms`/`end_ms` exist; the object-level duration is a sum over segments, which is a second query per row |
+| `producer` | **wrong type** | `object.producer_id` is an **id**; the client wants a **name**, which needs a join to `producer.name` |
+| `performers` | **no** | `appearance`/`performer` exist as tables; nothing aggregates them per object |
+| `tags` | **yes, cheaply** | `object_tag` → `tag.name`; one extra join on the same page query |
+| `folder` | **no** | there is no folder column; `file.path` holds it, one file to N objects |
+| `totalCount` | **no, by design** | spec §3 |
+
+**So `Objects` cannot be answered from `query_sorted` as it stands.** Five
+fields have no source at all, and the two that do have a source need work
+(`rating` is an aggregate that must be defined; `producer` is a join; `duration`
+is a per-row sum). Returning `null` for a field the client asked for is
+*correct GraphQL* and is also what the client's own types permit
+(`string | null`, `readonly string[]`) — so the honest first implementation
+serves the 3 real fields plus the 2 cheap joins, and returns `null` for the 6
+that do not exist yet.
+
+**That is a decision, and it is reversible, and it is the owner's to see.** The
+alternative is to widen the ticket into "define the derived object projection"
+— `rating`'s aggregate rule, where `coverPath` comes from, whether
+`durationMs` is a segment sum — which is a §5.16/§8.1 design question about
+metadata, not a transport question. The spec's position: **build the transport,
+return `null` where the data layer has no answer, and write down each `null`
+as a named follow-up** rather than inventing a definition to fill the shape.
+Invention here would be worse than a visible `null`, because an invented rating
+rule that disagrees with the UI's would be a data bug wearing a transport's
+clothes.
+
+The list of named follow-ups is §7.
+
 ## 2. The three paths the UI calls over REST, and why GraphQL is not replacing them
 
 `client.ts` also calls `fetch()` directly for these, and they are **not**
@@ -105,9 +148,10 @@ reading it sees a field that is always null, and a server author reading
 wanted, §5.16's answer is a filter-scoped count endpoint the UI calls
 separately and caches, not a field on every page.
 
-## 4. Everything underneath already exists
+## 4. What exists underneath, and what does not
 
-The ticket is small because Phase 9 and T-P6-007 built its substrate:
+The substrate is real, and the earlier version of this section was too
+generous about it. Measured at `09176b8`:
 
 | Need | Exists | Where |
 |---|---|---|
@@ -116,13 +160,26 @@ The ticket is small because Phase 9 and T-P6-007 built its substrate:
 | consent filtering | yes | `commons-store/src/filter_ast.rs` (`to_sql`, `consent_clause`) |
 | request → identity | yes | `commons-server/src/identity.rs` (`caller_from_request`) |
 | filter in / cursor out of the URL | yes | `filter_ast::to_url` / `from_url` |
+| tag list, bulk tag write, create-missing | yes | `Store::all_tags`, `bulk_apply_tag`, `create_all_missing` |
+| **the other 11 object fields the client selects** | **no** | §1b and §5b |
 
-**Nothing here is a new query engine.** The GraphQL layer is a translation
-between the client's documents and `query_sorted`, plus the consent gate. A
-plan that proposes a query planner, an N+1 batcher, or a dataloader is solving a
-problem this repository does not have, and each of those is a new place for a
-consent bug to hide — which is the one category of bug this codebase cannot
+**No query engine is being built.** The GraphQL layer is a translation from
+the client's documents to `query_sorted`, plus two cheap joins, plus the consent
+gate. A plan that proposes a planner, an N+1 batcher or a dataloader is solving
+a problem this repository does not have — and each would be a new place for a
+consent bug to hide, which is the one category of bug this codebase cannot
 afford another of.
+
+**But `query_sorted` is also a narrower door than it looks.** Its own module
+docs make it the *only* sanctioned object read, enforced by a test that scans
+for `SELECT ... FROM object` elsewhere. So the two joins §1b wants
+(`object_tag` → `tag.name`, and later `producer.name`) cannot be added as a
+separate query the resolver runs — that would be a second object read, and the
+invariant test would correctly fail. **They must extend the single SELECT
+inside `query.rs`,** which makes them a change to the sanctioned read and
+therefore a change to the thing §14.1 is about. That is the real integration
+cost of this ticket, and it is why `tags` is in scope but `producer` is not:
+one join, in the one place it is allowed, or none.
 
 ## 5. Dependency decision — MEASURED: `async-graphql` is not usable, and the answer is a hand-rolled resolver
 
@@ -174,15 +231,47 @@ they are the trap this ticket's predecessor fell into:
    only when real code used the extractor. **`cargo build` on a crate that does
    not use the integration is not a test of the integration.**
 
+## 5b. The named follow-ups this ticket creates
+
+Each is a real question about the data layer, deliberately **not** answered
+here, and each is a `null` the client will render as absent data until someone
+does:
+
+| # | Field | The question that has to be answered first |
+|---|---|---|
+| F1 | `rating` | is it the mean of `rating.stars`, `rating_sum / rating_count`, or a settled `field_proposal`? The three disagree when ratings are one-sided, and the UI shows one number |
+| F2 | `coverPath` | there is no column. `custom_field` is the only candidate and nothing names the field. Is it a path, an artifact id, or a `/media/:id/thumb` URL? |
+| F3 | `width`, `height` | no column on `object`, `file` or `segment`. Is this from probe metadata (which means a rescan populates it) or from `custom_field`? |
+| F4 | `durationMs` | `segment.start_ms`/`end_ms` exist. Is the object duration `max(end_ms)` over segments, or the sum? A clip with overlapping segments differs by more than rounding |
+| F5 | `performers` | `appearance` → `performer` exists; nothing aggregates per object, and a naive join multiplies rows and breaks the keyset page |
+| F6 | `folder` | no folder column. `file.path` holds it, and one file backs N objects via `segment`, so which file's path is the folder? |
+| F7 | `producer` | needs a join to `producer.name`. Cheap, and the **one** of these that is genuinely just this ticket's work — except that it adds a join to the hot-path page query, which §5.16's own reasoning about the page query's shape should rule on first |
+
+**F7 is deliberately not done in this ticket even though it is the easiest**,
+because a join added to the page query is a change to the hot path that
+`query.rs` documents at length, and "it was only one join" is how a page query
+becomes slow. It belongs with F1–F6 in a single "object projection" decision
+rather than arriving as a lone join with no rule behind it.
+
+**None of these blocks the UI.** Every one is `string | null` or `number |
+null` or `[]` in the client, and the grid renders absent data as absent. What
+they block is *correctness of a number or a path*, which is why they are written
+down rather than filled in.
+
 ## 6. Acceptance
 
 1. All four operations resolve against a live server, and each is proved by a
    test that starts the real router — not a fake transport.
 2. `Objects` is **consent-filtered through `caller_from_request`**, and a test
-   proves three different callers get three different `totalCount`-shaped
-   answers from the same query. This is the criterion that matters: a GraphQL
-   resolver that reads the store without the caller is a data leak wearing a
-   query's clothes, and the REST routes already gate every read.
+   proves three different callers get three different answers from the same
+   query. This is the criterion that matters: a GraphQL resolver that reads the
+   store without the caller is a data leak wearing a query's clothes, and the
+   REST routes already gate every read.
+
+   And every one of the client's 14 selected fields is **accounted for** —
+   served from a real column, or explicitly `null` with the reason named in §1b.
+   A field that is silently absent is a field the client renders as "no cover"
+   forever. The test is `every_field_the_client_selects_is_served_or_null_on_purpose`.
 3. `totalCount` resolves to `null`, with `totalCount_is_null_rather_than_a_count_star`
    asserting it and a comment in the schema saying why.
 4. Paging is keyset end to end: no `OFFSET` anywhere in the resolver, asserted
