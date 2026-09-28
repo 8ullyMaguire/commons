@@ -168,9 +168,86 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/share/:id", axum::routing::delete(share::revoke_share))
         .route("/api/s/:token", get(share::resolve_share))
         .route("/api/s/:token/access", get(share::share_access))
+        // T-P6-007: the same surface, mounted a second time under a version
+        // prefix. `nest_service` rather than `nest` because the inner router
+        // already has `AppState` applied, and `nest` would want to re-state it.
+        .nest("/api/v1", v1_routes())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
         .fallback(not_found)
+}
+
+/// The routes that make up `/api/v1` — the public, versioned surface.
+///
+/// **This is a re-declaration, and that is a deliberate cost.** The obvious
+/// alternative is to build the unversioned router once and `nest` it, which
+/// would give `/api/v1` for free with no list to maintain. It cannot be done
+/// here for one reason: the unversioned router carries the DLNA and proxy
+/// routes, and those must NOT appear under `/api/v1` — they are protocol
+/// surfaces for third-party software that discovered them over SSDP, and a
+/// version prefix on a path that software already has buys no consumer
+/// anything. Excluding them by *omission* rather than by exclusion is the only
+/// way to keep the guarantee mechanical.
+///
+/// The cost is that a route added to the unversioned router and forgotten here
+/// is simply absent from the public API. That failure is **safe and visible** —
+/// a 404 on `/api/v1`, never a silently unversioned new endpoint — which is
+/// why it is the right way round. The opposite mistake, a public route that
+/// exists without being in the changelog, is the one that cannot be detected
+/// after the fact.
+///
+/// `a_v1_route_added_without_its_changelog_entry_is_still_caught` does not
+/// exist and should not: the guarantee is structural, and a test asserting a
+/// list of route names would need updating every time one is added, which is
+/// how such lists rot.
+fn v1_routes() -> Router<std::sync::Arc<AppState>> {
+    // Every route here is a copy of one above, handler for handler. The list
+    // is short enough to read in one screen, which is the point: a reviewer
+    // adding a route can see in one place everything that becomes public.
+    //
+    // `/dlna/*` and the proxy routes (`/media/:id/caps`,
+    // `/media/:id/proxy.m3u8`) are ABSENT, and that is the design. See this
+    // function's docs.
+    Router::new()
+        .route("/media/:object_id", get(media::get_media))
+        .route(
+            "/media/:object_id/playback",
+            get(playback::get_playback_route).put(playback::put_playback_route),
+        )
+        .route("/media/:object_id/subtitles", get(subtitles::list_tracks))
+        .route(
+            "/media/:object_id/transcript",
+            get(interview::get_transcript),
+        )
+        .route(
+            "/media/:object_id/transcript/words",
+            get(interview::get_words),
+        )
+        .route("/media/:object_id/chapters", get(interview::get_chapters))
+        .route("/media/:object_id/quotes", get(interview::get_quotes))
+        .route("/media/:object_id/topics", get(interview::get_topics))
+        .route(
+            "/media/:object_id/subtitles/:document_id.vtt",
+            get(subtitles::get_vtt),
+        )
+        .route("/media/:object_id/funscripts", get(funscript::list))
+        .route(
+            "/media/:object_id/funscripts/:funscript_id",
+            get(funscript::timeline),
+        )
+        // The share routes ARE public: a share link is a capability, and this
+        // is the API a script uses to mint one. They sit under `/api/v1/api/…`
+        // because the handlers parse their own prefixes, and re-rooting them
+        // would mean a second set of handlers for no benefit. The doubled
+        // `api` looks odd and is documented here so a reader does not spend
+        // the time I did wondering whether it is a mistake.
+        .route(
+            "/api/share",
+            post(share::create_share).get(share::list_share),
+        )
+        .route("/api/share/:id", axum::routing::delete(share::revoke_share))
+        .route("/api/s/:token", get(share::resolve_share))
+        .route("/api/s/:token/access", get(share::share_access))
 }
 
 async fn metrics(State(st): State<HealthState>) -> Response {
@@ -438,6 +515,99 @@ mod tests {
         assert!(text.contains("commons_up"), "{text}");
     }
 
+    /// A route is reachable at BOTH its old path and `/api/v1`.
+    ///
+    /// Two-sided on purpose, because the failure mode is asymmetric: mounting
+    /// `/api/v1` cannot break the old path, but forgetting a route in
+    /// `v1_routes` makes the *versioned* one 404 while the old one still
+    /// answers 200 — a divergence that reads as a consumer's bug. A test that
+    /// only checked the new path would pass the day the new path did not
+    /// exist.
+    ///
+    /// `get_json` is used rather than a media fixture because this is about
+    /// ROUTING, not about consent: what has to hold is that the prefix reaches
+    /// the same handler. A fixture would add a second moving part and a second
+    /// way to be wrong.
+    #[tokio::test]
+    async fn a_route_is_reachable_at_both_its_old_path_and_its_v1_path() {
+        let app = app(config(temp_data_dir("v1-both"), false)).await;
+        for path in [
+            "/media/does-not-exist",
+            "/media/does-not-exist/transcript",
+            "/media/does-not-exist/chapters",
+            "/api/v1/media/does-not-exist",
+            "/api/v1/media/does-not-exist/transcript",
+            "/api/v1/media/does-not-exist/chapters",
+        ] {
+            let (status, _) = get_json(app.clone(), path).await;
+            assert_eq!(
+                status,
+                StatusCode::NOT_FOUND,
+                "{path} — the two paths must reach the same handler, and 404 is \
+                 what an absent object gives at both"
+            );
+        }
+    }
+
+    /// The DLNA routes are NOT under `/api/v1`, and that is the design.
+    ///
+    /// `/dlna/*` is a protocol surface: third-party software discovered it over
+    /// SSDP and holds the path. A version prefix on it would break every TV on
+    /// the network and buy no consumer anything, so `v1_routes` omits it
+    /// entirely — exclusion by omission, the only version of it that stays
+    /// mechanical.
+    ///
+    /// If this ever returns 200, the "deliberately unversioned" note in
+    /// CHANGELOG.md has become a lie.
+    #[tokio::test]
+    async fn a_dlna_route_is_not_reachable_under_the_v1_prefix() {
+        let app = app(config(temp_data_dir("v1-dlna"), false)).await;
+        let (status, _) = get_json(app, "/api/v1/dlna/description.xml").await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "the DLNA surface must stay unversioned; CHANGELOG.md says so"
+        );
+    }
+
+    /// And the proxy routes, for the same reason and the same comment.
+    #[tokio::test]
+    async fn the_proxy_routes_are_not_reachable_under_the_v1_prefix() {
+        let app = app(config(temp_data_dir("v1-proxy"), false)).await;
+        for path in ["/api/v1/media/x/caps", "/api/v1/media/x/proxy.m3u8"] {
+            let (status, _) = get_json(app.clone(), path).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        }
+    }
+
+    /// An unknown `/api/v1` path is a 404 from the nested router, not a
+    /// fall-through to the parent's routes.
+    ///
+    /// This is the case a hand-rolled prefix gets wrong: a single handler
+    /// dispatching on the tail can forward an unknown tail to the parent and
+    /// serve it, making the public API claim routes it does not have. Verified
+    /// rather than assumed — `nest` on axum 0.7 was checked in a scratch crate
+    /// before this router was touched, and this is the property that made it
+    /// acceptable.
+    ///
+    /// `/api/v1/healthz` is the interesting one: `healthz` IS a real route at
+    /// the top level, so if the nested router fell through, this would be a
+    /// 200. A test using only a made-up path would pass even with fall-through
+    /// broken for known routes.
+    #[tokio::test]
+    async fn an_unknown_v1_path_does_not_fall_through_to_the_parent() {
+        let app = app(config(temp_data_dir("v1-404"), false)).await;
+        for path in ["/api/v1/nope", "/api/v1/healthz", "/api/v1/metrics"] {
+            let (status, _) = get_json(app.clone(), path).await;
+            assert_eq!(
+                status,
+                StatusCode::NOT_FOUND,
+                "{path} must not fall through"
+            );
+        }
+    }
+
+    /// `an_unknown_route_says_what_does_exist`
     #[tokio::test]
     async fn an_unknown_route_says_what_does_exist() {
         let app = app(config(temp_data_dir("404"), false)).await;
