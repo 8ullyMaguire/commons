@@ -3025,7 +3025,55 @@ plugin settings UI with defaults (#5002, #6899), error surfacing as toasts
 **Accept:** a documented-API test that the full manifest schema validates both
 a valid and an invalid plugin; a test that installing a plugin with an
 undeclared capability fails to instantiate.
-**Done when:** the undeclared-capability test exists.
+
+**Progress: done** (2026-09-28, `704c422`). Both criteria exist:
+`tests/manifest_schema.rs` (19 tests) drives one `GOOD` fixture through one
+`verdict` helper, and A2's undeclared-capability test is in it alongside its
+other half — a manifest requesting nothing is schema-valid and refused by the
+policy layer, so the two layers are asserted to agree.
+
+**The ticket's file list was misleading and the spec says so.** `api.rs` and
+`ui/src/lib/plugins/` are still absent, and the ticket reads as a
+build-from-scratch. It is not: the *policy* layer was already complete and
+tested (29 tests). What was missing was a validation step between reading a
+manifest and acting on it.
+
+**Measured, not assumed.** A probe fed twelve malformed manifests to
+`serde_json::from_str::<Manifest>` and **eleven were accepted** — including
+`id: "../../etc/passwd"`, `api_version: 0` and a misspelled field name. Only a
+wrong-*typed* value was caught. That table is in the spec and the HANDOFF,
+because it is the evidence, and without it the work looks like "add some
+validation" — which is how you add `deny_unknown_fields`, close one row of
+twelve, and stop. Step 1 was committed alone for exactly that reason.
+
+**Two decisions the ticket text does not state:**
+
+1. **Validation lives on `Manifest`, callable without an `Installer`,** not
+   inside `install` — §5.18.1's disclosure panel reads a manifest *before*
+   anyone installs, and a check that only exists on the install path is a check
+   the other two paths do not have. It is called first in `install`, because
+   reporting a malformed manifest as "wrong API version" sends the author to
+   fix the wrong thing.
+2. **A privileged request is well-formed, not malformed.** §11.4 expects the
+   first-party scrapers to ask for internet access, and a schema check that
+   refused `network` would make "grant me the network" impossible — a user can
+   only grant what a validator let through.
+   `a_user_who_grants_the_network_gets_a_working_plugin` is the test that
+   makes this real; without it the other two would pass under a validator that
+   refuses privileged requests outright.
+
+`semver` and `uuid` were declared in `commons-plugin/Cargo.toml` and called
+nowhere, and both are removed. `is_semver` is hand-rolled because the version
+rule belongs next to the test that pins it — and it was **wrong on first
+write**: `!p.starts_with('0')` also refuses a bare `"0"`, so it rejected
+`1.0.0` and `0.1.0`. Caught by running all 22 inputs through a Python
+transcription before writing it down; those 22 are now the test table.
+
+**Still not here, deliberately:** the WASM sandbox (§4.4) — a validated
+manifest is not a sandboxed plugin, and the `HostApi` trait is something
+native code does not have to go through. Nor `ui/src/lib/plugins/`, the
+services tab (#5118), settings UI (#5002, #6899), toasts (#1695), reinstall
+(#6987) or the pre-install backup (#6185).
 
 ### T-P6-007 — Public API, SDK, Jellyfin compatibility
 

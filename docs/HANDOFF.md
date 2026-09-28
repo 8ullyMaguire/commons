@@ -2359,3 +2359,123 @@ else re-discovers, forever.
   nobody "fixes" it by adding a dependency for no test gain.
 - **A cast route.** §11.2's Chromecast/AirPlay targets are a separate ticket;
   the DLNA half of the same paragraph is what this did.
+
+---
+
+## The plugin manifest boundary: a validated manifest is not a sandboxed plugin
+
+T-P6-006, platform spec §11.4. The ticket named `commons-plugin/src/api.rs`
+and `ui/src/lib/plugins/`, which makes it look like a build from scratch. It
+is not — `lib.rs` is 735 lines and the *policy* layer was already done and
+well covered: `Capability` with its §5.18.1 disclosure sentences,
+`HostPolicy` where `deny` always wins, `PluginKind`, `InstallError` with five
+distinct refusal reasons, `API_VERSION`, the `HostApi` trait with runtime
+capability enforcement, and `Installer::install`. 29 tests, all passing.
+
+Both accept criteria were unmet, and for one reason: **there was no validation
+step between reading a manifest and acting on it.**
+
+### The probe, which is the reason this ticket is worth reading
+
+Twelve malformed manifests fed to `serde_json::from_str::<Manifest>`. Eleven
+were **accepted**:
+
+```
+ACCEPTED misspelled field:  ... ,"capabilties":[]
+ACCEPTED empty id:          id=""
+ACCEPTED empty version:     version=""
+ACCEPTED empty name:        name=""
+ACCEPTED id with a path:    id="../../etc/passwd"
+ACCEPTED locator requesting network
+ACCEPTED api_version 0      ACCEPTED api_version 9999
+ACCEPTED duplicate capabilities
+ACCEPTED unknown nested hook key
+REJECTED capability as an object      <- the only one
+```
+
+Only a wrong-**typed** value was caught, because only that is something serde
+checks by construction. Everything semantically wrong passed.
+
+`Manifest` is documented as "parsed from the plugin's own metadata; every
+field is untrusted" — and had no validation at all. This is the same class as
+T-P6-005's `deny_unknown_fields` finding one level down: there it was a nested
+config block silently ignoring a typo; here it is the trust boundary of a
+plugin sandbox.
+
+**And note what the probe is evidence OF, not just evidence of a bug.** A
+manifest that validates is not a manifest that is sandboxed. There is no WASM
+isolation in this ticket and none in the crate's enforcement path — the
+`HostApi` trait is a Rust trait, which a native plugin does not have to go
+through. §11.4's promise is "the host enforces them at instantiation", and
+that is now true of the *capability set*. It is not true of arbitrary code
+execution. Anyone reading this crate as a security boundary should know which
+half they have.
+
+### The decision: validation on `Manifest`, not inside `install`
+
+`install` is where the temptation is to put it, and it is the wrong place.
+`install` is not the only thing that reads a manifest — §5.18.1's disclosure
+panel renders one *before* anyone decides to install, and a future gallery
+listing parses them all. A check that only exists on the install path is a
+check the other two paths do not have.
+
+It is called **first** in `install`, and the ordering is load-bearing: a
+malformed manifest reported as "wrong API version" sends the author to fix
+the wrong thing, and an id of `../../etc/passwd` reaching the duplicate-id
+check has already been recorded in a BTreeSet under a path-shaped key —
+which is the shape a future uninstall (#6987) will look up.
+
+### What validation deliberately does NOT do
+
+It does not refuse a manifest for asking for a privileged capability. A
+manifest asking for `network` is **well-formed**; whether the user grants it
+is `HostPolicy`'s business, and §11.4 expects the first-party scrapers to ask
+for internet access. Conflating schema with policy would make "grant me the
+network" impossible — a user can only grant what a validator let through.
+
+Three tests hold that line, and the third is the one that matters:
+`a_user_who_grants_the_network_gets_a_working_plugin`. Without it, the first
+two would pass under a validator that refuses privileged requests outright,
+and the scraper plugins §11.4 names would be uninstallable.
+
+A related distinction the tests pin, because I got it wrong first: the default
+policy refuses `network` as `NoCapabilities`, not `Denied`. `first_party()`
+has an empty `deny` set, so `network` is simply not in `allow` and the
+intersection is empty. `Denied` means the operator forbade it and no grant
+will help; `NoCapabilities` means you asked for something nobody here allows.
+
+### The bug `is_semver` had on first write
+
+`!p.starts_with('0')` looks like "no leading zeros" and also refuses a bare
+`"0"`, so it rejected `1.0.0` and `0.1.0` — every real version. The rule is
+`p.len() > 1 && p.starts_with('0')`.
+
+Found by transcribing the function to Python and running all 22 inputs
+*before* writing it into the plan: three failed, two of them the most
+important inputs there are. A validator that rejects `1.0.0` fails loudly and
+would have cost one test cycle — the point of checking first is that it did
+not. Those 22 cases are now the test table, including an Arabic-Indic digit,
+because `char::is_numeric()` accepts those and `is_ascii_digit` does not, and
+a version nobody can read aloud is a version that gets mis-sorted.
+
+### `semver` and `uuid` were declared and called nowhere
+
+`is_semver` is hand-rolled rather than using the crate, and both were removed
+from `Cargo.toml` rather than kept "in case". Verified with
+`grep -rE '\bsemver::|\buuid::' src/`, not assumed. The plan had called the
+existing `semver` dependency "a lucky break" — it was dead weight, and
+`unused_crate_dependencies` would have flagged it the moment it was enabled.
+
+### Not in this ticket
+
+- **The WASM sandbox** (§4.4). This ticket is the manifest boundary. Sandboxing
+  is a separate and much larger piece of work, and pretending a validated
+  manifest is a sandboxed plugin is how you ship a plugin API that reads as
+  safe and is not.
+- **`ui/src/lib/plugins/`**, the services tab (#5118), settings UI with
+  defaults (#5002, #6899), toasts (#1695), reinstall (#6987), the pre-install
+  backup (#6185). All named in the plan's file list; all UI or workflow
+  features that need a UI to verify. This ticket makes the boundary they will
+  sit on trustworthy.
+- **Scraper plugin features** — rate limits, pinned scrapers, overlap warnings,
+  the health dashboard. They consume this API rather than needing it changed.
