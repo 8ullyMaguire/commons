@@ -82,30 +82,69 @@ a workspace-wide change — 22 routes, every handler's extractors, `tower-http`,
 recorded here as the option this ticket chose not to take, and why: one
 GraphQL surface is not worth a framework migration across the whole server.
 
-## Step 1 — baseline, in a worktree, before the first commit
+## Step 1 — the baseline, and why a worktree is the wrong tool here
 
-Three tickets in a row shipped a wrong delta because the baseline was measured
-after the work started.
+**This step was written to use a git worktree with its own `CARGO_TARGET_DIR`
+under `/tmp`, and running it filled `/tmp` and produced a green that was not a
+test result at all.** Record what happened, because the plan's own advice was
+the bug:
+
+- `/tmp` on this host is a **16G tmpfs**, and a full second `target/` for this
+  workspace is **5.7G** on its own. One baseline worktree took the filesystem
+  to 100%.
+- The run then failed with `No space left on device (os error 28)` during
+  linking, `exit=101`, and **zero `test result` lines** — so the counting
+  pipeline printed `passed= failed= ignored= suites=` and a `grep` for `FAILED`
+  returned **0**. Both halves of the gate said "fine" on a run that executed no
+  tests at all.
+
+**A gate that reports success on a run that produced no results is the
+dangerous shape**, and it is the same one as the `1884/0/1/106`-with-2-FAILED
+run: the number is what a careful session checks, and an empty aggregate looks
+like a suspiciously clean zero rather than like a failure.
+
+### Do this instead
+
+**`/home/alvaro/.cargo-target/commons` is already built for this workspace, and
+it is 86G on a real disk with 565G free.** A second target directory is a
+second full build of ~40 crates for no information the shared one does not give.
+
+So: **measure the baseline by diff, and reuse the shared target.**
 
 ```sh
 cd ~/code-local/rust/commons
-git worktree add /tmp/commons-base-a238cca a238cca
-export CARGO_TARGET_DIR=/tmp/commons-base-target
-export PGHOST=127.0.0.1 PGUSER=postgres PGPASSWORD=smoke_pw
-export DATABASE_URL="postgres://postgres:smoke_pw@127.0.0.1/postgres"
-cd /tmp/commons-base-a238cca && cargo test --workspace 2>&1 \
-  | grep -E "^test result" | awk '{p+=$4;f+=$6;i+=$8;s++} END {print "passed="p" failed="f" ignored="i" suites="s}'
+# What did the last commit actually touch? If no .rs, the test counts are
+# unchanged BY CONSTRUCTION and no baseline run is needed at all.
+git diff --name-only <previous-tag-commit> HEAD | grep -c '\.rs$'
 ```
 
-**Expected: `passed=1887 failed=0 ignored=1 suites=107`.** Record the number in
-the vault before proceeding. Then remove the worktree and its target dir —
-together, or the disk fills:
+At `285f7f0` that is how the numbers were established:
+
+| | |
+|---|---|
+| `a238cca` (T-P6-007 closed, tagged) | **1887 passed / 0 failed / 1 ignored, 107 suites** |
+| `09176b8` vs `a238cca` | 2 files, both `.md`, **0 `.rs`** → counts identical by construction |
+| `285f7f0` (this commit) | **1892 / 0 / 1 / 108** — +5 tests, +1 suite, exactly `object_read_invariant.rs` |
+
+**If a commit touches no `.rs`, do not spend 20 minutes and 5.7G re-measuring
+what cannot have changed.** A diff of file paths is a stronger instrument than a
+re-run when the question is "did the test count move", because it answers the
+actual question rather than a proxy for it.
+
+**When a baseline run genuinely is needed** (the commit touches `.rs`), use the
+shared target dir and the existing worktree, and clean up the worktree in the
+same breath:
 
 ```sh
-cd ~/code-local/rust/commons
-git worktree remove /tmp/commons-base-a238cca --force
-rm -rf /tmp/commons-base-target
+export CARGO_TARGET_DIR=/home/alvaro/.cargo-target/commons
+git worktree add /tmp/commons-baseline <commit>
+# ... run, count, grep FAILED ...
+cd ~/code-local/rust/commons && git worktree remove /tmp/commons-baseline --force
 ```
+
+**Never point `CARGO_TARGET_DIR` at `/tmp` on this host.** Check `df -h /tmp`
+first if in doubt; it is tmpfs, so a full build is a full *RAM* cost, and the
+failure mode is a linker error that reads nothing like a disk problem.
 
 ## Step 2 — `commons-api`: the schema types and the dispatcher
 
@@ -485,18 +524,46 @@ that is a finding to record, not a reason to fall back to the mock.
 
 ```sh
 cd ~/code-local/rust/commons
+# NEVER under /tmp: it is a 16G tmpfs and this workspace's target/ is 5.7G.
 export CARGO_TARGET_DIR=/home/alvaro/.cargo-target/commons
 export PGHOST=127.0.0.1 PGUSER=postgres PGPASSWORD=smoke_pw
 export DATABASE_URL="postgres://postgres:smoke_pw@127.0.0.1/postgres"
 cargo fmt --all
-cargo build --workspace                                   # 0 errors
-cargo test --workspace 2>&1 | grep -E "^test .* FAILED|panicked at"   # must print nothing
-cargo test --workspace 2>&1 | grep -E "^test result" \
-  | awk '{p+=$4;f+=$6;i+=$8;s++} END {print "passed="p" failed="f" ignored="i" suites="s}'
-cargo test --workspace 2>&1 | grep -E "^test .* FAILED|panicked at"   # AGAIN: a flake hides here
-cargo clippy --workspace --all-targets 2>&1 | grep -cE "^warning: [a-z]"   # 0
-cargo fmt --all -- --check                                            # clean
+cargo build --workspace                                    # 0 errors
+cargo test --workspace > /tmp/ws1.log 2>&1
 ```
+
+**Then the gate, and it is a script rather than a pipeline because a pipeline
+cannot fail on "nothing ran":**
+
+```sh
+#!/bin/sh
+# $1 = a log file from `cargo test`
+log=$1
+suites=$(grep -cE "^test result" "$log")
+if [ "$suites" -eq 0 ]; then
+  echo "GATE FAIL: no test results in $log -- the run produced nothing."
+  echo "The usual cause is a build that died before running (disk, linker)."
+  grep -E "^error|No space left|could not compile" "$log" | head -5
+  exit 1
+fi
+grep -E "^test .* FAILED|panicked at" "$log" && { echo "GATE FAIL: FAILED lines"; exit 1; }
+grep -E "^test result" "$log" \
+  | awk '{p+=$4;f+=$6;i+=$8;s++} END {print "passed="p" failed="f" ignored="i" suites="s}'
+echo "GATE PASS: $suites suites, no FAILED lines"
+```
+
+**Run it twice** — `for n in 1 2; do cargo test --workspace > /tmp/ws$n.log 2>&1; ./gate.sh /tmp/ws$n.log; done` —
+because a flake at 2% per spawn shows up in roughly one run in three and a
+second run is the only thing separating "fixed" from "not observed yet".
+
+**The `suites -eq 0` check is the point, and it is here because it was needed
+here.** Step 1's baseline run died with `No space left on device` during
+linking, printed `exit=101` and **zero** `test result` lines — so the counting
+pipeline printed `passed= failed= ignored= suites=` and the `FAILED` grep
+returned **0**. Both halves of a two-part gate reported success on a run that
+executed no tests. An empty aggregate is not a clean zero; it is a missing
+measurement, and a gate that cannot tell them apart will happily certify one.
 
 **Run the suite TWICE and grep for `FAILED` both times, not just the totals.**
 One run of this workspace printed a perfect `1884/0/1/106` *and* 2 FAILED lines
