@@ -721,7 +721,17 @@ from "not observed yet"):
 ```
 RUN 1 GATE PASS: passed=1919 failed=0 ignored=1 suites=109
 RUN 2 GATE PASS: passed=1919 failed=0 ignored=1 suites=109
+RUN 3 GATE PASS: passed=1919 failed=0 ignored=1 suites=109
 ```
+
+**Three, not two, and the reason is in this file.** The first pair of runs at this
+baseline was run 1 clean and run 2 `FAILED` — `a_submitted_job_is_a_row`, a
+second-resolution timestamp compared against a value stamped before the write.
+Two runs is the minimum that can find a 50% flake; a ~2% one needs a run count
+where the chance of missing it is small, and one extra run costs nothing but
+wall time. **The second pair is what certifies the fix**, and it is three clean
+runs rather than two because the fix was itself motivated by a two-run
+disagreement.
 
 `ignored=1` is a `commons_media` **doc-test** (`subtitles::to_store_cues`), not
 a lost test. Worth recording that an earlier count reported `ignored=0`: the
