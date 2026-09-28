@@ -11,7 +11,7 @@ one.
 
 ---
 
-## Step 0 — ANSWERED: `async-graphql` cannot be used. This is the third fallback branch.
+## Step 0 — DONE (`93cd787`): ANSWERED — `async-graphql` cannot be used. This is the third fallback branch.
 
 **Step 0 was run. `async-graphql` is unusable against this workspace, and the
 branch it selects is the third one: a hand-rolled resolver over `serde_json`.**
@@ -82,7 +82,7 @@ a workspace-wide change — 22 routes, every handler's extractors, `tower-http`,
 recorded here as the option this ticket chose not to take, and why: one
 GraphQL surface is not worth a framework migration across the whole server.
 
-## Step 1 — the baseline, and why a worktree is the wrong tool here
+## Step 1 — DONE (`93cd787`): the baseline, and why a worktree is the wrong tool here
 
 **This step was written to use a git worktree with its own `CARGO_TARGET_DIR`
 under `/tmp`, and running it filled `/tmp` and produced a green that was not a
@@ -146,7 +146,7 @@ cd ~/code-local/rust/commons && git worktree remove /tmp/commons-baseline --forc
 first if in doubt; it is tmpfs, so a full build is a full *RAM* cost, and the
 failure mode is a linker error that reads nothing like a disk problem.
 
-## Step 2 — `commons-api`: the schema types and the dispatcher
+## Step 2 — DONE (`93cd787`): `commons-api`: the schema types and the dispatcher
 
 `commons-api` currently holds `claim.rs` and a lib.rs that says it holds "HTTP
 and GraphQL surfaces" and holds neither. It becomes the GraphQL crate. That is
@@ -540,7 +540,7 @@ passed-through caller with `crate::media::local_caller()` — the exact defect t
 module docs warn about — kills it at that `assert_ne!`. (The first mutation
 attempt did not compile; a mutation that fails to build proves nothing.)
 
-## Step 5 — ANSWERED: there is no REST gap. Spec §2's measurement was wrong.
+## Step 5 — DONE (`19e0fa2`): ANSWERED — there is no REST gap. Spec §2's measurement was wrong.
 
 Spec §2 recorded that "`/api/bulk/tag` and `/api/thumbs` are called by
 `client.ts` and are absent from the router's 22 routes", and step 5 was written
@@ -626,7 +626,7 @@ build is not the ticket. A silent skip is the one option both harnesses reject.
 runs all 925 UI tests. Pre-existing, recorded rather than fixed; changing the
 runner is not this ticket's business.
 
-## Step 7 — gate, docs, tag, mirror
+## Step 7 — DONE (`a25176f`, `phase-7-120-graphql-operations`): gate, docs, tag, mirror
 
 ```sh
 cd ~/code-local/rust/commons
