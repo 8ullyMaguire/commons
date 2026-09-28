@@ -353,7 +353,7 @@ could plausibly show it. This is what the client expects: `query()` reads
 `errors` and surfaces the message, and a 500 would lose the message behind a
 transport-level failure.
 
-## Step 3 — `commons-server`: the resolvers, the gate, and the limits
+## Step 3 — DONE (`14ccfa5`): `commons-server`: the resolvers, the gate, and the limits
 
 ### 3a. Identity, and why there is no `caller()` helper to fall back on
 
@@ -466,7 +466,7 @@ arbitrary queries. `a_deeply_nested_query_is_rejected` and
 a test shows the UI's own `OBJECTS_QUERY` tripping one, raise the limit rather
 than narrowing the document, and say so in the commit.
 
-## Step 4 — the tests, and what each one is for
+## Step 4 — DONE (`2235d39`): the tests, and what each one is for
 
 New file `crates/commons-server/tests/graphql_route.rs`, using the existing
 `TestApp` harness (it lives in `tests/support/mod.rs` and a `src/` test cannot
@@ -497,6 +497,48 @@ everyone, and a test that only checks "a query returns something" would pass.
 Use `ViewDownload` × `unverified` for the positive case — the same combination
 T-P6-007's handoff records as the one that works, because a fixture of only
 publicly-visible tiers cannot test a permission.
+
+### Step 3/4 amendments — two things the plan assumed that were not true
+
+**1. `after:` was assumed decodable. It is not, and cannot be without a store
+change.** The plan's step 3 lists "`decode_cursor` — a cursor of the wrong arity,
+or unparseable" as though decoding were a small function. Reading the store
+instead of planning found: `Cursor`'s only constructor is `#[cfg(test)]
+pub(crate)`, `Cursor::from_row` is `pub(crate)`, and **nothing in the workspace
+serializes a `Cursor` at all** — the filter has `to_url`/`from_url`, the cursor
+has neither, because no surface has ever needed one. Keyset paging has never
+crossed a process boundary. So a non-null `after` is an **explicit error** and
+`startCursor`/`endCursor` come back `null`; the encoding is its own ticket,
+because a cursor's arity is a function of the sort (`Sort::new` appends `id` as
+the trailing tiebreak), so an encoding that does not bind the cursor to its sort
+reintroduces at the wire the "wrong arity, silently wrong page" failure the type
+was built to prevent. Spec §4b has the full reasoning. The first page — what the
+UI shows on load — works.
+
+**2. Two client fields are refused rather than ignored, and the plan did not
+name either.** `BulkTarget.excluded` (the store's `Target` has no exclusion
+list, and ignoring a field that looks like a filter is how a bulk edit touches
+something the user protected) and `PageInput.tiers` (a narrowing hint the consent
+clause already implies; applying a client-supplied tier list on top would be a
+*widening* dressed as a filter). Both are errors with messages naming the
+field. `decode_filter`/`decode_sort` also **error rather than default**, because
+the default for a malformed filter is "everything" and that is a privacy bug
+wearing a parse error's clothes.
+
+**3. The consent test was itself wrong on its first run, and that is the most
+useful thing this step produced.** It used a headerless request as the
+"anonymous" caller. A headerless request **is** the local owner
+(`identity.rs`: the fallback is "the absence of a design, named so that it
+shows up in a diff when credentials arrive"), so the owner and the "anonymous"
+caller were the same caller and the assertion was vacuous — the leak it was
+meant to catch would have passed. Anonymous means a well-formed bearer token
+naming no grant. The fix puts `assert_ne!` on the two id lists *before* the
+substantive assertions, so a caller that stops being consulted is reported as
+"the identity layer is not being consulted at all" rather than blamed on the
+consent clause. And the test is **mutation-proven**: replacing the
+passed-through caller with `crate::media::local_caller()` — the exact defect the
+module docs warn about — kills it at that `assert_ne!`. (The first mutation
+attempt did not compile; a mutation that fails to build proves nothing.)
 
 ## Step 5 — the REST routes the UI already calls and the server does not serve
 
