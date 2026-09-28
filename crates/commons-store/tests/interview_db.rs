@@ -898,3 +898,281 @@ async fn a_non_finite_weight_is_refused() {
         }
     });
 }
+
+// ---------- speaker cluster proposals (T-P6-004b step 5) ----------
+
+/// A person cluster, optionally seen in `object_id`.
+///
+/// An `appearance` row is what ties a cluster to an object at all -- there is
+/// no `object_id` on `person_cluster` -- so a cluster with no appearance is
+/// one that cannot legitimately be proposed for any transcript, and the
+/// cross-object test below is meaningless without it.
+async fn cluster_seen_in(
+    store: &commons_store::db::Store,
+    uid: Uuid,
+    object_id: Option<&str>,
+) -> String {
+    let cid = format!("pc-{uid}");
+    let now = chrono::Utc::now().to_rfc3339();
+    macro_rules! go {
+        ($p:expr, $numbered:literal) => {{
+            let sql = if $numbered {
+                "INSERT INTO person_cluster (id, state, created_at, updated_at)
+                 VALUES ($1, 'anonymous', $2, $3)
+                 ON CONFLICT (id) DO UPDATE SET updated_at = EXCLUDED.updated_at"
+            } else {
+                "INSERT INTO person_cluster (id, state, created_at, updated_at)
+                 VALUES (?, 'anonymous', ?, ?)
+                 ON CONFLICT (id) DO UPDATE SET updated_at = excluded.updated_at"
+            };
+            sqlx::query(sql)
+                .bind(&cid)
+                .bind(&now)
+                .bind(&now)
+                .execute($p)
+                .await
+                .expect("the person cluster the proposal names");
+            if let Some(oid) = object_id {
+                // `source` is NOT NULL with no default. A fixture that omits it
+                // fails on Postgres with a NOT NULL violation naming a column
+                // the fixture never mentioned.
+                let sql = if $numbered {
+                    "INSERT INTO appearance (id, object_id, cluster_id, source, created_at)
+                     VALUES ($1, $2, $3, $4, $5)
+                     ON CONFLICT (id) DO UPDATE SET object_id = EXCLUDED.object_id"
+                } else {
+                    "INSERT INTO appearance (id, object_id, cluster_id, source, created_at)
+                     VALUES (?, ?, ?, ?, ?)
+                     ON CONFLICT (id) DO UPDATE SET object_id = excluded.object_id"
+                };
+                sqlx::query(sql)
+                    .bind(format!("ap-{uid}"))
+                    .bind(oid.to_string())
+                    .bind(&cid)
+                    // A recogniser, not a human: this is the face the cluster
+                    // was built FROM, and conflating the two would make "was
+                    // this a merge or a detection" unanswerable.
+                    .bind("test-recogniser")
+                    .bind(&now)
+                    .execute($p)
+                    .await
+                    .expect("the appearance that scopes the cluster to an object");
+            }
+        }};
+    }
+    match store {
+        commons_store::db::Store::Sqlite(p) => go!(p, false),
+        commons_store::db::Store::Postgres(p) => go!(p, true),
+    }
+    cid
+}
+
+/// `appearance_count` for a cluster -- the thing a merge would move and a
+/// proposal must not.
+async fn appearance_count(store: &commons_store::db::Store, cluster_id: &str) -> i64 {
+    use sqlx::Row;
+    macro_rules! go {
+        ($p:expr) => {{
+            let r = sqlx::query("SELECT appearance_count FROM person_cluster WHERE id = $1")
+                .bind(cluster_id)
+                .fetch_one($p)
+                .await
+                .expect("the cluster row");
+            r.try_get::<i64, _>("appearance_count")
+                .expect("appearance_count is an integer")
+        }};
+    }
+    match store {
+        commons_store::db::Store::Sqlite(p) => go!(p),
+        commons_store::db::Store::Postgres(p) => go!(p),
+    }
+}
+
+/// A transcript, its words, and a cluster seen in its object -- the common
+/// setup of every proposal test.
+///
+/// The transcript is WRITTEN here rather than returned for the test to write,
+/// because `replace_transcript` is async and fallible: called as a bare
+/// statement it is never awaited, nothing lands, and the failure surfaces later
+/// as "no transcript tr-<uuid>" pointing at the wrong function entirely.
+async fn interview_with_a_seen_person(
+    s: &commons_store::db::Store,
+) -> (TranscriptRow, String) {
+    let uid = Uuid::new_v4();
+    let row = transcript(s, uid).await;
+    replace_transcript(s, &row, &words(4), &windows(1))
+        .await
+        .expect("the transcript the proposal attaches to");
+    let cid = cluster_seen_in(s, uid, Some(&row.object_id)).await;
+    (row, cid)
+}
+
+#[tokio::test]
+async fn a_speaker_cluster_proposal_is_proposed_not_applied() {
+    // The invariant of the whole step. Automatic cluster merging is
+    // unrecoverable once a client has rendered a merged person card (spec
+    // 4.4), so a proposal must leave PersonCluster EXACTLY as it found it.
+    both_engines!(|s| {
+        let (row, cid) = interview_with_a_seen_person(&s).await;
+
+        let before = appearance_count(&s, &cid).await;
+        commons_store::interview::propose_speaker_cluster(&s, &row.id, "SPEAKER_00", &cid)
+            .await
+            .expect("a cluster seen in this object is proposable");
+
+        assert_eq!(
+            appearance_count(&s, &cid).await, before,
+            "proposing a merge must not perform one"
+        );
+
+        // And it IS recorded, as a proposal a human can act on.
+        let props = commons_store::interview::speaker_cluster_proposals(&s, &row.id)
+            .await
+            .expect("read the proposals back");
+        assert_eq!(props.len(), 1, "one voice was seen: {props:?}");
+        assert_eq!(props[0].0, "SPEAKER_00");
+        assert_eq!(props[0].1.as_deref(), Some(cid.as_str()));
+    });
+}
+
+#[tokio::test]
+async fn proposing_the_same_voice_twice_is_one_proposal() {
+    // A transcript is diarised more than once, and the second run is not a
+    // second person. Re-proposing overwrites rather than duplicating.
+    both_engines!(|s| {
+        let (row, cid) = interview_with_a_seen_person(&s).await;
+
+        for _ in 0..3 {
+            commons_store::interview::propose_speaker_cluster(&s, &row.id, "SPEAKER_00", &cid)
+                .await
+                .expect("re-proposing is fine");
+        }
+        let props = commons_store::interview::speaker_cluster_proposals(&s, &row.id)
+            .await
+            .expect("read back");
+        assert_eq!(props.len(), 1, "one voice, however many runs: {props:?}");
+    });
+}
+
+#[tokio::test]
+async fn a_voice_with_no_proposal_still_lists_with_nothing_proposed() {
+    // NULL and "proposed" have to be distinguishable, or a client cannot show
+    // "unassigned" without inferring it from an absent row.
+    both_engines!(|s| {
+        let (row, cid) = interview_with_a_seen_person(&s).await;
+
+        commons_store::interview::propose_speaker_cluster(&s, &row.id, "SPEAKER_01", &cid)
+            .await
+            .unwrap();
+        // A second voice the diariser heard but nobody has proposed for.
+        let sql = "INSERT INTO interview_speaker (transcript_id, speaker_key)
+                   VALUES ($1, 'SPEAKER_00')
+                   ON CONFLICT (transcript_id, speaker_key) DO NOTHING";
+        macro_rules! go {
+            ($p:expr) => {{
+                sqlx::query(sql)
+                    .bind(&row.id)
+                    .execute($p)
+                    .await
+                    .expect("the diariser's own speaker row");
+            }};
+        }
+        match &s {
+            commons_store::db::Store::Sqlite(p) => go!(p),
+            commons_store::db::Store::Postgres(p) => go!(p),
+        }
+
+        let props = commons_store::interview::speaker_cluster_proposals(&s, &row.id)
+            .await
+            .expect("read back");
+        let unproposed: Vec<&String> =
+            props.iter().filter(|p| p.1.is_none()).map(|p| &p.0).collect();
+        assert_eq!(
+            unproposed, vec!["SPEAKER_00"],
+            "an unproposed voice lists with None, not as an absent row: {props:?}"
+        );
+    });
+}
+
+#[tokio::test]
+async fn a_cluster_from_another_object_is_refused() {
+    // A cluster id from another library is not a wrong answer, it is another
+    // library's answer. Accepting it links a voice in one interview to a face
+    // in another -- the same cross-object leak
+    // `a_correction_is_scoped_to_one_object` catches for corrections.
+    both_engines!(|s| {
+        let (row, _) = interview_with_a_seen_person(&s).await;
+        let elsewhere = make_object(&s, Uuid::new_v4()).await;
+        let foreign = cluster_seen_in(&s, Uuid::new_v4(), Some(&elsewhere)).await;
+
+        let e = commons_store::interview::propose_speaker_cluster(
+            &s, &row.id, "SPEAKER_00", &foreign,
+        )
+        .await
+        .expect_err("a person from another object is not proposable here");
+        assert!(
+            format!("{e}").contains("no appearance in this transcript's object"),
+            "and the error says why, rather than 'no such cluster': {e}"
+        );
+
+        let props = commons_store::interview::speaker_cluster_proposals(&s, &row.id)
+            .await
+            .expect("read back");
+        assert!(props.is_empty(), "nothing was written: {props:?}");
+    });
+}
+
+#[tokio::test]
+async fn a_missing_transcript_and_a_missing_cluster_are_told_apart() {
+    // Three different bugs -- no transcript, no cluster, wrong object -- and
+    // one "no such cluster" message for all three sends whoever is debugging
+    // this to the wrong table.
+    both_engines!(|s| {
+        let (row, cid) = interview_with_a_seen_person(&s).await;
+
+        let e = commons_store::interview::propose_speaker_cluster(
+            &s, "tr-does-not-exist", "SPEAKER_00", &cid,
+        )
+        .await
+        .expect_err("no such transcript");
+        assert!(format!("{e}").contains("transcript"), "{e}");
+
+        let e = commons_store::interview::propose_speaker_cluster(
+            &s, &row.id, "SPEAKER_00", "pc-does-not-exist",
+        )
+        .await
+        .expect_err("no such cluster");
+        assert!(format!("{e}").contains("no person cluster"), "{e}");
+
+        // A cluster nobody has ever seen is refused as out-of-scope, not as
+        // missing: it exists, it just is not in this library.
+        let unseen = cluster_seen_in(&s, Uuid::new_v4(), None).await;
+        let e = commons_store::interview::propose_speaker_cluster(&s, &row.id, "SPEAKER_00", &unseen)
+            .await
+            .expect_err("a cluster with no appearance is not proposable");
+        assert!(format!("{e}").contains("no appearance"), "{e}");
+    });
+}
+
+#[tokio::test]
+async fn a_blank_speaker_or_cluster_names_nothing() {
+    both_engines!(|s| {
+        let (row, cid) = interview_with_a_seen_person(&s).await;
+
+        for blank in ["", "   "] {
+            commons_store::interview::propose_speaker_cluster(&s, &row.id, blank, &cid)
+                .await
+                .expect_err("a blank speaker key names no voice");
+            commons_store::interview::propose_speaker_cluster(&s, &row.id, "SPEAKER_00", blank)
+                .await
+                .expect_err("a blank cluster names no person");
+        }
+        assert!(
+            commons_store::interview::speaker_cluster_proposals(&s, &row.id)
+                .await
+                .unwrap()
+                .is_empty(),
+            "and nothing was written"
+        );
+    });
+}

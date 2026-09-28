@@ -975,6 +975,186 @@ pub async fn quote_count(store: &Store, object_id: &str) -> Result<i64, StoreErr
         Store::Postgres(conn) => go!(conn, true),
     }
 }
+// ---------- speaker cluster proposals (T-P6-004b step 5) ----------
+
+/// Propose that the speaker in one window of one transcript is the person in
+/// `cluster`.
+///
+/// This NEVER merges. Automatic cluster merging is unrecoverable once a client
+/// has rendered a merged person card — the two people are gone from the UI and
+/// only the database remembers they were ever separate (spec §4.4). So the
+/// diariser's opinion lands in `interview_speaker.cluster_id`, and the merge
+/// itself is a human clicking a button.
+///
+/// A NULL `cluster_id` means "not yet proposed", which is the convention the
+/// schema already documents. A non-NULL value is still only a proposal:
+/// nothing here touches `person_cluster.appearance_count` and nothing writes an
+/// `appearance` row, and the tests assert exactly that.
+///
+/// `speaker_key` is the diariser's label for a voice within ONE transcript
+/// ("SPEAKER_00"). It is not stable across transcripts, which is the entire
+/// reason this is a proposal and not an assignment: the same person is
+/// SPEAKER_00 here and SPEAKER_03 there, and nothing but a face can tell you.
+///
+/// Idempotent on (transcript_id, speaker_key): a transcript is diarised more
+/// than once, and the second run is not a second person.
+pub async fn propose_speaker_cluster(
+    store: &Store,
+    transcript_id: &str,
+    speaker_key: &str,
+    cluster_id: &str,
+) -> Result<String, StoreError> {
+    use uuid::Uuid;
+
+    if speaker_key.trim().is_empty() {
+        return Err(StoreError::Invalid {
+            what: "speaker key",
+            why: "a blank speaker key names no voice".to_string(),
+        });
+    }
+    if cluster_id.trim().is_empty() {
+        return Err(StoreError::Invalid {
+            what: "cluster",
+            why: "a blank cluster id names no person".to_string(),
+        });
+    }
+
+    // The cluster must exist AND must belong to the same object as the
+    // transcript. A cluster id from another library is not a wrong answer, it
+    // is another library's answer, and accepting it links a voice in one
+    // interview to a face in another — the cross-object leak
+    // `a_correction_is_scoped_to_one_object` catches for corrections.
+    //
+    // The scoping is checked by JOINing `appearance`, which is what ties a
+    // cluster to an object at all: `person_cluster` has no object_id of its
+    // own, so a check against that table alone would be a check of nothing.
+    const SQL: &str = "\
+INSERT INTO interview_speaker (transcript_id, speaker_key, cluster_id)
+SELECT t.id, {q1}, c.id
+  FROM interview_transcript t, person_cluster c
+ WHERE t.id = {q2}
+   AND c.id = {q3}
+   AND EXISTS (SELECT 1 FROM appearance a
+                WHERE a.cluster_id = c.id AND a.object_id = t.object_id)
+ON CONFLICT (transcript_id, speaker_key) DO UPDATE SET cluster_id = excluded.cluster_id";
+    macro_rules! go {
+        ($p:expr, $numbered:literal) => {{
+            // Three binds, so the placeholders are spelled out rather than
+            // generated: `placeholders(n, ..)` returns the WHOLE list, which
+            // is the wrong shape for markers interleaved with literal SQL.
+            //
+            // `c.id = {q3}` is LOAD-BEARING and was missing the first time.
+            // The inserted `cluster_id` comes from `c.id` in the SELECT, so
+            // without this predicate the statement asked only "does SOME
+            // cluster have an appearance in this object" and then wrote THAT
+            // cluster -- answering "who is in this library" when the caller
+            // asked "is this person in this library". It is the cross-object
+            // leak the test below exists to catch, caught instead in the
+            // implementation, and the first version of it returned Ok for a
+            // cluster from a different object.
+            let (q1, q2, q3) = if $numbered {
+                ("$1", "$2", "$3")
+            } else {
+                ("?", "?", "?")
+            };
+            let sql = SQL.replace("{q1}", q1).replace("{q2}", q2).replace("{q3}", q3);
+            let r = sqlx::query(&sql)
+                .bind(speaker_key)
+                .bind(transcript_id)
+                .bind(cluster_id)
+                .execute($p)
+                .await
+                .map_err(StoreError::Query)?;
+            if r.rows_affected() == 0 {
+                // The SELECT matched nothing. Three causes, three different
+                // bugs, so they are told apart rather than collapsed into one
+                // "no such cluster": a missing transcript, a missing cluster,
+                // and a real cluster from the wrong object.
+                let has_t = sqlx::query_scalar::<_, bool>(
+                    "SELECT EXISTS(SELECT 1 FROM interview_transcript WHERE id = $1)")
+                    .bind(transcript_id)
+                    .fetch_one($p)
+                    .await
+                    .map_err(StoreError::Query)?;
+                if !has_t {
+                    return Err(StoreError::Invalid {
+                        what: "transcript",
+                        why: format!("no transcript {transcript_id}"),
+                    });
+                }
+                let has_c = sqlx::query_scalar::<_, bool>(
+                    "SELECT EXISTS(SELECT 1 FROM person_cluster WHERE id = $1)")
+                    .bind(cluster_id)
+                    .fetch_one($p)
+                    .await
+                    .map_err(StoreError::Query)?;
+                if !has_c {
+                    return Err(StoreError::Invalid {
+                        what: "cluster",
+                        why: format!("no person cluster {cluster_id}"),
+                    });
+                }
+                return Err(StoreError::Invalid {
+                    what: "cluster",
+                    why: format!(
+                        "cluster {cluster_id} has no appearance in this transcript's object"
+                    ),
+                });
+            }
+            Ok(Uuid::new_v4().to_string())
+        }};
+    }
+    match store {
+        // The diagnostic queries inside the macro are written with $1 and
+        // rebound for SQLite: SQLite accepts $1 as a parameter name, so
+        // running that arm on SQLite is correct as written and no `$numbered`
+        // substitution is needed for them.
+        Store::Sqlite(p) => go!(p, false),
+        Store::Postgres(p) => go!(p, true),
+    }
+}
+
+/// What the store believes about the voices in a transcript: the diariser's
+/// label, and the person each was PROPOSED as — never "the person it is".
+///
+/// Named so the difference is impossible to lose. A reader who sees
+/// `speaker_cluster_proposals` knows this is a to-do list; a reader who saw
+/// `speakers` would not.
+pub async fn speaker_cluster_proposals(
+    store: &Store,
+    transcript_id: &str,
+) -> Result<Vec<(String, Option<String>)>, StoreError> {
+    macro_rules! go {
+        ($p:expr, $numbered:literal) => {{
+            let sql = match $numbered {
+                true => "SELECT speaker_key, cluster_id FROM interview_speaker
+                         WHERE transcript_id = $1 ORDER BY speaker_key",
+                false => "SELECT speaker_key, cluster_id FROM interview_speaker
+                          WHERE transcript_id = ? ORDER BY speaker_key",
+            };
+            let rows = sqlx::query(sql)
+                .bind(transcript_id)
+                .fetch_all($p)
+                .await
+                .map_err(StoreError::Query)?;
+            let mut out = Vec::with_capacity(rows.len());
+            for r in &rows {
+                use sqlx::Row;
+                let k: String = r.try_get("speaker_key").map_err(StoreError::Query)?;
+                // Read back as Option, because NULL means "not yet proposed"
+                // and a client has to be able to tell those apart.
+                let c: Option<String> = r.try_get("cluster_id").map_err(StoreError::Query)?;
+                out.push((k, c));
+            }
+            out
+        }};
+    }
+    Ok(match store {
+        Store::Sqlite(p) => go!(p, false),
+        Store::Postgres(p) => go!(p, true),
+    })
+}
+
 
 #[cfg(test)]
 mod quote_weight_tests {
