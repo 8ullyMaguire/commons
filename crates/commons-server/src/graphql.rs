@@ -349,7 +349,7 @@ async fn bulk_apply_tag(state: &AppState, caller: &CallerId, request: &GqlReques
         skipped_invisible: outcome.skipped_invisible,
         requested: outcome.requested,
     };
-    match serde_json::to_value(&result) {
+    match serde_json::to_value(result) {
         Ok(v) => GqlResponse::data(serde_json::json!({ "bulkApplyTag": v })),
         Err(e) => GqlResponse::error(format!("could not encode the bulk result: {e}")),
     }
@@ -409,7 +409,7 @@ async fn create_all_missing(
         existing: outcome.existing,
         refused: outcome.refused,
     };
-    match serde_json::to_value(&result) {
+    match serde_json::to_value(result) {
         Ok(v) => GqlResponse::data(serde_json::json!({ "createAllMissing": v })),
         Err(e) => GqlResponse::error(format!("could not encode the create result: {e}")),
     }
