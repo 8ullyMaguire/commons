@@ -18,6 +18,7 @@
 
 pub mod bulk;
 pub mod create;
+pub mod cursor_wire;
 pub mod db;
 pub mod filter_ast;
 pub mod folders;

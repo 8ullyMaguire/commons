@@ -36,6 +36,35 @@
 use crate::filter_ast::Value;
 use std::fmt;
 
+/// What a sort key's column holds.
+///
+/// Only for checking a decoded cursor. It is not a SQL type system and does not
+/// need to be one: a sort names five columns, three of which are text and one
+/// of which is an integer, and the point is to refuse a cursor whose value
+/// cannot be that column's — not to model SQLite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyType {
+    /// A TEXT column, or one that may be NULL.
+    NullableText,
+    Integer,
+    /// A REAL column. **No `SortKey` produces one today.** It is here so that
+    /// adding a float-valued sort key is not also a change to this module's
+    /// public shape, and so `KeyType` and `Tagged` have the same variants.
+    Real,
+}
+
+impl KeyType {
+    /// In the words a refusal message uses, not a type name: the message is
+    /// read by a person, and "expected an integer" beats "expected Integer".
+    pub(crate) fn type_name(self) -> &'static str {
+        match self {
+            KeyType::NullableText => "a string or null",
+            KeyType::Integer => "an integer",
+            KeyType::Real => "a float",
+        }
+    }
+}
+
 /// Which way one key sorts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortOrder {
@@ -103,6 +132,28 @@ impl SortKey {
             SortKey::Title => "o.title",
             SortKey::Kind => "o.kind",
             SortKey::AddedAt => "o.created_at",
+        }
+    }
+}
+
+impl SortKey {
+    /// What this column holds, for checking a decoded cursor against it.
+    ///
+    /// Beside [`Self::column`] rather than in a `match` inside `key_types`, so
+    /// a new `SortKey` cannot get a column without also getting a type — the
+    /// two are the same piece of knowledge about a column and splitting them is
+    /// how one of them goes stale.
+    fn key_type(self) -> KeyType {
+        match self {
+            // The one sortable key that is not text. `rating_sum` is an
+            // INTEGER, so a cursor carrying a string in this slot is a cursor
+            // that will bind text to an integer column.
+            SortKey::RatingSum => KeyType::Integer,
+            // `o.date` and `o.title` are nullable; `o.kind` and `o.created_at`
+            // are not. `NullableText` covers both because a non-null column
+            // simply never carries the `N` tag, and refusing `N` for a column
+            // that cannot be NULL would be a check with no failure case.
+            _ => KeyType::NullableText,
         }
     }
 }
@@ -213,6 +264,88 @@ impl Sort {
         n * (n + 1) / 2
     }
 
+    /// A short, stable identifier for *this sort*, as its `ORDER BY` text.
+    ///
+    /// This is what binds a cursor to the sort it was made for, and it is
+    /// derived from `order_by()` rather than being a hand-written label per
+    /// sort for one reason: `order_by()` is already the canonical description
+    /// of the sort, and it changes automatically when a `SortKey` is added or a
+    /// direction is flipped. A hand-written label is a second thing to forget,
+    /// and forgetting it is *silent* — which is the one failure mode the
+    /// cursor's whole design exists to prevent. See `cursor_wire.rs`.
+    ///
+    /// FNV-1a rather than `DefaultHasher`, for the reason `stable_usn` already
+    /// records: `DefaultHasher`'s output is unspecified across releases, and
+    /// this value ends up persisted in shareable URLs, where a toolchain bump
+    /// that changed it would invalidate every cursor anyone had saved.
+    ///
+    /// **Eight hex characters is a fingerprint, not a security boundary.** 32
+    /// bits takes a deliberate search to collide, and what this guards is
+    /// *correctness* — a cursor used with the wrong sort — not authority.
+    /// Written down because the next reader will otherwise assume it is
+    /// load-bearing for security, and either strengthen it needlessly or
+    /// weaken it deliberately.
+    pub fn fingerprint(&self) -> String {
+        /// FNV-1a, 64-bit. Written out rather than pulled in: it is four lines
+        /// and a crate that every binary links is a bad place for a dependency
+        /// that saves them.
+        const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+        let mut h = OFFSET;
+        for b in self.order_by().as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(PRIME);
+        }
+        // The LOW 32 bits, explicitly. `{h:08x}` is a *minimum* width, not a
+        // truncation, so it printed all 16 digits of a 64-bit value -- which is
+        // not wrong, just twice the length the spec and the doc comment here
+        // both promise, and a URL parameter that is twice as long as it needs
+        // to be for no benefit. `as u32` is the truncation, made visible.
+        format!("{:08x}", h as u32)
+    }
+
+    /// How many keys a cursor for this sort must carry: the named keys plus
+    /// the `id` tiebreak.
+    ///
+    /// A separate accessor because the *cursor* needs the arity to check a
+    /// decoded value against, and `all_keys()` is private precisely because
+    /// callers were never meant to reproduce the tiebreak themselves.
+    ///
+    /// **No `is_empty`, and clippy is right to ask.** A `Sort` with no keys
+    /// would order by nothing, so it cannot be constructed: the value is
+    /// checked non-empty at construction. An `is_empty` that can only ever
+    /// return `false` is a lie with a doc comment, and the honest fix is to
+    /// say here why there is no such method.
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        self.all_keys().len()
+    }
+
+    /// What each of this sort's keys holds, in `all_keys()` order, paired with
+    /// the column it came from.
+    ///
+    /// `(column, kind)` per key, so a decoded cursor can be checked against the
+    /// sort it claims: a `date_desc` cursor is `[Text, Text]` and a
+    /// `rating_sum` cursor is `[Integer, Text]`, and a cursor carrying the
+    /// wrong tag in slot 0 is refused rather than bound to a column of the
+    /// other type.
+    ///
+    /// **The `id` tiebreak is always `Text`.** It is a TEXT primary key, so a
+    /// cursor whose last value is not a string is wrong regardless of the sort
+    /// — and the check is worth having precisely because that is the slot no
+    /// sort-specific reasoning reaches.
+    pub fn key_types(&self) -> Vec<(&'static str, KeyType)> {
+        let mut out: Vec<(&'static str, KeyType)> = self
+            .keys
+            .iter()
+            .map(|(k, _)| (k.column(), k.key_type()))
+            .collect();
+        // The tiebreak, always TEXT: it is the `id` primary key.
+        out.push(("o.id", KeyType::NullableText));
+        out
+    }
+
     /// The cursor's values, repeated into the order `after_sql` binds them.
     ///
     /// The repetition is the point. `after_sql` mentions key 0 once, key 1
@@ -296,6 +429,36 @@ impl Cursor {
         self.values.len()
     }
 
+    /// The cursor's values, in `all_keys()` order for the sort it was made for.
+    ///
+    /// `pub(crate)` and not public: a caller outside the store needs to *seek*
+    /// with a cursor, not to read one out and build another, and a public
+    /// accessor is a step on the way to a public constructor.
+    pub(crate) fn values(&self) -> &[Value] {
+        &self.values
+    }
+
+    /// A cursor from values that have already been checked against a sort.
+    ///
+    /// `pub(crate)` for the same reason [`Self::values`] is, and this is the
+    /// reason it exists at all: `cursor_wire.rs` decodes a wire value into a
+    /// `Vec<Value>` and needs to put it in a `Cursor`, and making the `values`
+    /// field `pub` would open it to every module in the crate. One named
+    /// constructor says "these were validated" at the call site, which a field
+    /// assignment does not.
+    ///
+    /// The validation is real and is the caller's job: every path here comes
+    /// from [`crate::cursor_wire::Cursor::from_url`], which has already checked
+    /// the arity, the sort fingerprint and every key's type. Nothing in the
+    /// store can reach this with an unvalidated vector.
+    pub(crate) fn from_validated(values: Vec<Value>) -> Self {
+        debug_assert!(
+            !values.is_empty(),
+            "a cursor with no values has no position; the wire decoder refuses it"
+        );
+        Cursor { values }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
@@ -304,6 +467,7 @@ impl Cursor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cursor_wire::CursorError;
 
     #[test]
     fn the_order_always_ends_in_id() {
@@ -421,6 +585,125 @@ mod tests {
             Value::Str("o-7".to_string()),
         ]);
         s.after_binds(&wrong);
+    }
+
+    #[test]
+    fn a_cursor_from_another_text_sort_is_refused_rather_than_seeking() {
+        // THE test for this module. Both sorts are [Str, Str] and arity 2.
+        //
+        // Step 0 of the plan measured why that matters: `Date`, `Title`, `Kind`
+        // and `AddedAt` are ALL `Value::Str`, and `after_binds` checks only
+        // LENGTH. So a date cursor seeked in a title sort binds cleanly, runs,
+        // and returns rows -- `o.title < '2026-01-01'` is a perfectly valid text
+        // comparison. The page is wrong and nothing errors.
+        //
+        // A test using a text/int pair (Date vs RatingSum) would PASS WITH NO
+        // FINGERPRINT AT ALL, because that mismatch yields an empty page rather
+        // than a wrong one. This one cannot.
+        let made_for = Sort::date_desc();
+        let asked_for = Sort::new(vec![(SortKey::Title, SortOrder::Asc)]);
+
+        let wire = Cursor::new(vec![
+            Value::Str("2026-01-01".to_string()),
+            Value::Str("o-7".to_string()),
+        ])
+        .to_url(&made_for);
+
+        let err = Cursor::from_url(&wire, &asked_for)
+            .expect_err("a date cursor seeked in a title sort must be refused, not accepted");
+        assert!(
+            matches!(err, CursorError::SortMismatch { .. }),
+            "expected a SortMismatch, got {err:?}",
+        );
+        // And the message names both, because a caller showing it to a user
+        // cannot otherwise say what went wrong.
+        assert!(err.to_string().contains("different sort"), "{err}");
+        assert!(
+            err.to_string().contains(&made_for.fingerprint()),
+            "the message must name the cursor's own fingerprint: {err}"
+        );
+    }
+
+    #[test]
+    fn the_fingerprint_changes_when_a_direction_flips() {
+        // The silent one: same keys, same arity, same value types. Only
+        // `order_by()` differs, which is exactly why the fingerprint is derived
+        // from it rather than from the key list.
+        let desc = Sort::new(vec![(SortKey::Date, SortOrder::Desc)]);
+        let asc = Sort::new(vec![(SortKey::Date, SortOrder::Asc)]);
+        assert_ne!(desc.fingerprint(), asc.fingerprint());
+    }
+
+    #[test]
+    fn the_fingerprint_changes_when_a_key_is_added() {
+        let one = Sort::new(vec![(SortKey::Date, SortOrder::Desc)]);
+        let two = Sort::new(vec![
+            (SortKey::Date, SortOrder::Desc),
+            (SortKey::RatingSum, SortOrder::Desc),
+        ]);
+        assert_ne!(one.fingerprint(), two.fingerprint());
+        // Arity alone would catch THIS pair, so the assertion above is not
+        // load-bearing on its own -- the direction test is. Both are here so a
+        // future change that made the fingerprint arity-only would be caught by
+        // the first and not noticed by the second.
+        assert_eq!(one.len(), 2);
+        assert_eq!(two.len(), 3);
+    }
+
+    #[test]
+    fn the_fingerprint_is_stable_and_pinned_to_a_literal() {
+        // Stability across calls, and then a HARD-CODED value.
+        //
+        // The literal is the cost of deriving the fingerprint from `order_by()`:
+        // changing that text invalidates every cursor in every saved URL. That
+        // is a real cost, and the mitigation is not avoiding it -- it is making
+        // it VISIBLE here, so the change that causes it fails a test instead of
+        // silently invalidating saved links.
+        let s = Sort::date_desc();
+        assert_eq!(s.fingerprint(), s.fingerprint());
+        assert_eq!(
+            s.fingerprint(),
+            "82c4706c",
+            "the fingerprint is derived from order_by(), so changing that text \
+             invalidates every saved cursor. Update this literal deliberately."
+        );
+    }
+
+    #[test]
+    fn a_cursor_round_trips_through_its_wire_form() {
+        let sort = Sort::new(vec![
+            (SortKey::Date, SortOrder::Desc),
+            (SortKey::RatingSum, SortOrder::Desc),
+            (SortKey::Title, SortOrder::Asc),
+        ]);
+        let original = Cursor::new(vec![
+            Value::Str("2026-01-01".to_string()),
+            Value::Int(3),
+            Value::Str("A Title".to_string()),
+            Value::Str("o-7".to_string()),
+        ]);
+        let wire = original.to_url(&sort);
+        let back = Cursor::from_url(&wire, &sort).expect("a cursor we just wrote decodes");
+        assert_eq!(back, original);
+        // And it still SEEKS: the decoded cursor binds the same values the
+        // original would have. A round trip that decodes but binds differently
+        // is the failure this whole module is about, so the bind list is
+        // compared and not just the struct.
+        assert_eq!(sort.after_binds(&back), sort.after_binds(&original));
+    }
+
+    #[test]
+    fn a_null_date_survives_the_wire_rather_than_becoming_an_empty_string() {
+        // `o.date` is nullable, and `Value::Null` and `Value::Str("")` are the
+        // same thing to a naive JSON encoding. A NULL that decodes as "" seeks
+        // to the wrong place: "" IS NOT DISTINCT FROM a real date is false, so
+        // the first run of the predicate never matches and the page boundary
+        // moves. This is why `N` is its own tag.
+        let sort = Sort::date_desc();
+        let original = Cursor::new(vec![Value::Null, Value::Str("o-7".to_string())]);
+        let back = Cursor::from_url(&original.to_url(&sort), &sort).expect("decodes");
+        assert_eq!(back.values()[0], Value::Null, "NULL stayed NULL");
+        assert_ne!(back.values()[0], Value::Str(String::new()));
     }
 
     #[test]
