@@ -29,6 +29,16 @@ commons-scan = { workspace = true }
 # expired, signature before policy". The layering table already permits this
 # edge (see `commons-store/tests/layering.rs`), so no amendment is needed here.
 commons-consent = { workspace = true }
+# T-P6-008: `POST /graphql` resolves the four operations the UI sends, and the
+# WIRE TYPES live in `commons-api` beside every other wire type. The layering
+# table has listed `commons-server -> commons-api` since T-P0-007, so this
+# edge is not a new one -- the manifest is catching up to a sanctioned
+# relationship, which is why no table amendment accompanies it.
+#
+# The alternative -- declaring the GraphQL types here -- would make them the
+# second place wire shapes are written, and the first place they disagree with
+# the first.
+commons-api = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "postgres"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

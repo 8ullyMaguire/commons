@@ -32,6 +32,11 @@ pub mod external_player;
 // T-P6-003. This is the first route that opens a path read out of the
 // database, so `contained_in` is load-bearing here -- see the module doc.
 pub mod funscript;
+/// T-P6-008: `POST /graphql`, the four operations the UI sends. No GraphQL
+/// library — `async-graphql` is unusable against this workspace's axum 0.7 and
+/// the resolver is hand-rolled. See the module docs, which state what that
+/// costs.
+pub mod graphql;
 pub mod health;
 /// T-P6-007: request → identity. See the module docs for why this is not the
 /// plugin capability model, and why the `local_caller()` fallback is the
@@ -170,6 +175,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/share/:id", axum::routing::delete(share::revoke_share))
         .route("/api/s/:token", get(share::resolve_share))
         .route("/api/s/:token/access", get(share::share_access))
+        // T-P6-008: `POST /graphql`, the UI's transport. Deliberately NOT
+        // inside `v1_routes()` — it is not a versioned public script surface,
+        // and adding it to the OpenAPI document would put a POST endpoint under
+        // the compatibility promise. The test
+        // `the_graphql_endpoint_is_not_under_api_v1` asserts both halves.
+        .route("/graphql", post(graphql::graphql_handler))
         // T-P6-007: the same surface, mounted a second time under a version
         // prefix. `nest_service` rather than `nest` because the inner router
         // already has `AppState` applied, and `nest` would want to re-state it.

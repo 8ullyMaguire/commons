@@ -231,6 +231,55 @@ they are the trap this ticket's predecessor fell into:
    only when real code used the extractor. **`cargo build` on a crate that does
    not use the integration is not a test of the integration.**
 
+## 4b. `after:` cannot be implemented, and that is a store change, not a wire change
+
+The `PageInput.after` cursor is **in the client's type and cannot be honoured by
+this codebase as it stands.** Measured at `93cd787`:
+
+- `Cursor`'s only constructor is `Cursor::new`, and it is `#[cfg(test)]`
+  `pub(crate)`. The store's own docs say why: "Opaque on the outside by
+  construction — there is no way to build one except from a page, so a cursor
+  cannot be hand-assembled with the wrong arity."
+- `Cursor::from_row` is `pub(crate)`.
+- **Nothing in the workspace serializes or deserializes a `Cursor`.** No
+  base64, no JSON, no `to_url`/`from_url` — the filter has both
+  (`Filter::to_url` / `Filter::from_url`) and the cursor has neither.
+- No HTTP route accepts a cursor today, because none has ever needed to.
+
+So `query_sorted`'s keyset paging works **within one process** and has never
+crossed a boundary. The first surface that needs a client-supplied cursor —
+GraphQL's `after:`, which the UI's `PageInput` declares — is the first thing
+that needs an encoding, and that encoding does not exist.
+
+**Decision: this ticket ships `after:` as an explicit error, not as a silently
+ignored field, and adds the cursor encoding as its own ticket.** The reasons:
+
+1. **Silently ignoring it is the worst option.** A client paging with `after:`
+   and receiving page one over and over looks like a filter that matches
+   everything, and the user's scroll does nothing. A rejected cursor is a
+   visible bug; an ignored one is a mystery.
+2. **The encoding has to be designed, not invented here.** A cursor's values are
+   `Value`s in `Sort::all_keys` order, and `Sort::new` *appends `id` as the
+   trailing tiebreak* — so the arity is a function of the sort. An encoding that
+   does not bind the cursor to its sort is the "wrong arity, silently wrong
+   page" failure the type was built to prevent, reintroduced at the wire. The
+   encoding therefore has to carry the sort it was made for, and that is a
+   design decision with a security edge (§5.16 makes the sort
+   attacker-controlled by construction — `sort.rs` says so).
+3. **It is a store change, and the store is not this ticket's subject.** Adding
+   `Cursor::to_url`/`from_url` means a new public constructor on a type whose
+   entire design premise is that it cannot be hand-assembled. That deserves its
+   own review, and mixing it into a transport ticket is how it gets skipped.
+
+`PageInput.after` therefore stays in the type — **the client sends it and the
+wire must accept it** — and a non-null value is rejected with a message naming
+the follow-up. `endCursor`/`startCursor` are returned as `null` for the same
+reason, rather than as a string the client would send back and have rejected.
+
+This is a real gap in the ticket as scoped, discovered by reading the store
+rather than the plan. It is **not** a reason to stop: the first page — which is
+what the UI shows on load, and what all four operations need — works.
+
 ## 5b. The named follow-ups this ticket creates
 
 Each is a real question about the data layer, deliberately **not** answered
