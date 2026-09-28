@@ -28,9 +28,16 @@
 mod harness;
 use harness::{postgres_store, sqlite_store};
 
+// `comparable_weight` is deliberately NOT imported here: it is a pure
+// function with no I/O and its tests live beside it in
+// `src/interview.rs::quote_weight_tests`. A test file that needs a database to
+// check an arithmetic function is a slower test of a simpler thing, and an
+// import used only by a test that was better written elsewhere is an import
+// that quietly goes stale.
 use commons_store::interview::{
-    corrections_for, failed_windows, propose_correction, replace_transcript, transcript_for,
-    words_between, words_for, TranscriptRow, WindowRow, WordRow,
+    corrections_for, failed_windows, propose_correction, propose_quote, quote_count, quotes_for,
+    replace_transcript, transcript_for, words_between, words_for, TranscriptRow, WeightSource,
+    WindowRow, WordRow,
 };
 use uuid::Uuid;
 
@@ -712,5 +719,182 @@ async fn a_correction_survives_a_re_transcription_but_the_words_do_not() {
             3,
             "words replaced"
         );
+    });
+}
+
+// ---------- quotes (T-P6-004b step 2) ----------
+//
+// The load-bearing test in this section is
+// `a_quote_survives_a_re_transcription`. Everything else here is validation
+// that the schema also enforces; that one is about a behaviour the schema
+// cannot express, because "this table is deliberately NOT deleted by that
+// other function" is a property of the code and not of any constraint.
+
+#[tokio::test]
+async fn a_quote_survives_a_re_transcription() {
+    // The model is updated and the words come out different. The quote must
+    // not move: it is a person's decision about what was said, not a property
+    // of one model's rendering of it.
+    //
+    // This is the test that fails if `replace_transcript` is ever "tidied up"
+    // to delete all three interview child tables, which is exactly what a
+    // reader of the schema would assume was intended.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let mut row = transcript(&s, uid).await;
+        replace_transcript(&s, &row, &words(3), &[]).await.expect("write");
+
+        propose_quote(&s, &row.object_id, 0, 500, "a memorable line", 4.0, WeightSource::Human)
+            .await
+            .expect("quote");
+
+        // A different model, and different words entirely.
+        row.model_id = "large.en".to_string();
+        replace_transcript(&s, &row, &words(5), &[]).await.expect("re-run");
+
+        assert_eq!(
+            words_for(&s, &row.id).await.unwrap().len(),
+            5,
+            "the words really were replaced -- otherwise this test is vacuous"
+        );
+        let quotes = quotes_for(&s, &row.object_id).await.expect("quotes");
+        assert_eq!(
+            quotes.len(),
+            1,
+            "the quote outlived the transcript that produced it: {quotes:?}"
+        );
+        assert_eq!(quotes[0].text, "a memorable line");
+        assert_eq!(quotes[0].weight, 4.0, "and its weight, too");
+    });
+}
+
+#[tokio::test]
+async fn quotes_come_back_in_time_order() {
+    // A list sorted by weight has a "next" that goes sideways, so this asserts
+    // the ORDER rather than the contents -- which is the part that is easy to
+    // lose in a later edit to the query.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        // Inserted out of order on purpose.
+        for (start, text) in [(9000, "third"), (1000, "first"), (5000, "second")] {
+            propose_quote(&s, &row.object_id, start, start + 400, text, 2.0, WeightSource::Human)
+                .await
+                .expect("quote");
+        }
+        let quotes = quotes_for(&s, &row.object_id).await.expect("quotes");
+        let texts: Vec<&str> = quotes.iter().map(|q| q.text.as_str()).collect();
+        assert_eq!(texts, ["first", "second", "third"], "in time order: {texts:?}");
+    });
+}
+
+#[tokio::test]
+async fn a_zero_length_or_inverted_quote_is_refused() {
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        // A zero-length quote exists, renders, and carries no information.
+        assert!(propose_quote(&s, &row.object_id, 100, 100, "x", 1.0, WeightSource::Human).await.is_err());
+        assert!(propose_quote(&s, &row.object_id, 500, 100, "x", 1.0, WeightSource::Human).await.is_err());
+        // ... and so does one that starts before the media does.
+        assert!(propose_quote(&s, &row.object_id, -1, 100, "x", 1.0, WeightSource::Human).await.is_err());
+        assert_eq!(quote_count(&s, &row.object_id).await.unwrap(), 0, "nothing was written");
+    });
+}
+
+#[tokio::test]
+async fn a_blank_quote_is_refused() {
+    // "   " is the empty string wearing a costume: it renders as a blank row in
+    // a quote list, and it is the shape a test asserts against while believing
+    // it is testing emptiness.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        assert!(propose_quote(&s, &row.object_id, 0, 100, "   ", 1.0, WeightSource::Human).await.is_err());
+        assert!(propose_quote(&s, &row.object_id, 0, 100, "", 1.0, WeightSource::Human).await.is_err());
+    });
+}
+
+#[tokio::test]
+async fn a_quote_is_trimmed_and_a_duplicate_does_not_become_a_second_row() {
+    // Two properties of the write path that only a round trip can show: the
+    // stored text is the trimmed text, and re-proposing the same quote is
+    // refused by the UNIQUE constraint rather than filling the list with copies
+    // of one sentence.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        propose_quote(&s, &row.object_id, 0, 500, "  padded  ", 1.0, WeightSource::Human)
+            .await
+            .expect("first");
+        let stored = &quotes_for(&s, &row.object_id).await.unwrap()[0];
+        assert_eq!(stored.text, "padded", "stored trimmed: {:?}", stored.text);
+
+        assert!(
+            propose_quote(&s, &row.object_id, 0, 500, "padded", 1.0, WeightSource::Human).await.is_err(),
+            "the identical quote is refused rather than duplicated"
+        );
+        assert_eq!(quote_count(&s, &row.object_id).await.unwrap(), 1);
+    });
+}
+
+#[tokio::test]
+async fn both_weight_sources_round_trip_and_keep_their_own_scale() {
+    // The whole reason `weight_source` exists. Two quotes with weights that
+    // LOOK comparable and are not: a human's 3 and a model's 0.6.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        propose_quote(&s, &row.object_id, 0, 500, "human's pick", 3.0, WeightSource::Human)
+            .await
+            .expect("human");
+        propose_quote(&s, &row.object_id, 1000, 1500, "model's pick", 0.6, WeightSource::Model)
+            .await
+            .expect("model");
+
+        let quotes = quotes_for(&s, &row.object_id).await.expect("quotes");
+        let human = quotes.iter().find(|q| q.text == "human's pick").unwrap();
+        let model = quotes.iter().find(|q| q.text == "model's pick").unwrap();
+
+        // The RAW weights are preserved, not pre-scaled on write. Normalising
+        // at write time would make `weight_source` decorative: a reader could
+        // no longer tell a human's 3 from a model's 0.6.
+        assert_eq!(human.weight, 3.0);
+        assert_eq!(model.weight, 0.6);
+        assert_eq!(human.weight_source, WeightSource::Human);
+        assert_eq!(model.weight_source, WeightSource::Model);
+    });
+}
+
+#[tokio::test]
+async fn a_quote_is_scoped_to_its_object() {
+    // The same scoping bug a correction is scoped against. Without it, object
+    // A's quote list shows object B's quotes, which reads as the library
+    // mixing up two people's media.
+    both_engines!(|s| {
+        let a = transcript(&s, Uuid::new_v4()).await;
+        let b = transcript(&s, Uuid::new_v4()).await;
+        propose_quote(&s, &a.object_id, 0, 500, "a only", 1.0, WeightSource::Human)
+            .await
+            .expect("quote");
+        let for_b = quotes_for(&s, &b.object_id).await.expect("quotes");
+        assert!(for_b.is_empty(), "B sees none of A's: {for_b:?}");
+        assert_eq!(quote_count(&s, &b.object_id).await.unwrap(), 0);
+    });
+}
+
+#[tokio::test]
+async fn a_non_finite_weight_is_refused() {
+    // NaN sorts to the top of a DESC and the bottom of an ASC depending on the
+    // engine and the collation, so it is rejected rather than stored.
+    both_engines!(|s| {
+        let uid = Uuid::new_v4();
+        let row = transcript(&s, uid).await;
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(
+                propose_quote(&s, &row.object_id, 0, 500, "x", bad, WeightSource::Human).await.is_err(),
+                "{bad} must not be storable"
+            );
+        }
     });
 }

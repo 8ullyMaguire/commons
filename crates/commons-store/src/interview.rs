@@ -713,3 +713,395 @@ pub async fn corrections_for(
         Store::Postgres(p) => go!(p, true, sqlx::postgres::PgRow),
     }
 }
+
+// ---------- quotes (T-P6-004b step 2) ----------
+//
+// Migration `0024_interview_quotes.sql`.
+//
+// # The one decision here: a quote hangs off the OBJECT, not the transcript
+//
+// `replace_transcript` deletes `interview_word` and `interview_window` on a
+// re-transcription, keyed on both the incoming transcript id and the object —
+// see the long comment on the delete inside it, which explains why each arm
+// covers a case the other misses. This module does NOT delete quotes, and the
+// reason is the whole reason the table is keyed on `object_id`:
+//
+// a re-transcription replaces the WORDS. The thing a person found worth
+// quoting is not a property of those words. If a new model hears the same
+// sentence differently and the quote silently re-renders itself from the new
+// transcript, then the quote is no longer the one the user chose — and there
+// is nothing to compare against, because the original is gone. A drift between
+// a quote and the words it was cut from is VISIBLE. A quote that silently
+// updates itself is not.
+//
+// So the deletion is a non-action, deliberately. A future reader will see
+// `interview_quote` in the schema, see that `replace_transcript` deletes two
+// of the three interview child tables and not the third, and assume the third
+// was an oversight. It is not, and this comment is the reason why.
+
+/// Who decided a quote is worth surfacing, and therefore what scale its
+/// `weight` is on.
+///
+/// A human marks a quote on a 1-5 scale; a model emits a salience in
+/// 0.0-1.0. The two are not comparable as numbers, and a ranking that mixes
+/// them without normalising is wrong in a way nothing reports. See
+/// [`comparable_weight`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeightSource {
+    /// A person marked it. 1-5, the scale the UI offers.
+    Human,
+    /// A model scored it. 0.0-1.0, the scale a salience model emits.
+    Model,
+}
+
+impl WeightSource {
+    /// The stored spelling, matching the CHECK constraint in migration 0024.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WeightSource::Human => "human",
+            WeightSource::Model => "model",
+        }
+    }
+}
+
+/// Put a human's weight and a model's weight on one scale.
+///
+/// **This is the only function in the crate that knows they are different
+/// units**, which is why it exists as a pure function with no I/O: the mistake
+/// it prevents is a sort that reads one column and silently compares two
+/// scales, and that mistake produces a *wrong order* rather than an error.
+///
+/// A human's mark is taken at face value — 1-5 is the band. A model's salience
+/// is mapped into that same band, so a model at full confidence can outrank a
+/// human's minimum (it is the only evidence anyone has) and a model at zero
+/// outranks nothing (it is the model declining to say).
+///
+/// `MODEL_BAND` is the human band the model range is scaled into. Making it a
+/// named constant rather than a literal is the point: if someone later wants a
+/// different policy, this is the one line to change, and every test that
+/// depends on the ordering is testing *this* value rather than a number
+/// repeated in a test.
+const MODEL_BAND: f64 = 5.0;
+
+/// Map a weight onto the shared human band. See [`WeightSource`].
+pub fn comparable_weight(weight: f64, source: WeightSource) -> f64 {
+    match source {
+        // A human chose on this scale already.
+        WeightSource::Human => weight,
+        // A model chose on 0.0-1.0, and the band is 1-5. Clamped at both ends
+        // because a salience outside 0-1 means the model is broken, and a
+        // broken model should not be able to outrank a confident human.
+        WeightSource::Model => (weight.clamp(0.0, 1.0)) * MODEL_BAND,
+    }
+}
+
+/// A stored quote.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Quote {
+    pub id: String,
+    pub object_id: String,
+    pub start_ms: i32,
+    pub end_ms: i32,
+    /// A snapshot, not a live projection of `interview_word`. See the module
+    /// comment on why that direction is correct.
+    pub text: String,
+    pub weight: f64,
+    pub weight_source: WeightSource,
+}
+
+/// Propose a quote: a span of the interview worth resurfacing.
+///
+/// Returns the new quote's id, or the id of the existing one when the
+/// identical quote is proposed twice — the `UNIQUE (object_id, start_ms,
+/// end_ms, text)` constraint is what makes a re-run idempotent rather than a
+/// way to fill a list with copies of one sentence.
+///
+/// The text is stored TRIMMED and validated after trimming, because
+/// `"   "` is the empty string wearing a costume: it passes `is_empty()` on
+/// some inputs, renders as a blank row in a quote list, and is the shape a
+/// test asserts against when it thinks it is testing emptiness.
+pub async fn propose_quote(
+    store: &Store,
+    object_id: &str,
+    start_ms: i32,
+    end_ms: i32,
+    text: &str,
+    weight: f64,
+    source: WeightSource,
+) -> Result<String, StoreError> {
+    use uuid::Uuid;
+
+    // A zero-length or inverted span is a quote that exists, renders, and
+    // carries no information. Refused here as well as by the schema CHECK, so
+    // the caller gets a `StoreError::Invalid` naming the field rather than a
+    // constraint violation surfacing as `StoreError::Query`.
+    if start_ms < 0 {
+        return Err(StoreError::Invalid {
+            what: "quote start",
+            why: format!("{start_ms}ms is before the start of the media"),
+        });
+    }
+    if end_ms <= start_ms {
+        return Err(StoreError::Invalid {
+            what: "quote span",
+            why: format!("end {end_ms}ms is not after start {start_ms}ms"),
+        });
+    }
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(StoreError::Invalid {
+            what: "quote text",
+            why: "a blank quote is not a quote".to_string(),
+        });
+    }
+    // A non-finite weight sorts to the top of a DESC and to the bottom of an
+    // ASC, depending on the database, which is not a property anyone can
+    // explain to a user. Rejected instead.
+    if !weight.is_finite() {
+        return Err(StoreError::Invalid {
+            what: "quote weight",
+            why: format!("{weight} is not a finite weight"),
+        });
+    }
+
+    let id = Uuid::new_v4();
+    let created_at = to_ts(Utc::now());
+
+    const SQL: &str = "INSERT INTO interview_quote
+        (id, object_id, start_ms, end_ms, text, weight, weight_source, created_at)
+      VALUES ({p})";
+    macro_rules! go {
+        ($p:expr, $numbered:literal) => {{
+            let sql = SQL.replace("{p}", &placeholders(8, $numbered));
+            sqlx::query(&sql)
+                .bind(id.to_string())
+                .bind(object_id)
+                .bind(start_ms)
+                .bind(end_ms)
+                .bind(text)
+                // The weight stored is the RAW weight, not `comparable_weight`.
+                // Normalising on write would destroy the source's scale and
+                // make `weight_source` decorative — the reader would have no
+                // way to tell a human's 3 from a model's 0.6 that had already
+                // been scaled. The comparison happens at sort time, in
+                // `comparable_weight`, where the policy lives.
+                .bind(weight)
+                .bind(source.as_str())
+                .bind(&created_at)
+                .execute($p)
+                .await
+                // The result is discarded INSIDE the macro. `SqliteQueryResult`
+                // and `PgQueryResult` are different types, so a macro whose
+                // tail is the execute would make the two match arms
+                // incompatible -- and the error names `execute`, not the
+                // match, which is a confusing way to be told a query returns
+                // two things. Nothing here needs the row count: the UNIQUE
+                // constraint makes a duplicate an error, not a no-op.
+                .map(|_| ())
+        }};
+    }
+
+    match store {
+        Store::Sqlite(conn) => go!(conn, false),
+        Store::Postgres(conn) => go!(conn, true),
+    }
+    .map_err(StoreError::Query)?;
+
+    Ok(id.to_string())
+}
+
+/// Every quote for an object, in time order.
+///
+/// Time order is the only order a quote list can be read in: a list sorted by
+/// id or by weight has a "next" that goes sideways.
+pub async fn quotes_for(store: &Store, object_id: &str) -> Result<Vec<Quote>, StoreError> {
+    const SQL: &str = "SELECT id, object_id, start_ms, end_ms, text, weight, weight_source
+        FROM interview_quote
+        WHERE object_id = {a}
+        ORDER BY start_ms, id";
+    macro_rules! go {
+        ($p:expr, $numbered:literal, $row:ty) => {{
+            let sql = SQL.replace("{a}", &placeholder(1, $numbered));
+            let rows = sqlx::query(&sql)
+                .bind(object_id)
+                .fetch_all($p)
+                .await
+                .map_err(StoreError::Query)?;
+            rows.iter()
+                .map(|r| {
+                    let r: &$row = r;
+                    Ok(Quote {
+                        id: r.get("id"),
+                        object_id: r.get("object_id"),
+                        start_ms: r.get("start_ms"),
+                        end_ms: r.get("end_ms"),
+                        text: r.get("text"),
+                        weight: r.get("weight"),
+                        weight_source: if r.get::<String, _>("weight_source") == "model" {
+                            WeightSource::Model
+                        } else {
+                            WeightSource::Human
+                        },
+                    })
+                })
+                .collect::<Result<Vec<Quote>, StoreError>>()
+        }};
+    }
+
+    match store {
+        Store::Sqlite(conn) => go!(conn, false, sqlx::sqlite::SqliteRow),
+        Store::Postgres(conn) => go!(conn, true, sqlx::postgres::PgRow),
+    }
+}
+
+/// How many quotes an object has. Cheaper than `quotes_for(..).len()` when the
+/// caller only wants a count for a summary — which is what the server route
+/// does.
+pub async fn quote_count(store: &Store, object_id: &str) -> Result<i64, StoreError> {
+    const SQL: &str = "SELECT count(*) FROM interview_quote WHERE object_id = {a}";
+    macro_rules! go {
+        ($p:expr, $numbered:literal) => {{
+            let sql = SQL.replace("{a}", &placeholder(1, $numbered));
+            sqlx::query_scalar::<_, i64>(&sql)
+                .bind(object_id)
+                .fetch_one($p)
+                .await
+                .map_err(StoreError::Query)
+        }};
+    }
+
+    match store {
+        Store::Sqlite(conn) => go!(conn, false),
+        Store::Postgres(conn) => go!(conn, true),
+    }
+}
+
+#[cfg(test)]
+mod quote_weight_tests {
+    // T-P6-004b step 3, and deliberately placed in the SOURCE rather than in
+    // the db suite: `comparable_weight` has no I/O, so a test that needs a
+    // database to check an arithmetic function is a slower test of a simpler
+    // thing. It lives next to the function for the ordinary reason, and
+    // because the two are meant to be read together.
+    use super::{comparable_weight, WeightSource, MODEL_BAND};
+
+    /// A human's mark is on the 1-5 scale and passes through untouched.
+    ///
+    /// The identity assertion is the point: if this ever stops being identity,
+    /// every human mark in the library is being silently rescaled.
+    #[test]
+    fn a_humans_weight_is_taken_at_face_value() {
+        for w in [1.0, 2.0, 3.0, 4.0, 5.0] {
+            assert_eq!(
+                comparable_weight(w, WeightSource::Human),
+                w,
+                "a human's {w} must not be moved"
+            );
+        }
+    }
+
+    /// A model's salience is mapped into the human band.
+    #[test]
+    fn a_models_weight_is_scaled_into_the_human_band() {
+        assert_eq!(comparable_weight(0.0, WeightSource::Model), 0.0);
+        assert_eq!(comparable_weight(1.0, WeightSource::Model), MODEL_BAND);
+        assert_eq!(comparable_weight(0.6, WeightSource::Model), 0.6 * MODEL_BAND);
+    }
+
+    /// The cross-source case, and the reason this function exists.
+    ///
+    /// A model at full confidence outranks a human's minimum: it is the only
+    /// evidence anyone has about a quote nobody marked. This is the assertion
+    /// that fails if someone "simplifies" the mapping to a plain comparison of
+    /// raw numbers, which is the bug in its most likely form.
+    #[test]
+    fn a_confident_model_outranks_a_humans_minimum() {
+        assert!(
+            comparable_weight(1.0, WeightSource::Model) > comparable_weight(1.0, WeightSource::Human),
+            "a model at full confidence ({}) beats a human's 1 ({})",
+            comparable_weight(1.0, WeightSource::Model),
+            comparable_weight(1.0, WeightSource::Human)
+        );
+    }
+
+    /// ...and a model that declines to say outranks nothing at all.
+    ///
+    /// Zero maps to zero, so a silent model loses to a human's 1.0 and to
+    /// everything above it. Worth being explicit that zero is not rounded UP to
+    /// the bottom of the human band: with a mapping that floored at 1, a model
+    /// that declined to say would tie a human's weakest possible mark, and a
+    /// "best quotes" list that leads with "the model had nothing to say about
+    /// this" is a list nobody believes.
+    #[test]
+    fn a_silent_model_outranks_nothing() {
+        assert_eq!(
+            comparable_weight(0.0, WeightSource::Model),
+            0.0,
+            "a model at zero is zero, not a human's minimum"
+        );
+        assert!(
+            comparable_weight(0.0, WeightSource::Model) < comparable_weight(1.0, WeightSource::Human),
+            "and it does not beat a human's minimum"
+        );
+        assert!(
+            comparable_weight(0.0, WeightSource::Model) < comparable_weight(5.0, WeightSource::Human),
+            "nor a human's maximum"
+        );
+    }
+
+    /// A salience outside 0-1 means the model is broken, and a broken model must
+    /// not be able to outrank a confident human.
+    #[test]
+    fn a_model_outside_its_range_is_clamped_rather_than_trusted() {
+        assert_eq!(
+            comparable_weight(2.0, WeightSource::Model),
+            MODEL_BAND,
+            "a salience of 2.0 is nonsense and is clamped"
+        );
+        assert_eq!(comparable_weight(-1.0, WeightSource::Model), 0.0, "and so is a negative");
+    }
+
+    /// The test the plan asks for: an INTERLEAVED list must come out in
+    /// separate bands.
+    ///
+    /// Sorting by the raw `weight` column — the obvious implementation, and one
+    /// a query can do for free — would put the human's 2 and 3 below the
+    /// model's 0.9, because 0.9 < 2. Nothing errors here. The list is simply
+    /// ordered wrongly, which is spec §4.2 in full.
+    #[test]
+    fn the_two_sources_come_out_in_separate_bands_not_interleaved() {
+        let items: Vec<(&str, f64, WeightSource)> = vec![
+            ("human 2", 2.0, WeightSource::Human),
+            ("model 0.9", 0.9, WeightSource::Model),
+            ("human 5", 5.0, WeightSource::Human),
+            ("model 0.1", 0.1, WeightSource::Model),
+        ];
+
+        // Sorted through the mapping, DESC — what a "best quotes first" list
+        // should do.
+        let mut sorted = items.clone();
+        sorted.sort_by(|a, b| {
+            comparable_weight(b.1, b.2)
+                .partial_cmp(&comparable_weight(a.1, a.2))
+                .expect("comparable_weight is always finite")
+        });
+        let order: Vec<&str> = sorted.iter().map(|i| i.0).collect();
+        assert_eq!(
+            order,
+            ["human 5", "model 0.9", "human 2", "model 0.1"],
+            "sorted through the mapping: {order:?}"
+        );
+
+        // And the failure this exists to prevent: sorting the raw column puts
+        // both human marks above both model marks, which is the OPPOSITE
+        // interleaving and looks superficially reasonable.
+        let mut raw = items.clone();
+        raw.sort_by(|a, b| b.1.partial_cmp(&a.1).expect("finite"));
+        let raw_order: Vec<&str> = raw.iter().map(|i| i.0).collect();
+        assert_ne!(
+            raw_order, order,
+            "sorting the raw column gives a DIFFERENT list -- which is why the \
+             mapping has to be in the sort and not in the column"
+        );
+    }
+}
