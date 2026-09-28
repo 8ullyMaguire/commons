@@ -29,6 +29,7 @@ use commons_store::filter_ast::CallerId;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
+use crate::identity;
 use crate::range::{content_range, resolve, ByteRange, RangeError, RangeSpec, ACCEPT_RANGES};
 use crate::AppState;
 
@@ -84,7 +85,13 @@ pub async fn get_media(
     AxumPath(object_id): AxumPath<String>,
     headers: HeaderMap,
 ) -> Response {
-    let caller = local_caller();
+    // T-P6-007: this line is the ticket. It used to be `local_caller()` --
+    // a hardcoded constant, so `Role`, `CallerId` and `ShareGrant` were all
+    // built, all used by the store, and never consulted by the server. A
+    // request carrying `Authorization: Bearer <token>` now resolves to that
+    // share grant; a request without credentials still resolves to
+    // `local_caller()`, so every other test in this file is unaffected.
+    let caller = identity::caller_from_request(&state, &headers).await;
 
     // The gate. `None` covers absent, not-present-on-disk, and denied, and all
     // three answer the same way on purpose.
