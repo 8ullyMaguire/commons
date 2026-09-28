@@ -451,7 +451,8 @@ async fn quotes_and_topics_answer_the_same_404_as_the_other_routes() {
         assert_eq!(a.status, StatusCode::NOT_FOUND, "{suffix}");
         assert_eq!(b.status, StatusCode::NOT_FOUND, "{suffix}");
         assert_eq!(
-            a.body, b.body,
+            a.body,
+            b.body,
             "{suffix} must not distinguish absent from denied: {:?} vs {:?}",
             String::from_utf8_lossy(&a.body),
             String::from_utf8_lossy(&b.body)
@@ -515,8 +516,16 @@ async fn a_quote_carries_the_scale_it_was_scored_on() {
     let app = TestApp::new().await;
     let fixture = media_fixture(&app, b"0123456789").await;
     for (text, weight, src) in [
-        ("a person's highlight", 4.0, commons_store::interview::WeightSource::Human),
-        ("a model's salient span", 0.9, commons_store::interview::WeightSource::Model),
+        (
+            "a person's highlight",
+            4.0,
+            commons_store::interview::WeightSource::Human,
+        ),
+        (
+            "a model's salient span",
+            0.9,
+            commons_store::interview::WeightSource::Model,
+        ),
     ] {
         commons_store::interview::propose_quote(
             app.store(),
@@ -531,7 +540,9 @@ async fn a_quote_carries_the_scale_it_was_scored_on() {
         .expect("the quote");
     }
 
-    let r = app.get_json(&format!("/media/{}/quotes", fixture.object_id)).await;
+    let r = app
+        .get_json(&format!("/media/{}/quotes", fixture.object_id))
+        .await;
     let body = json(&r);
     let quotes = body["quotes"].as_array().unwrap();
     assert_eq!(quotes.len(), 2);
@@ -572,7 +583,10 @@ async fn a_quote_limit_beyond_the_maximum_is_capped_rather_than_honoured() {
     // A client asking for a million quotes must not get a million quotes. The
     // cap is server-side because a client-side one is not enforced.
     let r = app
-        .get_json(&format!("/media/{}/quotes?limit=1000000", fixture.object_id))
+        .get_json(&format!(
+            "/media/{}/quotes?limit=1000000",
+            fixture.object_id
+        ))
         .await;
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(json(&r)["quotes"].as_array().unwrap().len(), 1);
@@ -600,7 +614,11 @@ async fn a_negative_quote_offset_is_clamped_rather_than_forwarded() {
         .get_json(&format!("/media/{}/quotes?offset=-5", fixture.object_id))
         .await;
     assert_eq!(r.status, StatusCode::OK);
-    assert_eq!(json(&r)["quotes"].as_array().unwrap().len(), 1, "clamped to zero");
+    assert_eq!(
+        json(&r)["quotes"].as_array().unwrap().len(),
+        1,
+        "clamped to zero"
+    );
 }
 
 #[tokio::test]
@@ -609,7 +627,9 @@ async fn an_object_with_no_quotes_is_an_empty_list_not_a_404() {
     // exist" about a recording that is on screen right now.
     let app = TestApp::new().await;
     let fixture = media_fixture(&app, b"0123456789").await;
-    let r = app.get_json(&format!("/media/{}/quotes", fixture.object_id)).await;
+    let r = app
+        .get_json(&format!("/media/{}/quotes", fixture.object_id))
+        .await;
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(json(&r)["quotes"].as_array().unwrap().len(), 0);
     assert_eq!(json(&r)["total"], 0);
@@ -678,9 +698,13 @@ async fn a_person_applied_topic_is_not_marked_proposed() {
     let topics = body["topics"].as_array().unwrap();
     assert_eq!(topics.len(), 1, "{topics:?}");
     assert_eq!(topics[0]["name"], "a topic I chose");
-    assert_eq!(topics[0]["proposed"], false, "a person's tag is not a proposal");
     assert_eq!(
-        topics[0]["confidence"], serde_json::Value::Null,
+        topics[0]["proposed"], false,
+        "a person's tag is not a proposal"
+    );
+    assert_eq!(
+        topics[0]["confidence"],
+        serde_json::Value::Null,
         "and it has no confidence, which is not the same as 0.0"
     );
 }
@@ -691,7 +715,9 @@ async fn an_object_with_no_topics_is_an_empty_list_not_a_404() {
     // library is the normal state, not a missing object.
     let app = TestApp::new().await;
     let fixture = media_fixture(&app, b"0123456789").await;
-    let r = app.get_json(&format!("/media/{}/topics", fixture.object_id)).await;
+    let r = app
+        .get_json(&format!("/media/{}/topics", fixture.object_id))
+        .await;
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(json(&r)["topics"].as_array().unwrap().len(), 0);
 }

@@ -505,9 +505,5 @@ pub async fn get_topics(
         })
         .collect();
 
-    (
-        StatusCode::OK,
-        axum::Json(TopicList { object_id, topics }),
-    )
-        .into_response()
+    (StatusCode::OK, axum::Json(TopicList { object_id, topics })).into_response()
 }
