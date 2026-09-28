@@ -298,6 +298,14 @@ mod tests {
             data_dir: dir,
             bind: "127.0.0.1:0".into(),
             metrics,
+            // T-P6-005: off. These tests exercise the router, and a responder
+            // would bind a socket none of them read.
+            dlna: crate::config::DlnaConfig {
+                enabled: false,
+                bind: "127.0.0.1:0".into(),
+                location_base: "http://127.0.0.1:9999".into(),
+                friendly_name: "commons-test".into(),
+            },
         }
     }
 

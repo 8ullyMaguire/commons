@@ -83,6 +83,15 @@ impl TestApp {
             data_dir,
             bind: "127.0.0.1:0".to_owned(),
             metrics: false,
+            // T-P6-005: off, as it is everywhere else. A test app that turned
+            // DLNA on would bind a UDP socket per test, and a suite that binds
+            // a fixed port is a suite that fails on the second run.
+            dlna: commons_server::config::DlnaConfig {
+                enabled: false,
+                bind: "127.0.0.1:0".to_owned(),
+                location_base: "http://127.0.0.1:9999".to_string(),
+                friendly_name: "commons-test".to_owned(),
+            },
         };
         let state = Arc::new(AppState::open(config).await.expect("the store opens"));
 

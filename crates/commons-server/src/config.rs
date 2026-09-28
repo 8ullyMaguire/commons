@@ -51,6 +51,50 @@ pub struct FileConfig {
     pub metrics: Option<bool>,
     /// The origin share links are built against (T-P5-007 part 2B).
     pub public_base_url: Option<String>,
+    /// DLNA/UPnP discovery. T-P6-005.
+    ///
+    /// `Option` because "the section is absent" and "the section says
+    /// `enabled = false`" are different files, and the second is a decision
+    /// somebody made. Collapsing them would make it impossible to record that
+    /// a user deliberately turned it off.
+    pub dlna: Option<DlnaConfig>,
+}
+
+/// DLNA/UPnP, and it is OFF unless someone turns it on.
+///
+/// Not a default-on feature with a default-on-off-switch. A media server that
+/// advertises itself to the LAN on upgrade exposes the whole library to every
+/// device on that network, and SSDP has no authentication to gate on -- the
+/// `media_path` consent check every HTTP route uses has nothing to attach to
+/// here, because the client is on the LAN and has never authenticated.
+///
+/// `deny_unknown_fields` is here rather than inherited, because
+/// **`deny_unknown_fields` does not propagate into a nested struct.**
+/// `FileConfig` carries it, and a `[dlna]` block with a misspelled key inside
+/// it still parsed silently until a test caught it. For a feature whose
+/// failure mode is "the file loaded and the feature quietly stayed off", that
+/// is the exact bug the attribute exists to prevent, applied one level too
+/// shallow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DlnaConfig {
+    /// `#[serde(default)]` so a config file that sets only `bind` means
+    /// "enabled at the default", which is `false`, rather than failing to
+    /// parse. A `[dlna]` block naming a bind address and nothing else is a
+    /// reasonable thing for a person to write.
+    #[serde(default)]
+    pub enabled: bool,
+    /// The address the SSDP responder binds. `0.0.0.0:1900` reaches the LAN;
+    /// `127.0.0.1:1900` does not. Defaulting to loopback is the difference
+    /// between "on, for me" and "on, for the office".
+    pub bind: String,
+    /// The `LOCATION` advertised in the SSDP reply. It must be a URL a client
+    /// can fetch, and it must NOT be `0.0.0.0` -- that string means "this
+    /// machine" to nobody, and a client that fetches it fails in a way that
+    /// looks like a broken television.
+    pub location_base: String,
+    /// The friendly name a TV shows in its source list.
+    pub friendly_name: String,
 }
 
 /// The resolved configuration.
@@ -60,6 +104,9 @@ pub struct Config {
     pub data_dir: PathBuf,
     pub bind: String,
     pub metrics: bool,
+    /// DLNA/UPnP. T-P6-005, and `enabled` is false unless a config file or a
+    /// deliberate default says otherwise.
+    pub dlna: DlnaConfig,
     /// The origin share links are built against, e.g. `https://media.example`.
     ///
     /// A config field rather than derived from `bind`, because `bind` is where
@@ -244,11 +291,30 @@ pub fn resolve(cli: &Cli, file: Option<&FileConfig>) -> Result<Config, ConfigErr
         .or_else(|| file.and_then(|f| f.public_base_url.clone()))
         .unwrap_or_else(|| format!("http://{bind}"));
 
+    // Default OFF, and default to LOOPBACK even when someone turns it on.
+    // Both defaults are the safe direction: enabling DLNA is a decision
+    // somebody has to type, and having done that they get a responder that
+    // reaches this machine rather than the whole office network.
+    //
+    // `location_base` defaults to the resolved `public_base_url` rather than
+    // to the bind address, because the bind address is a socket to listen on
+    // (`0.0.0.0:8096`, a port) and a LOCATION is a URL a client fetches. Same
+    // reasoning as the `public_base_url` default above, applied twice.
+    let dlna = file
+        .and_then(|f| f.dlna.clone())
+        .unwrap_or_else(|| DlnaConfig {
+            enabled: false,
+            bind: "127.0.0.1:1900".to_string(),
+            location_base: public_base_url.clone(),
+            friendly_name: "commons".to_string(),
+        });
+
     Ok(Config {
         mode,
         data_dir,
         bind,
         metrics,
+        dlna,
         public_base_url,
     })
 }
@@ -295,6 +361,7 @@ mod tests {
             data_dir: Some(PathBuf::from("/from/file")),
             bind: Some("1.1.1.1:1".into()),
             metrics: Some(true),
+            dlna: None,
         };
 
         // Default only.
@@ -372,6 +439,7 @@ mod tests {
             data_dir: Some(PathBuf::from("/srv/library")),
             bind: Some("0.0.0.0:8080".into()),
             metrics: Some(false),
+            dlna: None,
         };
         std::fs::write(&path, toml::to_string(&original).unwrap()).unwrap();
 
@@ -423,5 +491,159 @@ mod tests {
         let c = xdg_config_dir();
         unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
         assert!(c.ends_with(".config/commons"), "{c:?}");
+    }
+
+    // ---------- DLNA (T-P6-005 step 2) ----------
+
+    #[test]
+    fn dlna_is_off_and_loopback_bound_by_default() {
+        // The three defaults that matter, asserted together because they are
+        // one decision: "off, and when you turn it on, only to this machine,
+        // advertising an address a client can actually fetch."
+        let c = resolve(&cli(&[]), Some(&FileConfig::default())).unwrap();
+        assert!(
+            !c.dlna.enabled,
+            "DLNA must be a decision somebody types, not a default"
+        );
+        assert!(
+            c.dlna.bind.starts_with("127.0.0.1:"),
+            "and loopback-bound even when enabled: {}",
+            c.dlna.bind
+        );
+        assert!(
+            !c.dlna.location_base.contains("0.0.0.0"),
+            "a LOCATION of 0.0.0.0 means 'this machine' to nobody, and a client \
+             that fetches it fails in a way that looks like a broken TV: {}",
+            c.dlna.location_base
+        );
+    }
+
+    #[test]
+    fn dlna_with_no_config_file_at_all_is_also_off() {
+        // `resolve` takes `Option<&FileConfig>`, and "no file" is the common
+        // case on a first run. A default that only applies when a file exists
+        // is not a default.
+        let c = resolve(&cli(&[]), None).unwrap();
+        assert!(!c.dlna.enabled);
+    }
+
+    #[test]
+    fn a_config_file_can_turn_dlna_on_and_say_where() {
+        // The point of the section: a user who wants it writes it.
+        let file = FileConfig {
+            dlna: Some(DlnaConfig {
+                enabled: true,
+                bind: "0.0.0.0:1900".into(),
+                location_base: "http://192.168.1.10:8096".into(),
+                friendly_name: "The library".into(),
+            }),
+            ..FileConfig::default()
+        };
+        let c = resolve(&cli(&[]), Some(&file)).unwrap();
+        assert!(c.dlna.enabled, "an explicit true is honoured");
+        assert_eq!(c.dlna.bind, "0.0.0.0:1900", "reaching the LAN is allowed");
+        assert_eq!(c.dlna.location_base, "http://192.168.1.10:8096");
+        assert_eq!(c.dlna.friendly_name, "The library");
+    }
+
+    #[test]
+    fn a_dlna_block_that_names_only_a_bind_is_still_off() {
+        // `#[serde(default)]` on `enabled`, asserted through a real TOML file
+        // rather than a struct literal -- the question is what a person
+        // writing a config file gets, and a struct literal cannot answer it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("commons.toml");
+        std::fs::write(
+            &path,
+            "[dlna]\nbind = \"0.0.0.0:1900\"\nlocation_base = \"http://h:8096\"\nfriendly_name = \"x\"\n",
+        )
+        .unwrap();
+
+        let loaded = load_file(&path).unwrap().expect("the file parses");
+        // Borrowed rather than moved, because `loaded` is handed to `resolve`
+        // on the next line. `.expect()` on an `Option<DlnaConfig>` field of a
+        // struct MOVES the field, and a test that consumes its own fixture
+        // halfway through is a confusing error to read.
+        let dlna = loaded.dlna.as_ref().expect("a [dlna] section");
+        assert!(!dlna.enabled, "omitting `enabled` means off, not on");
+        assert_eq!(dlna.bind, "0.0.0.0:1900", "and the rest is read");
+
+        let c = resolve(&cli(&[]), Some(&loaded)).unwrap();
+        assert!(!c.dlna.enabled, "and it stays off through resolve");
+    }
+
+    #[test]
+    fn a_typo_in_the_dlna_block_is_an_error_rather_than_a_setting_that_does_nothing() {
+        // `deny_unknown_fields` is what makes this true, and the failure it
+        // prevents is the worst kind: a config file that parses, a feature
+        // that stays off, and a user with no idea why their television cannot
+        // see the library.
+        //
+        // This test exists because that exact bug was present and invisible.
+        // `FileConfig` has carried `deny_unknown_fields` all along, and it does
+        // NOT propagate into a nested struct -- so a `[dlna]` block with
+        // `enabeld = true` alongside every required field parsed cleanly and
+        // was ignored. `DlnaConfig` now carries the attribute itself. Written
+        // through a real TOML file rather than a struct literal, because a
+        // struct literal cannot exercise a serde attribute at all.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("commons.toml");
+        std::fs::write(
+            &path,
+            "[dlna]\nbind = \"127.0.0.1:1900\"\nlocation_base = \"http://h:8096\"\n\
+             friendly_name = \"x\"\nenabeld = true\n",
+        )
+        .unwrap();
+
+        let e = load_file(&path).expect_err("a misspelled key is not a config");
+        assert!(
+            format!("{e}").contains("enabeld"),
+            "the error names the key the person mistyped: {e}"
+        );
+    }
+
+    #[test]
+    fn a_complete_dlna_block_with_no_typos_loads() {
+        // The other half, so the test above cannot be satisfied by rejecting
+        // every `[dlna]` block. Serde's error for a missing required field
+        // reads `missing field \`bind\``, which is a rejection too -- a test
+        // that only checked "it errors" would pass on a config that never
+        // worked.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("commons.toml");
+        std::fs::write(
+            &path,
+            "[dlna]\nenabled = true\nbind = \"0.0.0.0:1900\"\n\
+             location_base = \"http://192.168.1.10:8096\"\nfriendly_name = \"The library\"\n",
+        )
+        .unwrap();
+
+        let loaded = load_file(&path).unwrap().expect("the file parses");
+        let dlna = loaded.dlna.expect("a [dlna] section");
+        assert!(dlna.enabled);
+        assert_eq!(dlna.bind, "0.0.0.0:1900");
+        assert_eq!(dlna.location_base, "http://192.168.1.10:8096");
+        assert_eq!(dlna.friendly_name, "The library");
+    }
+
+    #[test]
+    fn the_dlna_location_defaults_to_the_public_base_url_and_not_the_bind_address() {
+        // The bind address is a socket to LISTEN on (`0.0.0.0:8096`, a port)
+        // and a LOCATION is a URL a client FETCHES. Deriving one from the
+        // other produces `http://0.0.0.0:8096`, which is unroutable.
+        let c = resolve(
+            &cli(&["--public-base-url", "https://media.example"]),
+            Some(&FileConfig::default()),
+        )
+        .unwrap();
+        assert_eq!(c.dlna.location_base, "https://media.example");
+        // The socket this process listens on is a different thing entirely, and
+        // must not leak into the advertised URL.
+        assert_ne!(
+            c.dlna.location_base,
+            format!("http://{}", c.bind),
+            "the LOCATION is a URL, not a socket: bind is {}",
+            c.bind
+        );
     }
 }
