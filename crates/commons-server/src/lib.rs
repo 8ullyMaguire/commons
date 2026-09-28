@@ -19,6 +19,10 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 pub mod config;
+// T-P6-005. `pub` for the same reason as `external_player`: the accept
+// criterion is an integration test, and an integration test is a separate
+// crate.
+pub mod dlna;
 // T-P6-005. `pub` and not `pub(crate)` because the ticket's accept criterion
 // is an integration test in `tests/`, and an integration test is a separate
 // crate: it can only see `pub` items. A `pub(crate)` module would compile
@@ -123,6 +127,12 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(interview::get_words),
         )
         .route("/media/:object_id/chapters", get(interview::get_chapters))
+        // T-P6-005. `/dlna/description.xml` names no object and is not gated;
+        // `/dlna/control` IS, inside `dlna::content_browse`, because a DLNA
+        // client is on the LAN and has never authenticated -- there is no
+        // later check to catch a browse that reached past `media_path`.
+        .route("/dlna/description.xml", get(dlna::get_description))
+        .route("/dlna/control", post(dlna::browse_route))
         // T-P6-004b. Both are gated on the same 404 `GET /media/:id` uses --
         // absent, off-disk and denied stay indistinguishable, or these two
         // routes become the cheapest way to probe a library.
@@ -207,10 +217,38 @@ pub async fn run(config: Config) -> Result<(), StartError> {
     health::record_pending_migrations(0);
     health::record_pending_jobs(pending);
 
-    let app = router(state);
+    let app = router(state.clone());
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|source| StartError::Bind { addr, source })?;
+
+    // T-P6-005: the SSDP responder, ONLY when a config file asked for it.
+    //
+    // The `if` is the requirement, not a convenience. Without it the socket
+    // binds on every start and the feature is on in production while reading
+    // as off in the config — and a media server that advertises its library
+    // to every device on the network is the outcome this ticket exists to
+    // prevent. See `config::DlnaConfig`.
+    //
+    // A bind failure is a WARNING, not a startup failure: the HTTP server is
+    // fine, and somebody who asked for DLNA on a machine where port 1900 is
+    // taken should still get a working library.
+    let _dlna_task = if state.config.dlna.enabled {
+        match dlna::bind_responder(&state.config.dlna.bind).await {
+            Ok(sock) => {
+                let usn = dlna::stable_usn(&state.config.data_dir);
+                let base = state.config.dlna.location_base.clone();
+                tracing::info!(usn = %usn, location = %base, "dlna: responder up");
+                Some(tokio::spawn(dlna::serve_responder(sock, usn, base)))
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "dlna: could not bind, discovery is off");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     tracing::info!(
         mode = %mode.as_str(),
