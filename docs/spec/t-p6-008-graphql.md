@@ -107,19 +107,30 @@ candidates for GraphQL — this is a decision the spec must state, because
 | `/media/:id/funscripts` | exists | **stays REST** — ditto |
 | `/media/:id/playback` | exists | **stays REST** — `PUT` is a state write with `keepalive` |
 | `/api/share` | exists | **stays REST** — §7.5 status-code translation, not a query |
-| `/api/bulk/tag` | **MISSING** | **stays REST, and the route must be built** |
-| `/api/thumbs` | **MISSING** | **stays REST, and the route must be built** |
+| `/api/bulk/tag` | **not called** | **superseded by the GraphQL mutation** — the only mention in `client.ts` is the comment saying so |
+| `/api/thumbs` | **not called** | **never added, by design** — the only mention is the comment naming it as the hypothetical change the fetch invariant prevents |
 
 **Media bytes never go through GraphQL.** T-P6-007's `CHANGELOG.md` and §11.5's
 own framing put `/api/v1` as the script surface; a GraphQL layer in front of
 byte delivery would mean a second, differently-authenticated path to the same
 files, and the DLNA and proxy surfaces already exist for players.
 
-**The two MISSING routes are the real gap this ticket exposes**, and they are
-not GraphQL's job either — they are REST routes the UI calls today and the
-server does not serve. Building them is two small handlers plus tests, and it is
-listed here because discovering it while measuring is cheaper than a UI bug
-report later.
+**CORRECTION (measured at `2235d39`): the two "MISSING" rows above are not a
+gap, and the original measurement was wrong.** This spec recorded them as routes
+"the UI calls today and the server does not serve", and plan step 5 was written
+to build them. Re-measured: `/api/bulk/tag` appears in `client.ts` **once, inside
+a comment** explaining why the bulk-tag mutation is GraphQL; `/api/thumbs`
+appears **once, inside a comment** naming `fetch('/api/thumbs')` as the
+hypothetical two-line change `tests/invariants.test.ts` exists to prevent. Zero
+code references to either, and neither appears anywhere in
+`crates/commons-server/src/`.
+
+Grepping a file for a path finds the path in its prose, and both strings survive
+in `client.ts` as the *reasons* the code is the way it is. Building routes on
+the strength of that measurement would have created a second HTTP surface for a
+feature that deliberately has exactly one. The disproof was cheap — count the
+mentions that are not in a comment — and it is recorded here so the claim is not
+re-derived from a grep next time.
 
 ## 3. The `totalCount` conflict, and the decision
 

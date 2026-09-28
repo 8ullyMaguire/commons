@@ -540,19 +540,39 @@ passed-through caller with `crate::media::local_caller()` — the exact defect t
 module docs warn about — kills it at that `assert_ne!`. (The first mutation
 attempt did not compile; a mutation that fails to build proves nothing.)
 
-## Step 5 — the REST routes the UI already calls and the server does not serve
+## Step 5 — ANSWERED: there is no REST gap. Spec §2's measurement was wrong.
 
-Measured in spec §2: `/api/bulk/tag` and `/api/thumbs` are called by
-`client.ts` and are absent from the router's 22 routes.
+Spec §2 recorded that "`/api/bulk/tag` and `/api/thumbs` are called by
+`client.ts` and are absent from the router's 22 routes", and step 5 was written
+to build them. **Both are false, and the way they are false is the finding.**
 
-Either build them here with tests, or **split them into their own ticket and
-write that down in this file and the vault.** Do not leave them unmentioned —
-they are a live bug in the UI today, independent of GraphQL, and finding them
-was the point of measuring.
+Re-measured at `2235d39`:
 
-Note that `bulkApplyTag` arriving via GraphQL does **not** fix the REST gap: the
-UI calls the REST path from a different code path, and "we have it in GraphQL
-now" is not a reason to leave a 404 in place.
+- `/api/bulk/tag` appears in `client.ts` **exactly once, inside a comment** —
+  the block explaining why the bulk-tag mutation is GraphQL rather than REST
+  ("a route that grew its own `fetch('/api/bulk/tag')` passed every functional
+  test and failed that one — correctly"). Zero code references.
+- `/api/thumbs` appears **exactly once, inside a comment** — the share-links
+  block explaining why those verbs live in `client.ts` at all, naming
+  `fetch('/api/thumbs')` as the hypothetical two-line change the invariant
+  `tests/invariants.test.ts` exists to prevent. Zero code references.
+- Neither path appears anywhere in `crates/commons-server/src/` at all.
+
+**So there is nothing to build, and the reason is that the removal already
+happened deliberately.** `/api/bulk/tag` was superseded by the GraphQL mutation
+this ticket just implemented; `/api/thumbs` was never added, by design, because
+a second HTTP path in the UI is a second place for a base URL, a header, an auth
+token and an error shape to disagree.
+
+**How the original measurement went wrong, and it is worth writing down.**
+Grepping a file for a path finds the path in its prose. Both strings survive in
+`client.ts` as the *reasons* the code is the way it is, and a grep cannot tell
+a call site from a citation. A measurement that says "the UI calls a 404" is a
+claim that should be cheap to disprove, and the cheapest disproof is the one
+that was skipped: count the mentions that are not inside a comment. A route
+built on the strength of that measurement would have been a **second** HTTP
+surface for a feature that deliberately has one, and it would have looked
+correct.
 
 ## Step 6 — the two missing routes' tests must not be a mock's job
 
