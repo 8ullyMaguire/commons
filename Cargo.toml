@@ -64,8 +64,18 @@ sqlx = { version = "0.8", default-features = false, features = [
     "json",
     "migrate",
 ] }
-async-graphql = "7.0"
-async-graphql-axum = "7.0"
+# T-P6-007: `async-graphql` and `async-graphql-axum` were ALSO here, under
+# `[workspace.dependencies]`, and are removed for the same reason they were
+# removed from `crates/commons-api/Cargo.toml` -- no `.rs` file in the workspace
+# references `async_graphql` (`grep -rl async_graphql --include=*.rs .` returns
+# 0). They were already absent from `Cargo.lock`, which is the trap: a
+# `[workspace.dependencies]` entry that no member crate inherits never reaches
+# the lock file, so it is invisible to every check that reads the lock. Removing
+# the member-crate entry alone looked like a completed cleanup and was not.
+#
+# The GraphQL server is T-P6-007's deferred half (§4 of the spec) and belongs to
+# its own ticket. §11.5 of the platform spec should not look closer to shipped
+# than it is.
 axum = { version = "0.7", features = ["ws"] }
 # T-P6-007: the `/api/v1` OpenAPI document, generated from the same
 # `#[utoipa::path]` attributes the handlers carry.

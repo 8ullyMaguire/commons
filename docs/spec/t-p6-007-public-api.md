@@ -8,6 +8,30 @@ a small OpenAPI surface for external tools; upload endpoints for video and image
 with consent attestation (§14.1); a Jellyfin-compatible read API (#2747); a
 client SDK. §13.4 covers import/export.
 
+> **STATUS: CLOSED** at `88fd5ae`, tag `phase-7-100-api-v1-openapi`.
+> Gate: 1884 passed / 0 failed / 1 ignored, 106 suites, twice;
+> `clippy --workspace --all-targets` 0; `fmt --all --check` clean.
+>
+> **The `Accept:` line above is the TICKET's, and it is wider than this
+> implementation.** It names five features; §4 of this spec scopes four of them
+> out as follow-ons, and §5 — the acceptance criteria this ticket is actually
+> judged against — names none of them. Read the two together: the ticket asked
+> for a public API and this delivered one, while GraphQL, upload, Jellyfin and
+> the SDK are named, scoped out, and owned by later tickets.
+>
+> This note exists because four consecutive passes of the session log recorded
+> "T-P6-007 is NOT closed — the missing-attestation upload test is NOT met",
+> treating the `Accept:` line as the criteria. **A follow-on named in §4's
+> exclusions is not an unmet deliverable**, and reading it as one keeps a closed
+> ticket open indefinitely. §5 is the criteria list; §4 is the scope boundary.
+>
+> All six §5 criteria verified against the tree at closure, not against a claim.
+> AC5 (`async-graphql` "used or removed") was the one that was **not** actually
+> met at that point: the `[workspace.dependencies]` declaration in the root
+> `Cargo.toml` survived, invisible to every check that reads `Cargo.lock`
+> because an uninherited workspace entry never reaches the lock file. Fixed, and
+> pinned by `crates/commons-api/tests/declared_dependencies.rs`.
+
 ---
 
 ## 1. What the ticket says, and what is actually there
