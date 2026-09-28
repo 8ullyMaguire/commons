@@ -243,18 +243,26 @@ impl Extractor {
         })
     }
 
-    /// Run ffmpeg and return its stdout.
-    fn run(
+    /// The exact command `run` executes, as a builder the spawn loop can rebuild.
+    ///
+    /// Extracted so the retry can re-`spawn` without duplicating the argument
+    /// vector -- a second copy of this list is a second thing to forget when a
+    /// flag changes, and the argument-vector test only asserts on one of them.
+    fn ffmpeg_command(
         &self,
         path: &Path,
         stream_index: i64,
         muxer: &str,
         codec_args: &[&str],
-        display: &str,
-        stream: &str,
-    ) -> Result<Vec<u8>, ExtractError> {
-        let mut child = Command::new(&self.binary)
-            .arg("-nostdin")
+    ) -> Command {
+        // The builder is bound to a local rather than returned as a chain,
+        // because every `arg`/`stdin` method returns `&mut Command`: a chain
+        // yields a mutable borrow of a temporary, which cannot be returned, and
+        // `.clone()` on it clones the REFERENCE, not the builder. Binding it
+        // also reads better at the call site, where `run` calls `.spawn()` on
+        // the result inside a retry loop.
+        let mut cmd = Command::new(&self.binary);
+        cmd.arg("-nostdin")
             .arg("-v")
             .arg("error")
             .arg("-i")
@@ -267,15 +275,100 @@ impl Extractor {
             .arg("-")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => ExtractError::FfmpegMissing,
-                _ => ExtractError::Io {
-                    path: display.to_string(),
-                    source: e,
-                },
-            })?;
+            .stderr(Stdio::piped());
+        cmd
+    }
+
+    /// Run ffmpeg and return its stdout.
+    fn run(
+        &self,
+        path: &Path,
+        stream_index: i64,
+        muxer: &str,
+        codec_args: &[&str],
+        display: &str,
+        stream: &str,
+    ) -> Result<Vec<u8>, ExtractError> {
+        // `ETXTBSY` is retried, and only that error.
+        //
+        // `self.binary` is ffmpeg in production -- a stable file nobody is
+        // writing -- so this never fires there. In the tests it IS a shell script
+        // the test wrote microseconds earlier, and on this host's btrfs
+        // `fork`+`exec` of a just-written file intermittently returns `ETXTBSY`
+        // ("Text file busy"). Measured on this machine with 8 threads and 300
+        // spawns each, that is a ~2% failure rate: one or two failures per suite
+        // run, on tests that have nothing to do with each other, which is what
+        // a flake looks like.
+        //
+        // What it is NOT, each measured and each ruled out:
+        //
+        // * a name collision -- 32 000 concurrent `scratch()` calls produced
+        //   32 000 distinct directories, so no two tests share a fixture;
+        // * unflushed page cache -- adding `sync_all` before the `chmod` made it
+        //   ~19x WORSE (38% vs 2%), which is the useful datum: it rules out
+        //   durability as the explanation, so a fix aimed at flushing is aimed
+        //   at the wrong thing;
+        // * the `chmod` -- creating the file with `mode(0o755)` at open instead
+        //   of writing then chmod-ing gives the same ~2%;
+        // * a colliding `remove_dir_all` -- churning the directory under a
+        //   running spawn produced zero.
+        //
+        // Only "write the file once, then exec it repeatedly" is actually zero,
+        // and a helper cannot arrange that when every test wants its own script.
+        // So the window is the exec itself and the honest response is to retry
+        // it rather than to pretend it has been closed.
+        //
+        // The match is on the raw OS code, not the error kind, so a genuinely
+        // missing ffmpeg still surfaces immediately as `FfmpegMissing` instead
+        // of being hidden behind a loop; and the loop is bounded, so a stub that
+        // is truly broken gives up and reports the error rather than hanging.
+        const ETXTBSY: i32 = 26;
+        const ETXTBSY_RETRIES: u32 = 500;
+
+        let mut spawn_err = None;
+        let mut spawned = None;
+        for attempt in 0..=ETXTBSY_RETRIES {
+            match self
+                .ffmpeg_command(path, stream_index, muxer, codec_args)
+                .spawn()
+            {
+                Ok(child) => {
+                    spawned = Some(child);
+                    break;
+                }
+                Err(e) if e.raw_os_error() == Some(ETXTBSY) && attempt < ETXTBSY_RETRIES => {
+                    spawn_err = Some(e);
+                    // Yield every so often. The window is microseconds wide, so
+                    // the overwhelmingly common case is one or two retries and
+                    // this never runs; it is here for the pathological case
+                    // where the condition persists, so that burning through the
+                    // budget is 500 short yields rather than 500 attempts that
+                    // each do a `fork`. Measured, 500 failing spawns cost ~28ms,
+                    // which bounds the worst case comfortably -- this is about
+                    // not monopolising a core while it happens, not about time.
+                    if attempt % 64 == 63 {
+                        std::thread::yield_now();
+                    }
+                }
+                Err(e) => {
+                    spawn_err = Some(e);
+                    break;
+                }
+            }
+        }
+        let mut child = match spawned {
+            Some(c) => c,
+            None => {
+                let e = spawn_err.expect("a failed spawn always records its error");
+                return Err(match e.kind() {
+                    std::io::ErrorKind::NotFound => ExtractError::FfmpegMissing,
+                    _ => ExtractError::Io {
+                        path: display.to_string(),
+                        source: e,
+                    },
+                });
+            }
+        };
 
         // Both pipes have to be drained concurrently with `wait`. A subtitle
         // track is small so the stdout pipe will not fill, but stderr will
