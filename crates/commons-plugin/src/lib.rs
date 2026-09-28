@@ -97,6 +97,100 @@ pub struct Manifest {
     pub kind: PluginKind,
 }
 
+impl Manifest {
+    /// Check everything serde cannot.
+    ///
+    /// Split deliberately from `Installer::install`, which is where the
+    /// temptation is to put it. `install` is not the only thing that reads a
+    /// manifest: §5.18.1's disclosure panel renders one *before* anyone
+    /// decides to install, and a future gallery listing parses them all. A
+    /// check that only exists on the install path is a check the other two
+    /// paths do not have — and the whole point of §11.4's "the host enforces
+    /// them at instantiation" is that the enforcement is not optional.
+    pub fn validate(&self) -> Result<(), ManifestError> {
+        if self.id.is_empty() {
+            return Err(ManifestError::EmptyId);
+        }
+        if !is_safe_id(&self.id) {
+            return Err(ManifestError::IdNotReverseDns(self.id.clone()));
+        }
+        if self.name.is_empty() {
+            return Err(ManifestError::EmptyName);
+        }
+        if !is_semver(&self.version) {
+            return Err(ManifestError::MalformedVersion(self.version.clone()));
+        }
+        // A *mismatch* against `API_VERSION` is `install`'s job, because a
+        // mismatch is a POLICY question ("this build speaks 1, that plugin
+        // speaks 2"). 0 is different: no host has ever spoken 0, and in Rust
+        // an unset `u32` is 0, so it reads as "the author left this out"
+        // rather than as a version. That is a bug in the manifest.
+        if self.api_version == 0 {
+            return Err(ManifestError::BadApiVersion(self.api_version));
+        }
+        Ok(())
+    }
+}
+
+/// Lowercase `a-z`, `0-9`, dot, dash, underscore — and none of the separators
+/// that mean something.
+///
+/// **The separators are the point, not the length or shape.** `..` is what
+/// makes `../../etc/passwd` a traversal, and `/` and `\` are what make an id
+/// a path at all. A validator that allows them has validated nothing, and the
+/// id is the key a reinstall (#6987) and an uninstall will look up — so this
+/// is a shape check on something that will be used as a *name*.
+///
+/// **No dot is REQUIRED, deliberately.** The crate's own fixture is
+/// `id: "commons-locator"`, and requiring a dot would refuse the one
+/// first-party plugin §11.4 names. The rule is "the characters must be safe
+/// and the separators must not mean anything", not "this must look like a
+/// domain". A strict reverse-DNS requirement is a defensible alternative and
+/// would be a breaking change to that fixture — decide it deliberately rather
+/// than discovering it in a failing test.
+fn is_safe_id(id: &str) -> bool {
+    !id.is_empty()
+        && !id.starts_with('.')
+        && !id.ends_with('.')
+        && !id.contains("..")
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-' | '_'))
+}
+
+/// A minimal semver check: `MAJOR.MINOR.PATCH`, each a run of ASCII digits,
+/// optionally followed by `-prerelease` and/or `+build`.
+///
+/// **Hand-rolled rather than the `semver` crate, which is declared in this
+/// crate's `Cargo.toml` and used nowhere in it.** A dead dependency is one
+/// `clippy::unused_crate_dependencies` would flag the moment it was enabled.
+/// The reason to keep it hand-rolled rather than delete the line and use the
+/// crate: this function is *exactly the property under test*, so it is
+/// readable in the same file as the table that pins it. `Version::parse` is a
+/// black box whose edge cases cannot be checked by reading.
+///
+/// # The leading-zero rule, and the bug this had first
+///
+/// `!p.starts_with('0')` looks right and is **wrong**: it rejects a bare
+/// `"0"`, so it refuses `1.0.0` and `0.1.0` — every real version. The rule is
+/// *no leading zero*: `p.len() > 1 && p.starts_with('0')`, which still refuses
+/// `01.0.0` and `1.00.0`.
+///
+/// Found by transcribing this to Python and running all 22 inputs before
+/// writing it down: three failed, and two of them were the most important
+/// inputs there are. A validator that rejects `1.0.0` fails loudly and would
+/// have cost one test cycle; the point of checking first is that it did not.
+fn is_semver(v: &str) -> bool {
+    let core = v.split(['-', '+']).next().unwrap_or_default();
+    let parts: Vec<&str> = core.split('.').collect();
+    parts.len() == 3
+        && parts.iter().all(|p| {
+            !p.is_empty()
+                && p.chars().all(|c| c.is_ascii_digit())
+                && !(p.len() > 1 && p.starts_with('0'))
+        })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PluginKind {
@@ -177,6 +271,50 @@ impl HostPolicy {
     }
 }
 
+/// Why a manifest is not a manifest. Distinct variants because §5.18.1 shows
+/// the user *which* part of their plugin is wrong, and a single `Invalid`
+/// cannot do that — the same reason `InstallError` has five variants rather
+/// than one.
+///
+/// A **schema** refusal, and deliberately distinct from `InstallError`, which
+/// is a **policy** refusal. A manifest asking for `network` is well-formed;
+/// whether the user grants it is `HostPolicy`'s business, and §11.4 expects
+/// the first-party scrapers to ask for internet access. Conflating the two
+/// would make the plugin API unusable for exactly the plugins the spec names
+/// — and it would make "grant me the network" impossible, since a user can
+/// only grant what a validator let through.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ManifestError {
+    #[error("plugin id is empty")]
+    EmptyId,
+    #[error("plugin id {0:?} is not lowercase a-z, 0-9, dot, dash or underscore")]
+    IdNotReverseDns(String),
+    #[error("plugin name is empty")]
+    EmptyName,
+    #[error("plugin version {0:?} is not semver (major.minor.patch)")]
+    MalformedVersion(String),
+    #[error("api_version {0} is not a version any host was built against")]
+    BadApiVersion(u32),
+}
+
+impl ManifestError {
+    /// A stable machine-readable name.
+    ///
+    /// `Display` is for a person; this is for a test table and for a UI that
+    /// wants to attach a message to a *field*. It is part of this crate's API
+    /// in the same way `Capability`'s wire names are, and
+    /// `tests/manifest_schema.rs` pins every one of them.
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::EmptyId => "EmptyId",
+            Self::IdNotReverseDns(_) => "IdNotReverseDns",
+            Self::EmptyName => "EmptyName",
+            Self::MalformedVersion(_) => "MalformedVersion",
+            Self::BadApiVersion(_) => "BadApiVersion",
+        }
+    }
+}
+
 /// Why a plugin was refused. Distinct variants because "wrong API version" and
 /// "you asked for the internet" call for different user actions.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -191,6 +329,12 @@ pub enum InstallError {
     AlreadyInstalled(String),
     #[error("a locator plugin may not request {0:?}")]
     LocatorRequestsPrivileged(Capability),
+    /// T-P6-006. The manifest is not a manifest, as opposed to being one the
+    /// host declines to accept. Wrapping `ManifestError` rather than adding
+    /// a second parallel enum keeps "why was this refused" answerable in one
+    /// `match` at the call site.
+    #[error("plugin manifest is not valid: {0}")]
+    Malformed(#[from] ManifestError),
 }
 
 /// The API version this build speaks. Bumping it is how §11.4 stays honest:
@@ -487,6 +631,15 @@ impl Installer {
 
     /// Install, or refuse with the reason.
     pub fn install(&mut self, manifest: Manifest) -> Result<Installed, InstallError> {
+        // T-P6-006: SCHEMA before POLICY, and this ordering is the point.
+        //
+        // A malformed manifest reported as "wrong API version" sends the
+        // author to fix the wrong thing. And a manifest with
+        // `id: "../../etc/passwd"` reaching the duplicate-id check has already
+        // been recorded in a BTreeSet under a path-shaped key — which is the
+        // shape a future uninstall will use to find it.
+        manifest.validate()?;
+
         if manifest.api_version != API_VERSION {
             return Err(InstallError::ApiVersion {
                 got: manifest.api_version,
@@ -742,5 +895,154 @@ mod tests {
         assert!(!Capability::LoopbackHttp.is_privileged());
         assert!(!Capability::ReadLibrary.is_privileged());
         assert!(!Capability::ProposeMetadata.is_privileged());
+    }
+
+    // ---------- T-P6-006: the manifest schema ----------
+
+    /// The `semver` shape, as a table rather than the three cases a
+    /// `MalformedVersion` test would use — because this function was WRONG on
+    /// first write, and the bug was in the accept side.
+    ///
+    /// The rule is "no leading zero", and the first attempt was
+    /// `!p.starts_with('0')`, which also refuses a bare `"0"` and therefore
+    /// refuses `1.0.0` and `0.1.0`. Those two are the first entries below
+    /// because they are the inputs a real version is made of.
+    ///
+    /// **These live HERE and not in `tests/manifest_schema.rs` because
+    /// `is_semver` is private.** An integration test can only reach it by
+    /// making it public, and a version checker is not part of this crate's
+    /// public API — it is an implementation detail of `validate`.
+    #[test]
+    fn a_version_is_three_dot_separated_numbers() {
+        for good in [
+            "1.0.0",
+            "0.0.0",
+            "0.1.0",
+            "10.20.30",
+            "1.2.3-alpha.1",
+            "1.2.3+build.5",
+            "1.2.3-alpha.1+build.5",
+        ] {
+            assert!(is_semver(good), "{good:?} should be a version");
+        }
+        for bad in [
+            "1.0",                 // too few parts
+            "1",                   //
+            "",                    // empty
+            "latest",              // not a number at all
+            "v2",                  // a v prefix is a convention, not semver
+            "1.0.0.0",             // too many parts
+            "01.0.0",              // leading zero
+            "1.00.0",              // leading zero
+            "1..0",                // empty part
+            "1.0.",                // trailing dot
+            " 1.0.0",              // leading space
+            "1.0.0 ",              // trailing space
+            "1.-1.0",              // negative
+            "1.0.0a",              // trailing alphanumeric
+            "\u{0661}.\u{0660}.0", // ARABIC-INDIC DIGITS
+        ] {
+            assert!(!is_semver(bad), "{bad:?} should NOT be a version");
+        }
+    }
+
+    /// The last row above is the one worth keeping: `char::is_numeric()`
+    /// returns `true` for Arabic-Indic digits and `is_ascii_digit` does not.
+    /// A validator written with `is_numeric` accepts a version nobody can read
+    /// aloud, and a version gets compared and sorted.
+    #[test]
+    fn the_version_check_is_ascii_only() {
+        assert!(!is_semver("\u{0661}\u{0660}.\u{0660}.\u{0660}"));
+        assert!(is_semver("1.0.0"));
+    }
+
+    /// The id rule, and the first-party fixture that constrains it.
+    #[test]
+    fn an_id_must_be_safe_to_use_as_a_name() {
+        // `commons-locator` is the id `locator_plugin()` builds, and it belongs
+        // to the one first-party plugin §11.4 names. If this ever starts
+        // failing, the RULE changed — so change the fixture deliberately.
+        // Do not quietly loosen the rule to save a test.
+        assert!(
+            is_safe_id("commons-locator"),
+            "the first-party id must pass"
+        );
+        assert!(is_safe_id("com.example.locator"));
+
+        for bad in [
+            "",
+            "..",
+            "a..b",
+            ".leading",
+            "trailing.",
+            "../../etc/passwd",
+            "Com.Example",
+            "com example",
+            "com/example",
+            "com\\example",
+        ] {
+            assert!(!is_safe_id(bad), "{bad:?} should be refused");
+        }
+    }
+
+    /// The refusal names are compared as strings by
+    /// `tests/manifest_schema.rs`, which makes them part of this crate's API.
+    #[test]
+    fn the_refusal_names_are_stable() {
+        assert_eq!(
+            [
+                ManifestError::EmptyId,
+                ManifestError::IdNotReverseDns(String::new()),
+                ManifestError::EmptyName,
+                ManifestError::MalformedVersion(String::new()),
+                ManifestError::BadApiVersion(0),
+            ]
+            .map(|e| e.name()),
+            [
+                "EmptyId",
+                "IdNotReverseDns",
+                "EmptyName",
+                "MalformedVersion",
+                "BadApiVersion",
+            ],
+        );
+    }
+
+    /// `install` reports a schema problem as a schema problem, not as the
+    /// policy refusal that happens to be checked next. A manifest with both a
+    /// bad id and a wrong api_version must name the id: the version is a fact
+    /// about the host, the id is a bug in the plugin, and only one of them is
+    /// something the plugin's author can fix.
+    #[test]
+    fn a_malformed_manifest_is_reported_before_a_policy_refusal() {
+        let mut i = Installer::new(HostPolicy::first_party());
+        let err = i
+            .install(Manifest {
+                id: "../escape".into(),
+                name: "x".into(),
+                version: "1.0.0".into(),
+                api_version: 9999,
+                requested: BTreeSet::new(),
+                kind: PluginKind::General,
+            })
+            .expect_err("refused");
+        assert!(
+            matches!(
+                err,
+                InstallError::Malformed(ManifestError::IdNotReverseDns(_))
+            ),
+            "{err:?}"
+        );
+    }
+
+    /// Every `install` refusal in this module uses `locator_plugin()`, so
+    /// schema validation must not have changed any of them — asserted
+    /// directly rather than trusted. If validation ever rejected the fixture,
+    /// every policy test here would be asserting on `Malformed` instead of on
+    /// the policy it claims to test, and would still PASS while testing
+    /// nothing. That is the failure this one assertion prevents.
+    #[test]
+    fn the_first_party_fixture_is_itself_valid() {
+        assert_eq!(locator_plugin().validate(), Ok(()));
     }
 }

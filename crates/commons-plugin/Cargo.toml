@@ -10,16 +10,20 @@ commons-core = { workspace = true }
 commons-store = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-uuid = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 wasmtime = { workspace = true }
 camino = { workspace = true }
-semver = { workspace = true }
 tokio = { workspace = true }
 sha2 = { workspace = true }
 ed25519-dalek = { workspace = true }
+# T-P6-006: `uuid` and `semver` were both declared here and used NOWHERE in
+# this crate -- verified with `grep -rE '\bsemver::|\buuid::' src/`, not
+# assumed. `is_semver` in lib.rs is hand-rolled on purpose so the version
+# rule sits next to the test that pins it; see its doc comment for why the
+# crate is not the better answer. A dependency nobody calls is one
+# `unused_crate_dependencies` warning away from being noise.
 
 [dev-dependencies]
 # `propose_locator` is a real database write, so the tests that exercise the
