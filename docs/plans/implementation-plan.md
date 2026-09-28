@@ -2927,6 +2927,29 @@ follow-on rather than a silently dropped half of the ticket. The transcript and
 words it would query now exist and are served, so what is left is the search
 itself and the page in front of it.
 
+### T-P6-004b — Interview derivation: quotes, topics, speaker attribution
+
+**Spec:** `docs/spec/t-p6-004b-interview-derivation.md`.
+**Plan:** `docs/plans/t-p6-004b-implementation-plan.md`.
+
+**Progress:** not started. Written after T-P6-004's two accept criteria were
+verified met. Two findings from writing the plan, both of which would
+otherwise have become wasted work:
+
+- **the tag weight column already exists** — `tag.importance REAL NOT NULL
+  DEFAULT 1.0` (`0001_core.sql:196`), plumbed to `Tag.importance` at
+  `commons-core/src/domain.rs:221`. The plan's step 1 is therefore a no-op and
+  says so; adding a `weight` column beside `importance` would give one table
+  two columns that mean the same thing.
+- **`FieldProposal` already carries `source`, `proposer_kind` and
+  `confidence`** (`domain.rs:238-242`), so a model topic needs no new type and
+  no migration.
+
+The ticket's real content is one thing: **a human's weight and a model's
+weight are not the same unit**, and mixing them in a ranking is a silent
+failure — nothing errors, the ordering is just wrong. The plan tests that
+before writing the ranking code.
+
 ### T-P6-005 — Cast, DLNA, external players
 
 **Spec:** §11.2, §11.3
