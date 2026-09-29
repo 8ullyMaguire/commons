@@ -66,6 +66,8 @@ use utoipa::OpenApi;
         crate::interview::get_chapters,
         crate::interview::get_quotes,
         crate::interview::get_topics,
+        crate::interview::get_speaker_clusters,
+        crate::interview::get_rejections,
         crate::funscript::list,
         crate::funscript::timeline,
         crate::share::create_share,

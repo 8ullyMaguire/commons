@@ -25,6 +25,7 @@ use commons_store::interview::{replace_transcript, TranscriptRow, WindowRow, Wor
 use commons_store::marker::insert_marker;
 use support::{media_fixture, media_fixture_denied, TestApp};
 use uuid::Uuid;
+use commons_core::ts;
 
 /// The parsed body.
 ///
@@ -720,4 +721,207 @@ async fn an_object_with_no_topics_is_an_empty_list_not_a_404() {
         .await;
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(json(&r)["topics"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn an_absent_object_and_a_denied_object_answer_byte_identical_404s_for_speaker_clusters() {
+    // Same oracle as the transcript route: the two 404s must be byte-identical.
+    let app = TestApp::new().await;
+    let denied = media_fixture_denied(&app, b"0123456789").await;
+    // Seed a transcript with speaker clusters for the denied object
+    seed_transcript(&app, &denied, 4).await;
+    // Add speaker cluster proposals
+    let transcript_id = format!("{}#test", denied);
+    sqlx::query(
+        "INSERT INTO interview_speaker (transcript_id, speaker_key, cluster_id) VALUES (?, ?, ?)",
+    )
+    .bind(&transcript_id)
+    .bind("speaker_0")
+    .bind("cluster_0")
+    .execute(app.store().pool())
+    .await
+    .expect("speaker cluster inserted");
+    let absent = Uuid::new_v4().to_string();
+
+    let a = app.get_raw(&format!("/media/{}/speaker-clusters", absent)).await;
+    let b = app.get_raw(&format!("/media/{}/speaker-clusters", denied)).await;
+    assert_eq!(a.status, StatusCode::NOT_FOUND);
+    assert_eq!(b.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        a.body,
+        b.body,
+        "the two 404s must be indistinguishable: {:?} vs {:?}",
+        String::from_utf8_lossy(&a.body),
+        String::from_utf8_lossy(&b.body)
+    );
+}
+
+#[tokio::test]
+async fn an_absent_object_and_a_denied_object_answer_byte_identical_404s_for_rejections() {
+    // Same oracle as the transcript route: the two 404s must be byte-identical.
+    let app = TestApp::new().await;
+    let denied = media_fixture_denied(&app, b"0123456789").await;
+    // Seed a rejection for the denied object
+    sqlx::query(
+        "INSERT INTO tag_rejection (object_id, source, value_json, rejected_by, created_at) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(&denied)
+    .bind("ml:tagger")
+    .bind(r#"{"name":"test"}"#)
+    .bind("user123")
+    .bind(ts::now())
+    .execute(app.store().pool())
+    .await
+    .expect("rejection inserted");
+    let absent = Uuid::new_v4().to_string();
+
+    let a = app.get_raw(&format!("/media/{}/rejections", absent)).await;
+    let b = app.get_raw(&format!("/media/{}/rejections", denied)).await;
+    assert_eq!(a.status, StatusCode::NOT_FOUND);
+    assert_eq!(b.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        a.body,
+        b.body,
+        "the two 404s must be indistinguishable: {:?} vs {:?}",
+        String::from_utf8_lossy(&a.body),
+        String::from_utf8_lossy(&b.body)
+    );
+}
+
+#[tokio::test]
+async fn an_object_with_no_transcript_returns_404_for_speaker_clusters() {
+    // No transcript means 404, not an empty list.
+    let app = TestApp::new().await;
+    let fixture = media_fixture(&app, b"0123456789").await;
+    let r = app
+        .get_raw(&format!("/media/{}/speaker-clusters", fixture.object_id))
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn speaker_clusters_returns_proposals() {
+    let app = TestApp::new().await;
+    let fixture = media_fixture(&app, b"0123456789").await;
+    let transcript_id = seed_transcript(&app, &fixture.object_id, 4).await;
+    // Add speaker cluster proposals
+    sqlx::query(
+        "INSERT INTO interview_speaker (transcript_id, speaker_key, cluster_id) VALUES (?, ?, ?)",
+    )
+    .bind(&transcript_id)
+    .bind("speaker_0")
+    .bind("cluster_0")
+    .execute(app.store().pool())
+    .await
+    .expect("speaker cluster 0 inserted");
+    sqlx::query(
+        "INSERT INTO interview_speaker (transcript_id, speaker_key, cluster_id) VALUES (?, ?, ?)",
+    )
+    .bind(&transcript_id)
+    .bind("speaker_1")
+    .bind(Option::<String>::None) // NULL cluster_id - not proposed yet
+    .execute(app.store().pool())
+    .await
+    .expect("speaker cluster 1 inserted");
+
+    let r = app
+        .get_json(&format!("/media/{}/speaker-clusters", fixture.object_id))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let body = json(&r);
+    assert_eq!(body["object_id"], fixture.object_id);
+    let proposals = body["proposals"].as_array().unwrap();
+    assert_eq!(proposals.len(), 2);
+    // First has a cluster_id
+    assert_eq!(proposals[0]["speaker_key"], "speaker_0");
+    assert_eq!(proposals[0]["cluster_id"], "cluster_0");
+    // Second has null cluster_id (not proposed)
+    assert_eq!(proposals[1]["speaker_key"], "speaker_1");
+    assert_eq!(proposals[1]["cluster_id"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn an_object_with_no_rejections_returns_empty_list() {
+    // No rejections means empty list, not 404.
+    let app = TestApp::new().await;
+    let fixture = media_fixture(&app, b"0123456789").await;
+    let r = app
+        .get_json(&format!("/media/{}/rejections", fixture.object_id))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let body = json(&r);
+    assert_eq!(body["object_id"], fixture.object_id);
+    assert_eq!(body["rejections"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn rejections_returns_rejections_newest_first() {
+    let app = TestApp::new().await;
+    let fixture = media_fixture(&app, b"0123456789").await;
+    let now = ts::now();
+    let now_shifted = ts::shift_days(&now, -1).unwrap(); // 1 day ago
+    // Insert two rejections, one older one newer
+    sqlx::query(
+        "INSERT INTO tag_rejection (object_id, source, value_json, rejected_by, created_at) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(&fixture.object_id)
+    .bind("ml:tagger")
+    .bind(r#"{"name":"older"}"#)
+    .bind("user1")
+    .bind(&now_shifted)
+    .execute(app.store().pool())
+    .await
+    .expect("rejection 1 inserted");
+    sqlx::query(
+        "INSERT INTO tag_rejection (object_id, source, value_json, rejected_by, created_at) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(&fixture.object_id)
+    .bind("ml:tagger")
+    .bind(r#"{"name":"newer"}"#)
+    .bind("user2")
+    .bind(now)
+    .execute(app.store().pool())
+    .await
+    .expect("rejection 2 inserted");
+
+    let r = app
+        .get_json(&format!("/media/{}/rejections", fixture.object_id))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let body = json(&r);
+    assert_eq!(body["object_id"], fixture.object_id);
+    let rejections = body["rejections"].as_array().unwrap();
+    assert_eq!(rejections.len(), 2);
+    // Newest first
+    assert_eq!(rejections[0]["value_json"], r#"{"name":"newer"}"#);
+    assert_eq!(rejections[0]["rejected_by"], "user2");
+    assert_eq!(rejections[1]["value_json"], r#"{"name":"older"}"#);
+    assert_eq!(rejections[1]["rejected_by"], "user1");
+}
+
+#[tokio::test]
+async fn rejection_with_no_author_has_null_rejected_by() {
+    // A rejection without a recorded author must have rejected_by: null, not empty string.
+    let app = TestApp::new().await;
+    let fixture = media_fixture(&app, b"0123456789").await;
+    sqlx::query(
+        "INSERT INTO tag_rejection (object_id, source, value_json, rejected_by, created_at) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(&fixture.object_id)
+    .bind("ml:tagger")
+    .bind(r#"{"name":"no-author"}"#)
+    .bind("") // empty string -> should become null
+    .bind(ts::now())
+    .execute(app.store().pool())
+    .await
+    .expect("rejection inserted");
+
+    let r = app
+        .get_json(&format!("/media/{}/rejections", fixture.object_id))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let body = json(&r);
+    let rejections = body["rejections"].as_array().unwrap();
+    assert_eq!(rejections.len(), 1);
+    assert_eq!(rejections[0]["rejected_by"], serde_json::Value::Null);
 }

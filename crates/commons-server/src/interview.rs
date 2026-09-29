@@ -532,3 +532,114 @@ pub async fn get_topics(
 
     (StatusCode::OK, axum::Json(TopicList { object_id, topics })).into_response()
 }
+
+/// Response for speaker cluster proposals.
+#[derive(Debug, Serialize)]
+struct SpeakerClusterProposalsOut {
+    object_id: String,
+    proposals: Vec<SpeakerClusterProposalOut>,
+}
+
+#[derive(Debug, Serialize)]
+struct SpeakerClusterProposalOut {
+    speaker_key: String,
+    /// `null` when the cluster has not been proposed yet.
+    cluster_id: Option<String>,
+}
+
+/// `GET /media/:object_id/speaker-clusters`
+///
+/// Returns the speaker cluster proposals for an object's transcript.
+/// The consent gate is the same one `GET /media/:id` uses -- absent,
+/// off-disk and denied all give the same 404, because a client that
+/// can distinguish them can probe the library for what a user has.
+#[utoipa::path(get, path = "/media/{object_id}/speaker-clusters", responses((status = 200, description = "Success")), params(("object_id" = String, Path)))]
+/// T-P6-007: the `/api/v1` OpenAPI document reads this. The path is
+/// the VERSIONED one even though the route also answers unversioned --
+/// a document that listed the internal path would send consumers to the
+/// surface §11.5 promises to keep unversioned.
+pub async fn get_speaker_clusters(
+    State(state): State<std::sync::Arc<AppState>>,
+    AxumPath(object_id): AxumPath<String>,
+) -> Response {
+    // The gate `GET /media/:id` uses. Absent, off-disk and denied are one
+    // answer; a new route that forgets this re-opens a library-probing hole.
+    match state.store.media_path(&object_id, &local_caller()).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return not_found(),
+        Err(e) => {
+            tracing::error!(object_id = %object_id, error = %e, "interview: media_path failed");
+            return internal_error();
+        }
+    }
+    let store = &state.store;
+    // First get the transcript for this object
+    let transcript = match commons_store::interview::transcript_for(store, &object_id).await {
+        Ok(Some(t)) => t,
+        Ok(None) => return not_found(),
+        Err(_) => return not_found(),
+    };
+    let proposals = match commons_store::interview::speaker_cluster_proposals(store, &transcript.id).await {
+        Ok(p) => p,
+        Err(_) => return not_found(),
+    };
+    let proposals_out: Vec<SpeakerClusterProposalOut> = proposals
+        .into_iter()
+        .map(|(speaker_key, cluster_id)| SpeakerClusterProposalOut { speaker_key, cluster_id })
+        .collect();
+
+    (StatusCode::OK, axum::Json(SpeakerClusterProposalsOut { object_id, proposals: proposals_out })).into_response()
+}
+
+/// Response for rejections.
+#[derive(Debug, Serialize)]
+struct RejectionsOut {
+    object_id: String,
+    rejections: Vec<RejectionOut>,
+}
+
+#[derive(Debug, Serialize)]
+struct RejectionOut {
+    source: String,
+    value_json: String,
+    /// `null` when the rejection has no recorded author.
+    rejected_by: Option<String>,
+}
+
+/// `GET /media/:object_id/rejections`
+///
+/// Returns all tag rejections recorded against an object, newest first.
+/// The consent gate is the same one `GET /media/:id` uses -- absent,
+/// off-disk and denied all give the same 404, because a client that
+/// can distinguish them can probe the library for what a user has.
+#[utoipa::path(get, path = "/media/{object_id}/rejections", responses((status = 200, description = "Success")), params(("object_id" = String, Path)))]
+/// T-P6-007: the `/api/v1` OpenAPI document reads this. The path is
+/// the VERSIONED one even though the route also answers unversioned --
+/// a document that listed the internal path would send consumers to the
+/// surface §11.5 promises to keep unversioned.
+pub async fn get_rejections(
+    State(state): State<std::sync::Arc<AppState>>,
+    AxumPath(object_id): AxumPath<String>,
+) -> Response {
+    // The gate `GET /media/:id` uses. Absent, off-disk and denied are one
+    // answer; a new route that forgets this re-opens a library-probing hole.
+    match state.store.media_path(&object_id, &local_caller()).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return not_found(),
+        Err(e) => {
+            tracing::error!(object_id = %object_id, error = %e, "interview: media_path failed");
+            return internal_error();
+        }
+    }
+    let store = &state.store;
+    let rejections = match store.rejections_for(&object_id).await {
+        Ok(r) => r,
+        Err(_) => return not_found(),
+    };
+    let rejections_out: Vec<RejectionOut> = rejections
+        .into_iter()
+        .map(|(source, value_json, rejected_by)| RejectionOut { source, value_json, rejected_by })
+        .collect();
+
+    (StatusCode::OK, axum::Json(RejectionsOut { object_id, rejections: rejections_out })).into_response()
+}
