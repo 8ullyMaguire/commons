@@ -6,6 +6,44 @@ The API is versioned by path prefix. `/api/v1/*` is the public surface for
 scripts and external tools; `docs/spec/t-p6-007-public-api.md` §6 states the
 compatibility promise in prose, and this file records what changed.
 
+## Unreleased — T-P6-010 (`after:` paging)
+
+> **No version bump, and no new path.** `/api/v1` is the public surface and
+> `/graphql` is deliberately not under it (there is a test asserting
+> `/api/v1/graphql` is a 404). This changes what an existing field does, not
+> what exists.
+
+### Changed
+
+- **`objects(input: { after })` is now honoured.** It was an explicit refusal
+  from T-P6-008 through T-P6-009, because no cursor could cross a process
+  boundary; T-P6-009 gave it a wire form and this ticket wires it up.
+
+  `endCursor` now carries a real cursor on any page that has a successor, and
+  `null` on the last one. **No client change was needed** — the UI has sent
+  `after` and read `endCursor` since before the server could accept either.
+
+- **A bad cursor is still an error, never a first page.** The refusal became a
+  *decode* error, and its **message changed rather than being reused**:
+  "not available yet" told a client the server lacked a feature, and "this
+  cursor was made for a different sort" tells it the client changed sort
+  mid-scroll. Those call for different remedies — retry versus restart the walk
+  — and a client cannot tell them apart if the text is the same.
+
+- **The module's own docs were rewritten, not just its code.** The header held
+  eleven lines explaining why every `after` was refused. All of it was false
+  the moment the resolver changed, and a comment that contradicts its own
+  function is worse than no comment.
+
+### Unchanged, and deliberately
+
+- `hasPreviousPage: false` and `startCursor: null`. A cursor forward is not a
+  cursor backward; claiming a previous page would render a back arrow that
+  cannot work. Backward keyset needs a `before:` cursor and a reversed sort.
+- `totalCount: null`. It needs `count(*)` over a consent-filtered set, which is
+  a different query.
+- No `after` on the other three operations. They are unfiltered writes.
+
 ## Unreleased — T-P6-009 (cursor wire form)
 
 > **Not a version bump, and nothing here is an HTTP surface.** T-P6-009 adds a

@@ -493,7 +493,7 @@ mod absence {
         }
 
         assert!(
-            attrs.iter().any(|a| *a == "#[cfg(test)]"),
+            attrs.contains(&"#[cfg(test)]"),
             "Cursor::new is no longer #[cfg(test)]-gated. The attributes directly \
              above it are now {attrs:?}. It is the only thing stopping a caller \
              assembling a cursor of the wrong arity."

@@ -45,6 +45,7 @@ import {
   setTransport,
   GraphQLError,
   OBJECTS_QUERY,
+  createAllMissing,
   fetchObjects,
   fetchTags
 } from '../src/lib/api/client.js';
@@ -230,20 +231,74 @@ describe('the real client against a real server', () => {
     }
   });
 
-  it('refuses an after cursor with a message the client can show', async (t) => {
+  it('honours an after cursor, and still refuses a bad one with a showable message', async (t) => {
     if (!bin) return t.skip('no commons-server binary');
 
-    // `query()` throws the FIRST error, and that message is what a user sees.
-    // Asserting on it here is the point: a refusal whose message is empty
-    // renders as a blank toast and is indistinguishable from a network failure.
+    // T-P6-010 changed this test. It used to assert that ANY `after` was
+    // refused -- "refuses an after cursor with a message the client can show" --
+    // which was correct then and is false now. It was NOT deleted, because the
+    // property underneath it is still exactly right: **a bad cursor must be an
+    // error whose message a user can read**, and `query()` throws the FIRST
+    // error, so that message is literally what renders in the toast. A refusal
+    // with an empty message is indistinguishable from a network failure.
+    //
+    // `'eyJ2IjoxfQ'` decodes to `{"v":1}` -- a valid envelope with no
+    // fingerprint -- so it is still refused, now for a stated reason.
     await assert.rejects(
       () => query(OBJECTS, { input: { first: 10, after: 'eyJ2IjoxfQ' } }),
       (e: unknown) => {
         assert.ok(e instanceof GraphQLError, `expected a GraphQLError, got ${e}`);
-        assert.match((e as Error).message, /after/);
+        assert.match((e as Error).message, /cursor/i);
         return true;
       }
     );
+  });
+
+  it('walks every row through the real client with no gaps and no repeats', async (t) => {
+    if (!bin) return t.skip('no commons-server binary');
+
+    // **The test that decides T-P6-010's claim that the UI needs no change.**
+    // Everything else in this file talks to a FRESH library with zero rows, so
+    // `endCursor` is always null and `hasNextPage` always false -- which means
+    // the paging path was never exercised here at all, and a passing suite said
+    // nothing about it.
+    //
+    // `keyset.test.ts` is the other half of the evidence, and it is worth being
+    // precise about what it shows: it mocks the server with
+    // `endCursor: String(end)` -- a plain COUNTER, not a cursor. So the UI's own
+    // suite has never seen a real cursor and passes with a fake one. That makes
+    // it good evidence that the client is cursor-SHAPE-agnostic and useless as
+    // evidence that the two halves agree. This test is the latter.
+    // Seeded through the CLIENT'S OWN mutation, which is the only write the
+    // live server exposes -- there is no HTTP import route, and inventing one
+    // for a test would be a second code path the suite then depends on.
+    //
+    // Distinct titles, because `createAllMissing` is IDEMPOTENT: two identical
+    // rows create one object, and a "walk of 7" that silently holds 4 passes
+    // for the wrong reason.
+    const res = await createAllMissing(Array.from({ length: 7 }, (_, i) => `paging row ${i}`));
+    const seeded = res.createAllMissing.created;
+    assert.equal(seeded, 7, `the fixture must create 7 objects, got ${seeded}`);
+
+    const seen: string[] = [];
+    let after: string | null = null;
+    let pages = 0;
+    for (;;) {
+      const res = await fetchObjects({ first: 3, after, sort: 'date' });
+      seen.push(...res.objects.nodes.map((n) => n.id));
+      pages += 1;
+      assert.ok(pages <= 50, `paging did not terminate; saw ${seen.length} rows`);
+      if (!res.objects.pageInfo.hasNextPage) break;
+      const next = res.objects.pageInfo.endCursor;
+      assert.ok(next, 'hasNextPage is true but endCursor is null -- the client cannot resume');
+      assert.notEqual(next, after, 'the server returned the same cursor twice');
+      after = next;
+    }
+
+    // Not a count alone: a bug that repeats one boundary row AND drops another
+    // leaves the count unchanged.
+    assert.equal(seen.length, seeded, `paging lost rows: expected ${seeded}, saw ${seen.length}`);
+    assert.equal(new Set(seen).size, seeded, `a row repeated: ${JSON.stringify(seen)}`);
   });
 
   it('serves BulkTags, whose document has no variables at all', async (t) => {
@@ -280,12 +335,22 @@ describe('the real client against a real server', () => {
 
     assert.ok(Array.isArray(objects.nodes), `nodes must be an array, got ${JSON.stringify(objects)}`);
     assert.equal(typeof objects.pageInfo.hasNextPage, 'boolean');
-    // A fresh library: no rows, no next page. Asserting the emptiness is not
-    // the point -- it is that the call RETURNED rather than throwing, which is
-    // what a wire disagreement would prevent.
-    assert.equal(objects.nodes.length, 0, 'a fresh temp library has no objects');
-    assert.equal(objects.pageInfo.hasNextPage, false);
-    assert.equal(objects.totalCount, null);
+    // **Was `assert.equal(objects.nodes.length, 0, 'a fresh temp library has no
+    // objects')`, and it is gone.** The comment under it already said the
+    // emptiness was not the point -- "it is that the call RETURNED rather than
+    // throwing" -- but the assertion stayed, which made the test depend on
+    // running FIRST in the file. T-P6-010 added a paging test that seeds seven
+    // objects, and node's runner does not promise order, so the two tests
+    // contradicted each other and the suite's result depended on declaration
+    // order.
+    //
+    // The general shape: **an assertion about the FIXTURE is not an assertion
+    // about the CODE.** "The library is empty" is a property of the temp
+    // directory, and every test that writes to that directory invalidates it.
+    // What this test is for is the wire shape -- array, boolean, null count --
+    // and all three survive a populated library, which is the stronger claim
+    // anyway: the connection is well-formed whether or not it has rows.
+    assert.equal(objects.totalCount, null, 'totalCount is present and null by design');
   });
 
   it("runs the client's OWN fetchTags against the server", async (t) => {

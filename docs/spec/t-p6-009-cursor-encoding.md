@@ -147,12 +147,34 @@ Every path returns `Err`. None defaults, and none "repairs":
 7. `Cursor::new` is still `#[cfg(test)]`, asserted by a test that greps the
    source, because "I did not make it public" is a claim about absence.
 
-## 7. The one-line follow-up this leaves
+## 7. The one-line follow-up this leaves — **DONE in T-P6-010**
 
 `POST /graphql`'s `objects` resolver: replace the `after` refusal with
 `Cursor::from_url(input.after, &sort)`, and return `pageInfo.endCursor` as
 `last_row.to_url()`. Then the UI's existing `endCursor` plumbing works with no
 UI change at all — which is worth checking before assuming it needs one.
+
+**Shipped in T-P6-010, and the check came out the way this section hoped:** the
+UI needed **no change at all**. `PageInput.after` was already sent on every
+request, `endCursor` was already in the selection set, and `keyset.ts` already
+consumed it. The plumbing had been finished and waiting.
+
+**One thing this section got wrong, worth recording since it is the second time
+this codebase has measured the wrong string.** It said "worth checking before
+assuming", and the check a reader would naturally run is
+`grep -rn '$after' ui/` — which returns **nothing**. Not because the feature is
+absent, but because `$after` is a GraphQL *variable* name the client never
+spells: the document is `query Objects($input: PageInput!)` and the client
+passes `after` inside the `$input` object. A grep for a variable name measures
+the query document's vocabulary, not the wire, and its empty result reads
+exactly like a missing feature. The measurement that settles it is reading
+`client.ts:34-56` and `keyset.ts:200-210`.
+
+**And the second half of §2's hazard finally has a user.** The sort fingerprint
+means a cursor from one sort is *refused* by another — which will happen to a
+real user who changes the sort column while scrolled down. That is the feature
+working, and T-P6-010 made the refusal say so: the message names the sort
+mismatch, because the remedy is "restart the walk", not "retry".
 
 ---
 

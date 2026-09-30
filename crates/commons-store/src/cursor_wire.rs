@@ -298,7 +298,6 @@ impl Tagged {
 ///    the three fields out by name. Slightly more code, and it means a future
 ///    field can be added without anyone having to remember that a producer
 ///    somewhere might be emitting them in a different order.
-
 impl Wire {
     /// Read an envelope, whichever order its keys arrive in.
     ///

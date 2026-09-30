@@ -473,7 +473,7 @@ node_modules/.bin/playwright test           # browser, against the build
 | T-P2-007 locators | `78a0ac0` | the write path that was a stub |
 | T-P2-008 throughput | `9eb7800` | the budget, as a number that fails |
 
-## Eleven things to know before writing more code here
+## Twelve things to know before writing more code here
 
 These are the ones that cost time. Each is written up in the code at the point
 where it matters; this is the index.
@@ -1177,3 +1177,26 @@ Two related, from the same ticket:
   `Cursor::new` caller is a *compile* error. The grep is kept anyway — it
   reports which file, across all crates — but its mutation has to remove the
   gate *and* add the caller, since that is the only way that state can exist.
+
+### 12. A headerless request is the most privileged caller, and the test that reasons about a caller must construct one
+
+T-P6-010's `resuming_does_not_widen_visibility` walked every page with a
+**headerless request and called it "anonymous."** It is the local **owner** —
+`caller_from_request` falls back to `media::local_caller()`, which
+`identity.rs` calls "the absence of a design" — so the test asserted the owner
+does not see the owner's own `unverified` objects, and failed.
+
+**T-P6-008 was bitten by exactly this, in this repo, for the same reason**, and
+fixed it with a `bearer()` token naming no grant. Twice is enough to state the
+rule rather than the case: *a test that reasons about a caller must construct
+that caller explicitly, because the default is the most privileged one.* The
+default being the *owner* rather than the anonymous caller is the dangerous
+direction — a test that "verifies anonymous is restricted" and silently gets the
+owner verifies nothing at all, and the assertion that fails is the one
+asserting the restriction EXISTS, which is exactly the direction that gets
+skipped as unimportant.
+
+The second-order point: the fix is not only the token, it is sending it on
+**every page**. A cursor carries no caller, so the identity layer has to be
+consulted per request, and a test that authenticated once and then paged
+anonymously asserts the opposite of what it says.

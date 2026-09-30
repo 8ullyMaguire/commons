@@ -295,3 +295,101 @@ If the walk test passes under that mutation, it is measuring nothing. A second
 mutation: **swap `sort.clone()` for the wrong sort** in the fingerprint check,
 which should fail the mismatch test and nothing else — that difference is what
 tells you the refusal and the walk are independently covered.
+
+
+---
+
+## Addendum — three fixture defects, and a plan prediction that was wrong
+
+The plan's steps were right about the *shape* (one function, two tests rewritten,
+one new file) and wrong about three things, all found by tests failing.
+
+### 1. The same inversion as T-P6-008, one layer down
+
+`resuming_does_not_widen_visibility` walked every page with a **headerless
+request and called it "anonymous"**. A headerless request **is the local owner**
+— `caller_from_request` falls back to `media::local_caller()` — so the test
+asserted the owner does not see the owner's own `unverified` objects, and
+failed. **T-P6-008 was bitten by exactly this, in this repo, for this reason**,
+and its fix was a `bearer()` token naming no grant. This time it was worth
+noting the pattern rather than just the fix: *a test that reasons about a
+caller must construct that caller explicitly, because the default is the most
+privileged one.*
+
+The token is now sent on **every page**, not just the first. A cursor carries no
+caller, so the identity layer must be consulted per request, and a test that
+authenticated once then paged anonymously asserts the opposite of what it says.
+
+### 2. The fixture removed the thing under test
+
+`a_cursor_with_the_wrong_number_of_keys_is_refused` seeded **2 objects and asked
+for 2**, so `has_more` was false, `endCursor` was null, and the `.expect("a
+cursor")` fired. A page with no successor is exactly the case that emits no
+cursor — so the fixture had made the arity check **unreachable**. Now 4 at a
+page of 2, plus an assertion that the fixture really has a next page, so the
+premise is checked rather than assumed.
+
+This is the shape `agent-claim-review` records as "a test that pins a hazard
+must first prove the hazard is still reachable", and it is worth adding the
+converse: **a fixture can remove a hazard by accident, and the test then fails
+for a reason that looks nothing like the one it is about.**
+
+### 3. A hand-rolled codec in the test
+
+The arity test needed a tampered cursor, so it carried its own base64url
+encode/decode pair — and its decoder **failed on the server's real cursor**. The
+test was therefore measuring my codec's compatibility with the server rather
+than the server's arity check. Now uses `commons_store`'s own codec.
+
+**A helper that reimplements the thing under test is a second source of truth,
+and here it was simply wrong.** The general form: when a test must fabricate a
+value in the system's own encoding, use the system's encoder.
+
+A fourth, smaller one: `o.date` is nullable, so slot 0 of a cursor can be a
+`NULL`, and the tamper took `doc["k"][0]` — producing a bare string, so the
+envelope failed as `Shape` rather than reaching the arity check at all. The
+refusal was real; it named the wrong cause, which is exactly what the assertion
+was written to prevent. It takes the last key now.
+
+### The UI's own test had a fixture-dependent assertion
+
+`runs the client's OWN fetchObjects against the server` asserted
+`objects.nodes.length === 0, 'a fresh temp library has no objects'`. Its comment
+*already said* the emptiness was not the point — "it is that the call RETURNED
+rather than throwing" — but the assertion stayed, which made the test depend on
+running **first in the file**. The new paging test seeds seven objects, node does
+not promise order, and the two tests contradicted each other.
+
+**An assertion about the FIXTURE is not an assertion about the CODE.** "The
+library is empty" is a property of the temp directory, and every test that
+writes there invalidates it. The wire-shape claims — array, boolean, `null`
+count — all survive a populated library, which is the stronger claim anyway.
+
+### The plan's Step 7 prediction was wrong, and the finding is better
+
+The plan said a second mutation (fingerprint against the wrong sort) "should
+fail the mismatch test **and nothing else**". It failed **9 of 10**.
+
+That is the better result and the plan's prediction was too narrow: the
+fingerprint is on **every** decode path, so corrupting it makes every cursor
+refused, not just the mismatch case. Recorded here because the plan's own text
+is the artefact a future reader checks the result against, and leaving the
+wrong prediction in it would teach the wrong lesson.
+
+### Mutations, and what they prove
+
+```
+MUT1  decode the cursor, then pass None       4 of 10 fail
+      -> the_cursor_a_page_returns_is_accepted_as_the_next_after
+         a_walk_covers_every_row_exactly_once
+         a_walk_in_the_other_direction_covers_every_row_too
+         resuming_does_not_widen_visibility
+      and the four refusal tests stay GREEN.
+
+MUT2  fingerprint against an empty sort       9 of 10 fail
+```
+
+**MUT1 is the one that matters.** It fails exactly the four walk tests and
+nothing else, which is the independence the plan wanted: the walk tests and the
+refusal tests cannot both be satisfied by one wrong behaviour. A single
+tautological assertion would have gone green under both.

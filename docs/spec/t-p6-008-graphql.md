@@ -265,7 +265,16 @@ they are the trap this ticket's predecessor fell into:
    only when real code used the extractor. **`cargo build` on a crate that does
    not use the integration is not a test of the integration.**
 
-## 4b. `after:` cannot be implemented, and that is a store change, not a wire change
+## 4b. `after:` could not be implemented here — **RESOLVED in T-P6-010**
+
+> **Historical.** Everything below describes the state at T-P6-008. The
+> measurement was right and the conclusion was correct *at the time*: `after:`
+> was a missing **store** capability, not a missing wire field. T-P6-009 built
+> the capability (`Cursor::to_url` / `from_url`) and T-P6-010 wired it up, so
+> `after` is honoured and `endCursor` carries a real cursor. The reasoning below
+> is kept because it is why the refusal was an error and not a silent
+> first page — a principle that still applies one level down, to a cursor that
+> fails to *decode*.
 
 The `PageInput.after` cursor is **in the client's type and cannot be honoured by
 this codebase as it stands.** Measured at `93cd787`:
