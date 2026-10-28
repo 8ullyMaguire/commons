@@ -31,7 +31,6 @@ TARGETS=(
   "lorebook|ui/src"
   "whitebois|web/src"
   "gravity|frontend/src"
-  "polaris|web/src"
   "stash-box|frontend/src"
 )
 
