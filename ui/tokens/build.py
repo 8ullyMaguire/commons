@@ -15,7 +15,8 @@ HERE = pathlib.Path(__file__).resolve().parent
 LIGHT = """@media (prefers-reduced-motion: reduce){:root{--duration-fast:0ms;--duration:0ms}}
 @media (prefers-color-scheme: light){:root{
   --bg:#f7f8f9; --surface:#ffffff; --surface-raised:#f1f3f5; --border:#dfe3e7; --border-strong:#c4cbd2;
-  --text:#16191c; --text-muted:#5a646d; --text-faint:#8a939c;
+  --text:#16191c; --text-muted:#5a646d; --text-faint:#68717a;
+  --on-primary:#ffffff;
 }}"""
 
 
