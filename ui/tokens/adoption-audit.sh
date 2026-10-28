@@ -16,6 +16,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${ESTATE_ROOT:-/home/alvaro/code-local}"
 BUDGET="$HERE/adoption-budget.tsv"
 
+# Trees the owner is actively working in. Their budgets are printed for information only: an agent must never
+# "fix" a literal colour in a tree it does not own, so failing the check on them would demand the one action
+# that is forbidden. Observed once already: ascend went 6 -> 7 by the owner's own hand.
+OWNER_TREES=" ascend darkhold "
+
 # Project -> the directories a reader's chrome lives in. Deliberately narrow: counting docs/ or generated
 # build output would measure the wrong thing and never reach zero.
 TARGETS=(
@@ -72,12 +77,18 @@ while IFS=$'\t' read -r name count; do
     b=$(awk -F'\t' -v n="$name" '$1==n{print $2}' "$BUDGET")
     [[ -n "$b" ]] && budget="$b"
   fi
+  owner=""
+  [[ "$OWNER_TREES" == *" $name "* ]] && owner=" (owner tree)"
   status="untracked"
   if [[ "$budget" != "—" ]]; then
-    if [[ "$count" -le "$budget" ]]; then status="ok"; else status="OVER by $((count - budget))"; fail=1; fi
+    if [[ "$count" -le "$budget" ]]; then status="ok"
+    else
+      status="OVER by $((count - budget))"
+      [[ -z "$owner" ]] && fail=1
+    fi
     [[ "$count" -eq 0 ]] && status="adopted"
   fi
-  printf "%-14s %8s %8s %s\n" "$name" "$count" "$budget" "$status"
+  printf "%-14s %8s %8s %s%s\n" "$name" "$count" "$budget" "$status" "$owner"
 done < <(printf "%b" "$rows" | sort)
 
 if [[ "${1:-}" == "--check" ]]; then
