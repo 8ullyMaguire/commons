@@ -1,6 +1,6 @@
 # Work manifest v1
 
-**Why this exists.** The fiction estate (darkhold, lorehaven, gravity cards, ficnexus exports, the AO3
+**Why this exists.** The fiction estate (darkhold, gravity cards, ficnexus exports, the AO3
 mirror) each holds a version of "a work", so every import, dedupe and tag-normalisation bug is fixed three
 times. A shared *database* would be worse — four products, four release cadences. A shared **format** is
 the cheap version of the same win: anyone can produce it, anyone can consume it, nobody has to migrate.
@@ -32,7 +32,7 @@ practical reference, and the mirror already has it).
 |---|---|---|
 | producer | `python/fic-crawler`, AO3 mirror exports | describe crawled works |
 | producer | `ficnexus` (post-2026-10-28, export-only) | describe what it just exported |
-| consumer | `lorehaven` / `darkhold` | import a work, skip chapters whose hash it already has |
+| consumer | `darkhold` | import a work, skip chapters whose hash it already has |
 | consumer | `gravity` | render a work card without hosting text |
 | consumer | `kindred` | seeds for recommendations by work id |
 

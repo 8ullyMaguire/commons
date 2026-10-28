@@ -9,7 +9,7 @@ the spec to review before anything is built.
 850 open issues total (673 + 177) — every one is mapped in Appendix A.
 **Related:** [[2026-09-25T130540+0200-tauri-ebook-library-spec]] — shares the
 Tauri-desktop and community-instance vocabulary, not code. Nothing here touches
-[[lorehaven]].
+[[lorehaven]] (now darkhold).
 
 ---
 
