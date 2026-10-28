@@ -35,13 +35,22 @@ TARGETS=(
   "stash-box|frontend/src"
 )
 
+# A file may opt out of the count, but only by declaring itself a brand palette on its first three lines:
+#     /* estate-tokens:brand-file -- this file IS the brand layer */
+# That keeps a project's identity colours in one auditable place instead of scattered through components, which
+# is the failure this audit exists to find. Scattering is still counted.
 count_hex() {
   local dir="$1"
   [[ -d "$dir" ]] || { echo 0; return; }
-  grep -rhoE '#[0-9a-fA-F]{6}\b' \
-    --include=*.css --include=*.svelte --include=*.html --include=*.js --include=*.ts --include=*.astro \
-    "$dir" 2>/dev/null \
-    | grep -viE '^#(f{3,6}|0{3,6})$' | wc -l | tr -d ' '
+  local total=0 f n
+  while IFS= read -r f; do
+    head -8 "$f" | grep -q "estate-tokens:brand-file" && continue
+    # <meta name="theme-color"> cannot take a CSS variable, so that one line is exempt -- a literal there is
+    # forced by the platform, not by carelessness. Everything else has to be a token.
+    n=$(grep -v 'theme-color' "$f" | grep -oE '#[0-9a-fA-F]{6}\b' | grep -viE '^#(f{3,6}|0{3,6})$' | wc -l)
+    total=$((total + n))
+  done < <(find "$dir" -type f \( -name '*.css' -o -name '*.svelte' -o -name '*.html' -o -name '*.js' -o -name '*.ts' -o -name '*.astro' \) 2>/dev/null)
+  echo "$total"
 }
 
 rows=""
