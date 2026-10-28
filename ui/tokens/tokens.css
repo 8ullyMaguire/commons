@@ -1,0 +1,62 @@
+/* GENERATED from tokens.json by build.py -- do not edit by hand. */
+/* Estate design tokens v0.1.0. Use var(--role), never a literal colour. */
+:root{
+  /* colour */
+  --bg: #101214;
+  --surface: #171a1d;
+  --surface-raised: #1f2327;
+  --border: #2c3237;
+  --border-strong: #3d454c;
+  --text: #e6e9ec;
+  --text-muted: #9aa4ad;
+  --text-faint: #6b7580;
+  --accent: #4c8dff;
+  --accent-hover: #6ba1ff;
+  --danger: #e5484d;
+  --success: #3dd68c;
+  --warning: #f5a524;
+  --focus: #8ab4ff;
+  /* trust */
+  --trust-0: #6b7580;
+  --trust-1: #8ab4ff;
+  --trust-2: #3dd68c;
+  --trust-3: #c792ea;
+  --trust-4: #f5a524;
+  /* type */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'JetBrains Mono', monospace;
+  --size-xs: 0.75rem;
+  --size-sm: 0.875rem;
+  --size-base: 1rem;
+  --size-lg: 1.25rem;
+  --size-xl: 1.5625rem;
+  --size-2xl: 1.9375rem;
+  --leading-tight: 1.25;
+  --leading-normal: 1.55;
+  /* space */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  /* shape */
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+  /* motion */
+  --duration-fast: 120ms;
+  --duration: 200ms;
+  --ease: cubic-bezier(.2,.7,.3,1);
+  /* elevation */
+  --shadow-1: 0 1px 2px rgba(0,0,0,.35);
+  --shadow-2: 0 6px 24px rgba(0,0,0,.45);
+}
+@media (prefers-reduced-motion: reduce){:root{--duration-fast:0ms;--duration:0ms}}
+@media (prefers-color-scheme: light){:root{
+  --bg:#f7f8f9; --surface:#ffffff; --surface-raised:#f1f3f5; --border:#dfe3e7; --border-strong:#c4cbd2;
+  --text:#16191c; --text-muted:#5a646d; --text-faint:#8a939c;
+}}
