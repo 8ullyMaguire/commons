@@ -48,7 +48,12 @@ count_hex() {
     # forced by the platform, not by carelessness. Everything else has to be a token.
     n=$(grep -v 'theme-color' "$f" | grep -oE '#[0-9a-fA-F]{6}\b' | grep -viE '^#(f{3,6}|0{3,6})$' | wc -l)
     total=$((total + n))
-  done < <(find "$dir" -type f \( -name '*.css' -o -name '*.svelte' -o -name '*.html' -o -name '*.js' -o -name '*.ts' -o -name '*.astro' \) 2>/dev/null)
+  # `.scss` was missing here until 2026-10-28, and the gap was not cosmetic: stash-box keeps its
+  # whole palette in `styles/theme.scss`, so 77 literals sat outside every budget while the table
+  # said "14/14 ok". A counter that silently skips a file extension reports adoption it has not
+  # measured. Every budget in adoption-budget.tsv was re-recorded in the same change, because the
+  # fix moves numbers that were never counted rather than finding new violations.
+  done < <(find "$dir" -type f \( -name '*.css' -o -name '*.scss' -o -name '*.svelte' -o -name '*.html' -o -name '*.js' -o -name '*.ts' -o -name '*.astro' \) 2>/dev/null)
   echo "$total"
 }
 
