@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://polarisocial.xyz/schemas/work-manifest.v1.json",
+  "title": "Work manifest v1",
+  "description": "A portable description of a work (title, authors, chapters, tags, warnings, provenance). Producers: crawlers, importers, exporters. Consumers: archives, readers, federated cards. It carries METADATA, never text - a manifest says what a work is and where its chapters came from, not what they say.",
+  "type": "object",
+  "required": [
+    "manifest_version",
+    "work"
+  ],
+  "properties": {
+    "manifest_version": {
+      "const": "1"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "producer": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "work": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "source"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable id in the producer's namespace, e.g. ficnexus:ao3:12345"
+        },
+        "title": {
+          "type": "string"
+        },
+        "authors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "source_id": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        },
+        "summary": {
+          "type": "string"
+        },
+        "language": {
+          "type": "string"
+        },
+        "word_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rating": {
+          "type": "string",
+          "description": "Source rating vocabulary, passed through verbatim (e.g. AO3's G/T/M/E/Not Rated)"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Verbatim source tags. Normalisation is the consumer's job; this field must not be lossy."
+        },
+        "status": {
+          "enum": [
+            "in_progress",
+            "complete",
+            "hiatus",
+            "abandoned",
+            "unknown"
+          ]
+        },
+        "series": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "index": {
+              "type": "integer"
+            },
+            "size": {
+              "type": "integer"
+            }
+          }
+        },
+        "chapters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "title": {
+                "type": "string"
+              },
+              "published_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "word_count": {
+                "type": "integer"
+              },
+              "source_url": {
+                "type": "string",
+                "format": "uri"
+              },
+              "content_hash": {
+                "type": "string",
+                "description": "sha256 of the extracted text, so an importer can prove it has the same chapter without shipping it"
+              }
+            },
+            "required": [
+              "index"
+            ]
+          }
+        },
+        "source": {
+          "type": "object",
+          "properties": {
+            "site": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string",
+              "format": "uri"
+            },
+            "retrieved_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "rights_note": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "site",
+            "url"
+          ]
+        },
+        "content_hash": {
+          "type": "string"
+        },
+        "extra": {
+          "type": "object",
+          "description": "Source-specific fields nobody agreed on. Consumers must ignore what they do not understand."
+        }
+      }
+    }
+  }
+}
