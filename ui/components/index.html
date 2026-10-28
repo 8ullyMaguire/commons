@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Estate components — token demo</title>
+  <link rel="stylesheet" href="../tokens/tokens.css">
+  <style>
+    body { background: var(--bg); color: var(--text); font-family: var(--font-sans);
+           margin: 0; padding: var(--space-8); display: grid; gap: var(--space-6); max-width: 46rem; }
+    h1 { font-size: var(--size-xl); margin: 0; }
+    h2 { font-size: var(--size-sm); color: var(--text-muted); margin: var(--space-4) 0 0;
+         text-transform: uppercase; letter-spacing: .08em; font-weight: 600; }
+    .row { display: flex; gap: var(--space-3); align-items: center; flex-wrap: wrap; }
+  </style>
+</head>
+<body>
+  <h1>Estate components</h1>
+  <p style="color: var(--text-muted); margin:0">Six components, one token set, no framework. If these look
+     right here they look right in SvelteKit, Go templates and axum alike.</p>
+
+  <h2>Trust ladder</h2>
+  <div class="row" id="ladder">
+    <estate-trust-badge level="0"></estate-trust-badge>
+    <estate-trust-badge level="1"></estate-trust-badge>
+    <estate-trust-badge level="2"></estate-trust-badge>
+    <estate-trust-badge level="3"></estate-trust-badge>
+    <estate-trust-badge level="4"></estate-trust-badge>
+    <estate-trust-badge level="99"></estate-trust-badge>
+  </div>
+
+  <h2>Moderation</h2>
+  <estate-mod-banner tone="warning"><span slot="title">Post hidden</span>
+    A moderator hid this post pending review. You can still reply to the author directly.</estate-mod-banner>
+  <estate-mod-banner tone="danger"><span slot="title">Account limited</span>
+    Posting is paused for 24 hours after three unheeded reports.</estate-mod-banner>
+
+  <h2>Post card</h2>
+  <estate-post-card title="A work with a title" meta="kindred · 4,200 words · 2 days ago" href="#">
+    The shell is the same everywhere; only the slot content differs.
+  </estate-post-card>
+
+  <h2>Empty state</h2>
+  <estate-empty-state headline="No recommendations yet">
+    Seed the engine with something you liked and this fills in.
+  </estate-empty-state>
+
+  <h2>Pagination</h2>
+  <estate-pagination id="pg" page="3" pages="12"></estate-pagination>
+
+  <h2>Toast</h2>
+  <estate-toast tone="success">Saved to your list.</estate-toast>
+
+  <script type="module">
+    import './estate-components.js';
+    // Expose the last paging event so the verification harness can prove the event fires with the right payload.
+    document.getElementById('pg').addEventListener('page-change', (e) => {
+      window.__lastPage = e.detail.page;
+      document.title = 'page ' + e.detail.page;
+    });
+  </script>
+</body>
+</html>
