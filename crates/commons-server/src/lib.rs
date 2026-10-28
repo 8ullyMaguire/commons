@@ -49,6 +49,11 @@ pub mod openapi;
 pub mod playback;
 pub mod proxy;
 pub mod range;
+/// Every registered route with a one-line purpose, asserted against the
+/// router's own `.route(` calls in both directions. See the module docs for
+/// what it deliberately does not claim (an audience system, which this crate
+/// has no notion of).
+pub mod routes_doc;
 // T-P5-007 part 2B. Share links (§9.5, #5612). The policy is in
 // `commons-consent::share`; this file is the wire shape and nothing else.
 pub mod share;
