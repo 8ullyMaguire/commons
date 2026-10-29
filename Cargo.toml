@@ -17,6 +17,7 @@ members = [
     "crates/commons-client",
     "crates/commons-manifest",
     "crates/commons-feed",
+    "crates/commons-tokens",
 ]
 
 [workspace.package]
