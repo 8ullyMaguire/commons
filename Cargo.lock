@@ -493,6 +493,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "commons-http"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "commons-identity"
 version = "0.1.0"
 dependencies = [
