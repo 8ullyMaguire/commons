@@ -1,0 +1,15 @@
+[package]
+name = "commons-consumer"
+version = "0.1.0"
+edition = "2021"
+
+# NOT a member of the commons workspace — and it says so, so cargo does not try to attach it to the
+# parent. A path dependency from outside is the claim being tested: if a service must take the estate's
+# schema to take one crate, this crate cannot compile.
+[workspace]
+[dependencies]
+commons-http = { path = "../../crates/commons-http" }
+commons-feed = { path = "../../crates/commons-feed" }
+commons-tokens = { path = "../../crates/commons-tokens" }
+commons-manifest = { path = "../../crates/commons-manifest" }
+serde_json = "1"

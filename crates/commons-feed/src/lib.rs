@@ -88,12 +88,91 @@ pub fn escape_xml(input: &str) -> String {
 /// This is a deliberate flattening, not a markdown parser: it removes the characters that are only
 /// ever markup in practice and leaves the words. A caller that wants structure in a feed should send
 /// HTML in `summary` and say so, rather than trusting a stripper to reconstruct it.
+///
+/// Three rules, each of which was a bug when absent:
+///
+///   * **links and images lose their target, keep their words** — `[text](url)` → `text`,
+///     `![alt](url)` → `alt`. Deleting punctuation alone left `[link](https://…)` inside an XML
+///     description, which is what an earlier version of this function did.
+///   * **`_` is only markup when it is PAIRED as a marker** — `_emphasis_` and `__strong__` lose it,
+///     but `snake_case_name` and `https://x/a_b` keep it. Deleting every underscore silently mangled
+///     identifiers and URLs, which is a worse outcome than leaving a stray one.
+///   * **line-leading structure goes, indentation stays** — `# heading`, `> quote` and a fenced
+///     block's backticks go; the words after them remain.
 pub fn strip_markdown(src: &str) -> String {
-    src.chars()
-        .filter(|c| !matches!(c, '*' | '_' | '`' | '#' | '>'))
-        .collect::<String>()
-        .trim()
-        .to_string()
+    // 1. Links and images: keep the label (alt text), drop "(" through the closing ")".
+    let mut text = String::with_capacity(src.len());
+    let mut chars = src.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '[' {
+            text.push(c);
+            continue;
+        }
+        // Find the closing bracket, then confirm a "(" follows — otherwise it is just a bracket.
+        let rest: String = chars.clone().collect();
+        let Some(close) = rest.find(']') else {
+            text.push(c);
+            continue;
+        };
+        let label = &rest[..close];
+        let after = &rest[close + 1..];
+        if !after.starts_with('(') {
+            text.push(c);
+            continue;
+        }
+        let Some(paren) = after.find(')') else {
+            text.push(c);
+            continue;
+        };
+        // An image is a link with a bang: `![alt](url)`. The bang is punctuation, not words.
+        if text.ends_with('!') {
+            text.pop();
+        }
+        text.push_str(label);
+        // Consume exactly what was read: the label is only appended here, so skip its characters.
+        for _ in 0..(close + 1 + paren + 1) {
+            chars.next();
+        }
+    }
+
+    // 2. Per-character: emphasis/code markers, and "_" only when it is a bit of a pair.
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(chars.len());
+    for (i, &c) in chars.iter().enumerate() {
+        match c {
+            '*' | '`' => {}
+            '_' => {
+                let prev_word = i > 0 && (chars[i - 1].is_alphanumeric());
+                let next_word = chars.get(i + 1).is_some_and(|n| n.is_alphanumeric());
+                // `case_name` (word on both sides) keeps its underscore; `_name` / `name_` loses it.
+                if prev_word && next_word {
+                    out.push(c);
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+
+    // 3. Line-leading structure: headings and blockquotes.
+    let flattened = out
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            if let Some(rest) = trimmed.strip_prefix('>') {
+                rest.trim_start()
+            } else {
+                let hashes = trimmed.chars().take_while(|c| *c == '#').count();
+                if hashes > 0 && trimmed.chars().nth(hashes) == Some(' ') {
+                    trimmed[hashes + 1..].trim_start()
+                } else {
+                    line
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    flattened.trim().to_string()
 }
 
 /// Shorten a title to `max` characters, ending in `...` when it was cut.
@@ -340,6 +419,33 @@ mod tests {
     fn drops_characters_that_cannot_be_escaped() {
         assert_eq!(escape_xml("a\u{0}b\u{8}c\u{1f}d"), "abcd");
         assert_eq!(escape_xml("héllo — 🎪"), "héllo — 🎪");
+    }
+
+    /// The three defects an outside consumer found on 2026-10-29, each pinned by the case that
+    /// exposed it. `strip_markdown` used to delete `* _ ` # >` and nothing else, so a link stayed a
+    /// link and `snake_case` lost its underscores.
+    #[test]
+    fn markdown_flattening_keeps_words_and_drops_syntax() {
+        // A link keeps its words and loses its target.
+        assert_eq!(
+            strip_markdown("see [the post](https://x.invalid/p) now"),
+            "see the post now"
+        );
+        // An image keeps its alt text and loses the bang as well as the target.
+        assert_eq!(strip_markdown("![alt text](https://x.invalid/i.png)"), "alt text");
+        // An underscore BETWEEN word characters is part of a word, not emphasis.
+        assert_eq!(
+            strip_markdown("call my_fn_name in cfg_a"),
+            "call my_fn_name in cfg_a"
+        );
+        assert_eq!(strip_markdown("https://x.invalid/a_b_c"), "https://x.invalid/a_b_c");
+        // A paired underscore IS emphasis and goes.
+        assert_eq!(strip_markdown("_emph_ and __strong__"), "emph and strong");
+        // Line-leading structure goes; the words stay.
+        assert_eq!(strip_markdown("# head\n## sub\nbody"), "head\nsub\nbody");
+        assert_eq!(strip_markdown("> quoted\nplain"), "quoted\nplain");
+        // A bracket that is not a link is left alone.
+        assert_eq!(strip_markdown("array[0] and [draft]"), "array[0] and [draft]");
     }
 
     #[test]
