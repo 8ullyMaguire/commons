@@ -82,6 +82,15 @@ fn allowed_edges() -> BTreeMap<&'static str, &'static [&'static str]> {
     // inferred value type to `&[_; 0]` and every other entry fails to compile.
     let mut m: BTreeMap<&'static str, &'static [&'static str]> = BTreeMap::new();
     m.insert("commons-core", &[]);
+    // The four published, domain-independent crates (capability-port 5.4). `&[]` is not a placeholder:
+    // it is the property the row asks for — a service can take one of these without taking the estate's
+    // schema, and a crate at the bottom of the graph cannot smuggle one in. An edge added here later is a
+    // decision that a "standalone" crate is no longer standalone, which is why they are declared rather
+    // than omitted.
+    m.insert("commons-http", &[]);
+    m.insert("commons-feed", &[]);
+    m.insert("commons-manifest", &[]);
+    m.insert("commons-tokens", &[]);
     m.insert("commons-store", &["commons-core"]);
     m.insert("commons-jobs", &["commons-core", "commons-store"]);
     m.insert("commons-media", &["commons-core", "commons-store"]);
