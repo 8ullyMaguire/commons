@@ -484,6 +484,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "commons-feed"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "commons-identity"
 version = "0.1.0"
 dependencies = [
@@ -543,6 +552,15 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "commons-manifest"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
