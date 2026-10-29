@@ -32,6 +32,12 @@ TARGETS=(
   "whitebois|web/src"
   "gravity|frontend/src"
   "stash-box|frontend/src"
+  # The dating app. Added 2026-10-29, and it was the largest renderer missing from this table:
+  # its shared surface measured 28, of which 19 are the `:root` palette in `app.css` and 9 are
+  # the two deliberate non-sites (`Decoy.svelte`, `PanicIntro.svelte`) whose whole point is not
+  # to inherit this site's look. All three now declare themselves with the brand-file marker
+  # below rather than being quietly exempt, and the count outside them is 0.
+  "platform-core|web/src"
 )
 
 # A file may opt out of the count, but only by declaring itself a brand palette on its first three lines:
