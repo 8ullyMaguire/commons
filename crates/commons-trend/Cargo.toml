@@ -1,0 +1,13 @@
+[package]
+name = "commons-trend"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Which group is arriving: the trend rule over arrival counts, with a floor instead of a guess"
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

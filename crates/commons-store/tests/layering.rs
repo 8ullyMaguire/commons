@@ -95,6 +95,7 @@ fn allowed_edges() -> BTreeMap<&'static str, &'static [&'static str]> {
     // product types — so any product in the family can take one without taking Commons' schema.
     m.insert("commons-identify", &[]);
     m.insert("commons-bounty", &[]);
+    m.insert("commons-trend", &[]);
     m.insert("commons-store", &["commons-core"]);
     m.insert("commons-jobs", &["commons-core", "commons-store"]);
     m.insert("commons-media", &["commons-core", "commons-store"]);
