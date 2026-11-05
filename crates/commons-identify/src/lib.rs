@@ -199,7 +199,7 @@ fn isbn(raw: &str) -> Identified {
                 .map(|(index, ch)| (10 - index as u32) * ch.to_digit(10).unwrap_or(0))
                 .sum::<u32>()
                 + check_value;
-            if sum % 11 != 0 {
+            if !sum.is_multiple_of(11) {
                 return Identified::Refused(format!(
                     "{raw} fails its ISBN-10 check digit — an identifier that is wrong will match the wrong book"
                 ));
@@ -224,7 +224,7 @@ fn isbn(raw: &str) -> Identified {
                     }
                 })
                 .sum();
-            if sum % 10 != 0 {
+            if !sum.is_multiple_of(10) {
                 return Identified::Refused(format!(
                     "{raw} fails its ISBN-13 check digit — an identifier that is wrong will match the wrong book"
                 ));

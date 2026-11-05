@@ -114,6 +114,6 @@ fn a_scheme_round_trips_through_json_as_its_wire_word() {
         assert_eq!(json, format!("\"{}\"", scheme.as_str()));
         let back: Scheme = serde_json::from_str(&json).expect("deserialise");
         assert_eq!(back, scheme);
-        assert_eq!(Scheme::parse(&json.trim_matches('"')), Some(scheme));
+        assert_eq!(Scheme::parse(json.trim_matches('"')), Some(scheme));
     }
 }
