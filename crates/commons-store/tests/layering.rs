@@ -91,6 +91,10 @@ fn allowed_edges() -> BTreeMap<&'static str, &'static [&'static str]> {
     m.insert("commons-feed", &[]);
     m.insert("commons-manifest", &[]);
     m.insert("commons-tokens", &[]);
+    // The rediscovery primitives (2026-11-05). Both are pure: rules and canonical forms, no store, no HTTP, no
+    // product types — so any product in the family can take one without taking Commons' schema.
+    m.insert("commons-identify", &[]);
+    m.insert("commons-bounty", &[]);
     m.insert("commons-store", &["commons-core"]);
     m.insert("commons-jobs", &["commons-core", "commons-store"]);
     m.insert("commons-media", &["commons-core", "commons-store"]);

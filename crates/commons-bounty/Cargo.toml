@@ -1,0 +1,14 @@
+[package]
+name = "commons-bounty"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Bounties as a primitive: pay for identifying a half-remembered thing"
+
+[dependencies]
+serde = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

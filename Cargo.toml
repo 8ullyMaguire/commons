@@ -17,6 +17,8 @@ members = [
     "crates/commons-client",
     "crates/commons-manifest",
     "crates/commons-feed",
+    "crates/commons-identify",
+    "crates/commons-bounty",
     "crates/commons-tokens",
     "crates/commons-http",
 ]

@@ -154,8 +154,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         // routes become the cheapest way to probe a library.
         .route("/media/:object_id/quotes", get(interview::get_quotes))
         .route("/media/:object_id/topics", get(interview::get_topics))
-        .route("/media/:object_id/speaker-clusters", get(interview::get_speaker_clusters))
-        .route("/media/:object_id/rejections", get(interview::get_rejections))
+        .route(
+            "/media/:object_id/speaker-clusters",
+            get(interview::get_speaker_clusters),
+        )
+        .route(
+            "/media/:object_id/rejections",
+            get(interview::get_rejections),
+        )
         .route(
             "/media/:object_id/subtitles/:document_id.vtt",
             get(subtitles::get_vtt),
@@ -237,8 +243,14 @@ fn v1_routes() -> Router<Arc<AppState>> {
         .route("/media/:object_id/chapters", get(interview::get_chapters))
         .route("/media/:object_id/quotes", get(interview::get_quotes))
         .route("/media/:object_id/topics", get(interview::get_topics))
-        .route("/media/:object_id/speaker-clusters", get(interview::get_speaker_clusters))
-        .route("/media/:object_id/rejections", get(interview::get_rejections))
+        .route(
+            "/media/:object_id/speaker-clusters",
+            get(interview::get_speaker_clusters),
+        )
+        .route(
+            "/media/:object_id/rejections",
+            get(interview::get_rejections),
+        )
         .route(
             "/media/:object_id/subtitles/:document_id.vtt",
             get(subtitles::get_vtt),

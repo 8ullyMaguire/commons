@@ -21,11 +21,11 @@ mod support;
 
 use axum::http::StatusCode;
 use commons_core::domain::Marker;
+use commons_core::ts;
 use commons_store::interview::{replace_transcript, TranscriptRow, WindowRow, WordRow};
 use commons_store::marker::insert_marker;
 use support::{media_fixture, media_fixture_denied, TestApp};
 use uuid::Uuid;
-use commons_core::ts;
 
 /// The parsed body.
 ///
@@ -743,8 +743,12 @@ async fn an_absent_object_and_a_denied_object_answer_byte_identical_404s_for_spe
     .expect("speaker cluster inserted");
     let absent = Uuid::new_v4().to_string();
 
-    let a = app.get_raw(&format!("/media/{}/speaker-clusters", absent)).await;
-    let b = app.get_raw(&format!("/media/{}/speaker-clusters", denied)).await;
+    let a = app
+        .get_raw(&format!("/media/{}/speaker-clusters", absent))
+        .await;
+    let b = app
+        .get_raw(&format!("/media/{}/speaker-clusters", denied))
+        .await;
     assert_eq!(a.status, StatusCode::NOT_FOUND);
     assert_eq!(b.status, StatusCode::NOT_FOUND);
     assert_eq!(
@@ -860,7 +864,7 @@ async fn rejections_returns_rejections_newest_first() {
     let fixture = media_fixture(&app, b"0123456789").await;
     let now = ts::now();
     let now_shifted = ts::shift_days(&now, -1).unwrap(); // 1 day ago
-    // Insert two rejections, one older one newer
+                                                         // Insert two rejections, one older one newer
     sqlx::query(
         "INSERT INTO tag_rejection (object_id, source, value_json, rejected_by, created_at) VALUES (?, ?, ?, ?, ?)",
     )

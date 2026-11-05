@@ -1,0 +1,14 @@
+[package]
+name = "commons-identify"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Stable, canonical identifiers for media: ISBN, ISRC, MusicBrainz, TMDB, Wikidata"
+
+[dependencies]
+serde = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

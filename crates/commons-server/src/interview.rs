@@ -579,16 +579,27 @@ pub async fn get_speaker_clusters(
         Ok(None) => return not_found(),
         Err(_) => return not_found(),
     };
-    let proposals = match commons_store::interview::speaker_cluster_proposals(store, &transcript.id).await {
-        Ok(p) => p,
-        Err(_) => return not_found(),
-    };
+    let proposals =
+        match commons_store::interview::speaker_cluster_proposals(store, &transcript.id).await {
+            Ok(p) => p,
+            Err(_) => return not_found(),
+        };
     let proposals_out: Vec<SpeakerClusterProposalOut> = proposals
         .into_iter()
-        .map(|(speaker_key, cluster_id)| SpeakerClusterProposalOut { speaker_key, cluster_id })
+        .map(|(speaker_key, cluster_id)| SpeakerClusterProposalOut {
+            speaker_key,
+            cluster_id,
+        })
         .collect();
 
-    (StatusCode::OK, axum::Json(SpeakerClusterProposalsOut { object_id, proposals: proposals_out })).into_response()
+    (
+        StatusCode::OK,
+        axum::Json(SpeakerClusterProposalsOut {
+            object_id,
+            proposals: proposals_out,
+        }),
+    )
+        .into_response()
 }
 
 /// Response for rejections.
@@ -638,8 +649,19 @@ pub async fn get_rejections(
     };
     let rejections_out: Vec<RejectionOut> = rejections
         .into_iter()
-        .map(|(source, value_json, rejected_by)| RejectionOut { source, value_json, rejected_by })
+        .map(|(source, value_json, rejected_by)| RejectionOut {
+            source,
+            value_json,
+            rejected_by,
+        })
         .collect();
 
-    (StatusCode::OK, axum::Json(RejectionsOut { object_id, rejections: rejections_out })).into_response()
+    (
+        StatusCode::OK,
+        axum::Json(RejectionsOut {
+            object_id,
+            rejections: rejections_out,
+        }),
+    )
+        .into_response()
 }

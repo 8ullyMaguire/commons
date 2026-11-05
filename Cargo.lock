@@ -409,6 +409,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "commons-bounty"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "commons-client"
 version = "0.1.0"
 dependencies = [
@@ -499,6 +508,15 @@ dependencies = [
  "base64 0.22.1",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "commons-identify"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]

@@ -82,11 +82,7 @@ impl Problem {
 
     /// An extension member. Refuses the five standard names, because an extension that shadows a
     /// standard member produces a document where one key means two things depending on who read it.
-    pub fn with_extension(
-        mut self,
-        key: impl Into<String>,
-        value: impl Into<Value>,
-    ) -> Self {
+    pub fn with_extension(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
         let key = key.into();
         debug_assert!(
             !matches!(
@@ -276,9 +272,10 @@ impl Cursor {
             .map_err(|_| CursorError::Malformed {
                 got: raw.to_string(),
             })?;
-        let wire: CursorWire = serde_json::from_slice(&bytes).map_err(|_| CursorError::Malformed {
-            got: raw.to_string(),
-        })?;
+        let wire: CursorWire =
+            serde_json::from_slice(&bytes).map_err(|_| CursorError::Malformed {
+                got: raw.to_string(),
+            })?;
         if wire.s != expected_scope {
             return Err(CursorError::WrongScope {
                 expected: expected_scope.to_string(),
@@ -312,7 +309,10 @@ mod tests {
         assert_eq!(body["title"], "Not Found");
         assert_eq!(body["status"], 404);
         assert_eq!(body["detail"], "no such post");
-        assert!(body.get("instance").is_none(), "absent members are omitted, not null");
+        assert!(
+            body.get("instance").is_none(),
+            "absent members are omitted, not null"
+        );
         assert!(p.is_well_formed());
     }
 
@@ -320,9 +320,13 @@ mod tests {
     /// body is a client this crate must not strip.
     #[test]
     fn extensions_survive() {
-        let p = Problem::typed("https://example.invalid/rate-limited", 429, "Too Many Requests")
-            .with_extension("retry_after_seconds", json!(30))
-            .with_extension("errors", json!([{"field": "title", "message": "required"}]));
+        let p = Problem::typed(
+            "https://example.invalid/rate-limited",
+            429,
+            "Too Many Requests",
+        )
+        .with_extension("retry_after_seconds", json!(30))
+        .with_extension("errors", json!([{"field": "title", "message": "required"}]));
         let body: Value = serde_json::from_str(&p.to_json()).expect("json");
         assert_eq!(body["retry_after_seconds"], 30);
         assert_eq!(body["errors"][0]["field"], "title");
@@ -337,9 +341,30 @@ mod tests {
             cursor: None,
         };
         assert_eq!(unset.page_size(25, 100), 25);
-        assert_eq!(Pagination { limit: Some(0), cursor: None }.page_size(25, 100), 1);
-        assert_eq!(Pagination { limit: Some(1000), cursor: None }.page_size(25, 100), 100);
-        assert_eq!(Pagination { limit: Some(50), cursor: None }.page_size(25, 100), 50);
+        assert_eq!(
+            Pagination {
+                limit: Some(0),
+                cursor: None
+            }
+            .page_size(25, 100),
+            1
+        );
+        assert_eq!(
+            Pagination {
+                limit: Some(1000),
+                cursor: None
+            }
+            .page_size(25, 100),
+            100
+        );
+        assert_eq!(
+            Pagination {
+                limit: Some(50),
+                cursor: None
+            }
+            .page_size(25, 100),
+            50
+        );
     }
 
     #[test]
@@ -417,7 +442,10 @@ mod tests {
     fn garbage_is_malformed() {
         for raw in ["", "!!!!", "not-base64", "eyJ4IjoxfQ"] {
             assert!(
-                matches!(Cursor::decode(raw, "new"), Err(CursorError::Malformed { .. })),
+                matches!(
+                    Cursor::decode(raw, "new"),
+                    Err(CursorError::Malformed { .. })
+                ),
                 "{raw:?} was accepted"
             );
         }

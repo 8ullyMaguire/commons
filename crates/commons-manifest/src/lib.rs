@@ -169,7 +169,10 @@ pub struct Manifest {
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum ValidationError {
     #[error("this is a v{found} manifest; this build understands v{expected} only. Refusing rather than importing half of it.")]
-    UnsupportedVersion { found: String, expected: &'static str },
+    UnsupportedVersion {
+        found: String,
+        expected: &'static str,
+    },
 
     #[error("the document is not a manifest: {0}")]
     Malformed(String),
@@ -177,7 +180,9 @@ pub enum ValidationError {
     #[error("{field} is empty; a manifest with no {field} cannot be checked by anyone")]
     Empty { field: &'static str },
 
-    #[error("chapter {index}: content_hash must be 64 lowercase hex characters (sha256), got {got:?}")]
+    #[error(
+        "chapter {index}: content_hash must be 64 lowercase hex characters (sha256), got {got:?}"
+    )]
     BadContentHash { index: i64, got: String },
 
     #[error("work.content_hash must be 64 lowercase hex characters (sha256), got {0:?}")]
@@ -216,8 +221,8 @@ impl Manifest {
             });
         }
 
-        let manifest: Self = serde_json::from_value(value)
-            .map_err(|e| ValidationError::Malformed(e.to_string()))?;
+        let manifest: Self =
+            serde_json::from_value(value).map_err(|e| ValidationError::Malformed(e.to_string()))?;
         manifest.validate()?;
         Ok(manifest)
     }
@@ -394,7 +399,8 @@ mod tests {
     #[test]
     fn uppercase_hex_is_not_a_content_hash() {
         let mut v = sample();
-        v["work"]["content_hash"] = json!("FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210");
+        v["work"]["content_hash"] =
+            json!("FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210");
         assert!(matches!(
             parse(v),
             Err(ValidationError::BadWorkContentHash(_))
@@ -429,7 +435,12 @@ mod tests {
     fn an_empty_source_url_is_refused() {
         let mut v = sample();
         v["work"]["source"]["url"] = json!("   ");
-        assert!(matches!(parse(v), Err(ValidationError::Empty { field: "work.source.url" })));
+        assert!(matches!(
+            parse(v),
+            Err(ValidationError::Empty {
+                field: "work.source.url"
+            })
+        ));
     }
 
     /// A document that is not JSON at all says so, rather than panicking inside serde.
@@ -458,8 +469,8 @@ mod tests {
         )
         .expect("the schema is JSON");
 
-        let produced: Value = serde_json::from_str(&parse(sample()).expect("valid").to_json())
-            .expect("json");
+        let produced: Value =
+            serde_json::from_str(&parse(sample()).expect("valid").to_json()).expect("json");
 
         fn walk(schema: &Value, produced: &Value, path: &str) {
             let Some(props) = schema.get("properties").and_then(Value::as_object) else {

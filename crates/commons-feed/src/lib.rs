@@ -212,11 +212,11 @@ pub fn rss2(meta: &FeedMeta, entries: &[FeedEntry]) -> String {
     xml.push_str(r#"<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">"#);
     xml.push('\n');
     xml.push_str("<channel>\n");
+    xml.push_str(&format!("<title>{}</title>\n", escape_xml(&meta.title)));
     xml.push_str(&format!(
-        "<title>{}</title>\n",
-        escape_xml(&meta.title)
+        "<link>{}</link>\n",
+        escape_xml(&format!("{base}/"))
     ));
-    xml.push_str(&format!("<link>{}</link>\n", escape_xml(&format!("{base}/"))));
     xml.push_str(&format!(
         "<description>{}</description>\n",
         escape_xml(&description(meta))
@@ -308,10 +308,7 @@ pub fn atom(meta: &FeedMeta, entries: &[FeedEntry]) -> String {
             escape_xml(&entry.link)
         ));
         if let Some(published) = entry.published {
-            xml.push_str(&format!(
-                "<published>{}</published>\n",
-                rfc3339(published)
-            ));
+            xml.push_str(&format!("<published>{}</published>\n", rfc3339(published)));
             xml.push_str(&format!("<updated>{}</updated>\n", rfc3339(published)));
         }
         if let Some(author) = &entry.author {
@@ -432,20 +429,29 @@ mod tests {
             "see the post now"
         );
         // An image keeps its alt text and loses the bang as well as the target.
-        assert_eq!(strip_markdown("![alt text](https://x.invalid/i.png)"), "alt text");
+        assert_eq!(
+            strip_markdown("![alt text](https://x.invalid/i.png)"),
+            "alt text"
+        );
         // An underscore BETWEEN word characters is part of a word, not emphasis.
         assert_eq!(
             strip_markdown("call my_fn_name in cfg_a"),
             "call my_fn_name in cfg_a"
         );
-        assert_eq!(strip_markdown("https://x.invalid/a_b_c"), "https://x.invalid/a_b_c");
+        assert_eq!(
+            strip_markdown("https://x.invalid/a_b_c"),
+            "https://x.invalid/a_b_c"
+        );
         // A paired underscore IS emphasis and goes.
         assert_eq!(strip_markdown("_emph_ and __strong__"), "emph and strong");
         // Line-leading structure goes; the words stay.
         assert_eq!(strip_markdown("# head\n## sub\nbody"), "head\nsub\nbody");
         assert_eq!(strip_markdown("> quoted\nplain"), "quoted\nplain");
         // A bracket that is not a link is left alone.
-        assert_eq!(strip_markdown("array[0] and [draft]"), "array[0] and [draft]");
+        assert_eq!(
+            strip_markdown("array[0] and [draft]"),
+            "array[0] and [draft]"
+        );
     }
 
     #[test]
@@ -469,10 +475,19 @@ mod tests {
     #[test]
     fn rss_escapes_every_item_field() {
         let xml = rss2(&meta(), &[entry()]);
-        assert!(xml.contains(r#"<title>hello &amp; &lt;world&gt;</title>"#), "{xml}");
-        assert!(xml.contains("<description>Title\nbold code a &amp; b</description>"), "{xml}");
+        assert!(
+            xml.contains(r#"<title>hello &amp; &lt;world&gt;</title>"#),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<description>Title\nbold code a &amp; b</description>"),
+            "{xml}"
+        );
         assert!(xml.contains(r#"<atom:link href="https://example.invalid/rss" rel="self""#));
-        assert!(xml.contains("<pubDate>Thu, 29 Oct 2026 12:00:00 +0000</pubDate>"), "{xml}");
+        assert!(
+            xml.contains("<pubDate>Thu, 29 Oct 2026 12:00:00 +0000</pubDate>"),
+            "{xml}"
+        );
         assert!(!xml.contains("<world>"), "the title was not escaped: {xml}");
     }
 
@@ -577,7 +592,10 @@ mod tests {
         e.published = None;
         let xml = atom(&meta(), &[e]);
         quick_xml_stub::Reader::new(&xml).check().expect("atom xml");
-        assert!(xml.contains("<updated>1970-01-01T00:00:00Z</updated>"), "{xml}");
+        assert!(
+            xml.contains("<updated>1970-01-01T00:00:00Z</updated>"),
+            "{xml}"
+        );
     }
 
     #[test]

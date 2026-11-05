@@ -94,7 +94,11 @@ mod tests {
     fn no_token_is_defined_twice() {
         let mut seen = std::collections::BTreeSet::new();
         for t in TOKENS {
-            assert!(seen.insert(t.name), "token {} is defined more than once", t.name);
+            assert!(
+                seen.insert(t.name),
+                "token {} is defined more than once",
+                t.name
+            );
         }
     }
 
@@ -118,7 +122,10 @@ mod tests {
     #[test]
     fn every_colour_carries_a_role() {
         let mut checked = 0;
-        for t in TOKENS.iter().filter(|t| t.group == "colour" || t.group == "trust") {
+        for t in TOKENS
+            .iter()
+            .filter(|t| t.group == "colour" || t.group == "trust")
+        {
             assert!(
                 !t.role.trim().is_empty(),
                 "{} {} has no role; the JSON should say what it is for",
@@ -127,7 +134,10 @@ mod tests {
             );
             checked += 1;
         }
-        assert!(checked >= 15, "expected the colour+trust groups, checked only {checked}");
+        assert!(
+            checked >= 15,
+            "expected the colour+trust groups, checked only {checked}"
+        );
     }
 
     /// The lookup path, including the miss.
@@ -149,7 +159,10 @@ mod tests {
         let css = css_vars();
         assert!(css.starts_with(":root{\n"), "not a :root block: {css}");
         assert!(css.trim_end().ends_with('}'));
-        let declarations = css.lines().filter(|l| l.trim_start().starts_with("--")).count();
+        let declarations = css
+            .lines()
+            .filter(|l| l.trim_start().starts_with("--"))
+            .count();
         assert_eq!(declarations, TOKENS.len());
         for t in TOKENS {
             assert!(
@@ -166,7 +179,8 @@ mod tests {
     /// — while every other test above would still pass on the stale set.
     #[test]
     fn the_constants_match_the_json_on_disk() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/tokens/tokens.json");
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/tokens/tokens.json");
         let raw = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
         let doc: serde_json::Value = serde_json::from_str(&raw).expect("tokens.json is JSON");
@@ -176,9 +190,13 @@ mod tests {
             if group_name == "meta" {
                 continue;
             }
-            let Some(fields) = group.as_object() else { continue };
+            let Some(fields) = group.as_object() else {
+                continue;
+            };
             for (name, token) in fields {
-                let Some(value) = token.get("value") else { continue };
+                let Some(value) = token.get("value") else {
+                    continue;
+                };
                 let value = match value {
                     serde_json::Value::String(s) => s.clone(),
                     other => other.to_string(),

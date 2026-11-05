@@ -80,13 +80,17 @@ fn main() {
     out.push_str(&format!("// estate design tokens v{version}\n\n"));
     out.push_str("/// One semantic token, as the JSON declares it.\n");
     out.push_str("pub struct Token {\n");
-    out.push_str("    /// The kind it belongs to (`colour`, `type`, `space`, ...), for grouping.\n");
+    out.push_str(
+        "    /// The kind it belongs to (`colour`, `type`, `space`, ...), for grouping.\n",
+    );
     out.push_str("    pub group: &'static str,\n");
     out.push_str("    /// The name WITHOUT the leading `--`: `bg`, `text-muted`, `trust-3`.\n");
     out.push_str("    pub name: &'static str,\n");
     out.push_str("    /// The value the CSS emits: `#101214`, `ui-sans-serif, ...`, `0.75rem`.\n");
     out.push_str("    pub value: &'static str,\n");
-    out.push_str("    /// What it is for, verbatim from the JSON. Empty when the JSON has no role.\n");
+    out.push_str(
+        "    /// What it is for, verbatim from the JSON. Empty when the JSON has no role.\n",
+    );
     out.push_str("    pub role: &'static str,\n");
     out.push_str("}\n\n");
     out.push_str(&format!(
