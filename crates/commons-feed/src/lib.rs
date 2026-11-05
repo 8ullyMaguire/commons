@@ -424,10 +424,16 @@ mod tests {
         let mut not_a_url = entry();
         not_a_url.id = "work-42".into();
         let xml = rss2(&meta, &[not_a_url]);
-        assert!(xml.contains(r#"<guid isPermaLink="false">work-42</guid>"#), "{xml}");
+        assert!(
+            xml.contains(r#"<guid isPermaLink="false">work-42</guid>"#),
+            "{xml}"
+        );
 
         let xml = rss2(&meta, &[entry()]);
-        assert!(xml.contains(r#"<guid isPermaLink="true">https://example.invalid/post/42</guid>"#), "{xml}");
+        assert!(
+            xml.contains(r#"<guid isPermaLink="true">https://example.invalid/post/42</guid>"#),
+            "{xml}"
+        );
     }
 
     /// A control character has no XML representation — `&#0;` is invalid too — so the only way to
