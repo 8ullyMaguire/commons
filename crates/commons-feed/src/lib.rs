@@ -238,8 +238,13 @@ pub fn rss2(meta: &FeedMeta, entries: &[FeedEntry]) -> String {
             escape_xml(&truncate_title(&entry.title, 120))
         ));
         xml.push_str(&format!("<link>{}</link>\n", escape_xml(&entry.link)));
+        // `isPermaLink` defaults to **true** in RSS 2.0, so a non-URL id has to say `false` explicitly or
+        // every reader treats a database id as a link. Measured 2026-11-05 on darkhold's catalogue feed: the
+        // ids are work ids, and this renderer was labelling them `isPermaLink="true"` — the one case where
+        // staying silent is a claim.
         xml.push_str(&format!(
-            "<guid isPermaLink=\"true\">{}</guid>\n",
+            "<guid isPermaLink=\"{}\">{}</guid>\n",
+            entry.id == entry.link,
             escape_xml(&entry.id)
         ));
         if let Some(body) = &entry.summary {
@@ -411,6 +416,21 @@ mod tests {
             escape_xml(r#"a & b < c > d " e ' f"#),
             "a &amp; b &lt; c &gt; d &quot; e &apos; f"
         );
+    }
+
+    /// `isPermaLink` defaults to true in RSS 2.0, so a non-URL id must say `false` — otherwise every reader
+    /// treats a database id as an address. Found on darkhold's catalogue feed (2026-11-05), whose ids are
+    /// work ids while this renderer labelled them permalinks.
+    #[test]
+    fn a_guid_that_is_not_a_url_says_so() {
+        let meta = meta();
+        let mut not_a_url = entry();
+        not_a_url.id = "work-42".into();
+        let xml = rss2(&meta, &[not_a_url]);
+        assert!(xml.contains(r#"<guid isPermaLink="false">work-42</guid>"#), "{xml}");
+
+        let xml = rss2(&meta, &[entry()]);
+        assert!(xml.contains(r#"<guid isPermaLink="true">https://example.invalid/post/42</guid>"#), "{xml}");
     }
 
     /// A control character has no XML representation — `&#0;` is invalid too — so the only way to
