@@ -1,0 +1,14 @@
+[package]
+name = "commons-feed"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# No commons dependencies: a feed is a format, and a format that depends on this estate's schema is
+# not one (item 5.4). The three renderers below are the whole crate; a service maps its rows into
+# FeedEntry and gets RSS, Atom and JSON Feed without owning any of the escaping obligations.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }

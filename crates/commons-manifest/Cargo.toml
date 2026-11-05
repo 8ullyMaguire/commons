@@ -1,0 +1,17 @@
+[package]
+name = "commons-manifest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Deliberately dependent on NOTHING in the workspace (item 5.4: "no domain types").
+#
+# The work manifest exists so that four products can agree on a format without sharing a database.
+# A crate that pulled in `commons-store` would make the format depend on this estate's schema, which
+# is exactly the coupling the format was invented to avoid — a producer in Python could no longer
+# implement it by reading the spec.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

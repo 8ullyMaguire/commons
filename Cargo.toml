@@ -15,6 +15,10 @@ members = [
     "crates/commons-api",
     "crates/commons-server",
     "crates/commons-client",
+    "crates/commons-manifest",
+    "crates/commons-feed",
+    "crates/commons-tokens",
+    "crates/commons-http",
 ]
 
 [workspace.package]
